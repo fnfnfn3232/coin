@@ -341,7 +341,7 @@
 
       .compare-grid {
         display: grid;
-        grid-template-columns: minmax(220px, 280px) 52px minmax(220px, 280px);
+        grid-template-columns: minmax(220px, 280px) 52px minmax(220px, 280px) minmax(220px, 280px);
         gap: 10px;
         margin-top: 14px;
         justify-content: start;
@@ -823,6 +823,16 @@
             <option value="coinbase"></option>
           </select>
         </div>
+        <div class="field">
+          <label for="compareBoardSelect2" id="compareTargetLabel2"></label>
+          <select id="compareBoardSelect2">
+            <option value="" id="compareNoneOption2"></option>
+            <option value="binance"></option>
+            <option value="upbit"></option>
+            <option value="bithumb"></option>
+            <option value="coinbase"></option>
+          </select>
+        </div>
       </div>
         <div class="row meta">
           <div class="row">
@@ -904,6 +914,7 @@
         tabTriple: "4\uAC1C \uB3D9\uC2DC\uC0C1\uC7A5",
         compareBaseLabel: "\uAE30\uC900\uAC70\uB798\uC18C",
         compareTargetLabel: "\uBE44\uAD50\uAC70\uB798\uC18C",
+        compareTargetLabel2: "\uBE44\uAD50\uAC70\uB798\uC18C2",
         compareNone: "\uBE44\uAD50 \uC548 \uD568",
         autoUpdateOn: "\uC790\uB3D9 \uAC31\uC2E0 \uCF1C\uC9D0",
         autoUpdateEvery: "{minutes}\uBD84\uB9C8\uB2E4 \uB370\uC774\uD130 \uAC31\uC2E0",
@@ -956,6 +967,7 @@
         query: "",
         sortDirection: "desc",
         compareBoard: "",
+        compareBoard2: "",
         viewMode: "market",
       };
 
@@ -1020,6 +1032,7 @@
       const thFdv = document.getElementById("thFdv");
       const baseBoardSelect = document.getElementById("baseBoardSelect");
       const compareBoardSelect = document.getElementById("compareBoardSelect");
+      const compareBoardSelect2 = document.getElementById("compareBoardSelect2");
       const compareSwapBtn = document.getElementById("compareSwapBtn");
       const titleHeading = document.getElementById("title");
       const newsToggleBtn = document.getElementById("newsToggleBtn");
@@ -1157,7 +1170,9 @@
       document.getElementById("tabTriple").textContent = TEXT.tabTriple;
       document.getElementById("compareBaseLabel").textContent = TEXT.compareBaseLabel;
       document.getElementById("compareTargetLabel").textContent = TEXT.compareTargetLabel;
+      document.getElementById("compareTargetLabel2").textContent = TEXT.compareTargetLabel2;
       document.getElementById("compareNoneOption").textContent = TEXT.compareNone;
+      document.getElementById("compareNoneOption2").textContent = TEXT.compareNone;
       newsToggleBtn.textContent = TEXT.newsOpen;
       baseBoardSelect.querySelector('option[value="binance"]').textContent = TEXT.tabBinance;
       baseBoardSelect.querySelector('option[value="upbit"]').textContent = TEXT.tabUpbit;
@@ -1167,9 +1182,14 @@
       compareBoardSelect.querySelector('option[value="upbit"]').textContent = TEXT.tabUpbit;
       compareBoardSelect.querySelector('option[value="bithumb"]').textContent = TEXT.tabBithumb;
       compareBoardSelect.querySelector('option[value="coinbase"]').textContent = TEXT.tabCoinbase;
+      compareBoardSelect2.querySelector('option[value="binance"]').textContent = TEXT.tabBinance;
+      compareBoardSelect2.querySelector('option[value="upbit"]').textContent = TEXT.tabUpbit;
+      compareBoardSelect2.querySelector('option[value="bithumb"]').textContent = TEXT.tabBithumb;
+      compareBoardSelect2.querySelector('option[value="coinbase"]').textContent = TEXT.tabCoinbase;
       compareSwapBtn.title = "\uAE30\uC900/\uBE44\uAD50 \uAC70\uB798\uC18C \uBC14\uAFB8\uAE30";
       baseBoardSelect.value = state.board;
       compareBoardSelect.value = state.compareBoard;
+      compareBoardSelect2.value = state.compareBoard2;
       searchInput.placeholder = TEXT.placeholder;
       document.getElementById("thRank").textContent = TEXT.thRank;
       document.getElementById("thCoin").textContent = TEXT.thCoin;
@@ -1992,10 +2012,12 @@
         state.page = 1;
         state.query = "";
         state.compareBoard = "";
+        state.compareBoard2 = "";
         state.sortDirection = "desc";
         searchInput.value = "";
         baseBoardSelect.value = "binance";
         compareBoardSelect.value = "";
+        compareBoardSelect2.value = "";
         renderCapHeader();
         render();
       }
@@ -2041,6 +2063,25 @@
         return new Set(rows.map((item) => getComparableSymbol(item)));
       }
 
+      function getActiveCompareBoards() {
+        return [state.compareBoard, state.compareBoard2].filter((board, index, allBoards) => {
+          if (!board || board === state.board) return false;
+          return allBoards.indexOf(board) === index;
+        });
+      }
+
+      function normalizeCompareBoards() {
+        const validBoards = new Set(["binance", "upbit", "bithumb", "coinbase"]);
+        let compare1 = validBoards.has(state.compareBoard) ? state.compareBoard : "";
+        let compare2 = validBoards.has(state.compareBoard2) ? state.compareBoard2 : "";
+
+        if (compare1 === state.board) compare1 = "";
+        if (compare2 === state.board || compare2 === compare1) compare2 = "";
+
+        state.compareBoard = compare1;
+        state.compareBoard2 = compare2;
+      }
+
       function getQueryPriority(row, query) {
         const q = String(query || "").trim().toLowerCase();
         if (!q) return 999;
@@ -2065,11 +2106,13 @@
 
         function getRows() {
           const rows = getBoardRows(state.board);
-          const compareSymbols = state.compareBoard ? getCompareSymbolSet(state.compareBoard) : null;
+          const activeCompareBoards = getActiveCompareBoards();
+          const compareSets = activeCompareBoards.map((board) => getCompareSymbolSet(board));
           const query = state.query.trim().toLowerCase();
-          const compared = state.compareBoard
+          const compared = activeCompareBoards.length
             ? rows.filter((row) => {
-                return compareSymbols.has(getComparableSymbol(row));
+                const symbol = getComparableSymbol(row);
+                return compareSets.every((symbolSet) => symbolSet.has(symbol));
               })
             : [...rows];
 
@@ -2174,6 +2217,7 @@
     }
 
       function render() {
+        normalizeCompareBoards();
         const rows = getRows();
         const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
       if (state.page > totalPages) state.page = 1;
@@ -2189,6 +2233,7 @@
 
         baseBoardSelect.value = state.board === "triple" ? "binance" : state.board;
         compareBoardSelect.value = state.compareBoard === "triple" ? "" : state.compareBoard;
+        compareBoardSelect2.value = state.compareBoard2 === "triple" ? "" : state.compareBoard2;
         compareSwapBtn.disabled = !(state.compareBoard && state.compareBoard !== state.board);
 
         const withCapCount = rows.filter((row) => Number.isFinite(row.sortCapUsd)).length;
@@ -2200,8 +2245,9 @@
         const totalLabel = state.board === "triple"
           ? `4개 동시상장 ${formatNumber(rows.length, 0)}개`
           : `총 ${formatNumber(rows.length, 0)}개`;
-        statusText.textContent = state.compareBoard
-          ? `\uACF5\uD1B5 \uC0C1\uC7A5 ${formatNumber(rows.length, 0)}\uAC1C | \uAE30\uC900 ${boardLabel(state.board)} | \uBE44\uAD50 ${boardLabel(state.compareBoard)} | \uC2DC\uCD1D \uD655\uC778 ${formatNumber(withCapCount, 0)}\uAC1C | \uAC00\uACA9 \uD655\uC778 ${formatNumber(withPriceCount, 0)}\uAC1C | \uC720\uD1B5 \uC815\uBCF4 \uD655\uC778 ${formatNumber(withSupplyCount, 0)}\uAC1C | ${state.page} / ${totalPages} \uD398\uC774\uC9C0`
+        const activeCompareBoards = getActiveCompareBoards();
+        statusText.textContent = activeCompareBoards.length
+          ? `\uACF5\uD1B5 \uC0C1\uC7A5 ${formatNumber(rows.length, 0)}\uAC1C | \uAE30\uC900 ${boardLabel(state.board)} | \uBE44\uAD50 ${activeCompareBoards.map((board) => boardLabel(board)).join(" + ")} | \uC2DC\uCD1D \uD655\uC778 ${formatNumber(withCapCount, 0)}\uAC1C | \uAC00\uACA9 \uD655\uC778 ${formatNumber(withPriceCount, 0)}\uAC1C | \uC720\uD1B5 \uC815\uBCF4 \uD655\uC778 ${formatNumber(withSupplyCount, 0)}\uAC1C | ${state.page} / ${totalPages} \uD398\uC774\uC9C0`
           : `${totalLabel} | \uC2DC\uCD1D \uD655\uC778 ${formatNumber(withCapCount, 0)}\uAC1C | \uAC00\uACA9 \uD655\uC778 ${formatNumber(withPriceCount, 0)}\uAC1C | \uC720\uD1B5 \uC815\uBCF4 \uD655\uC778 ${formatNumber(withSupplyCount, 0)}\uAC1C | ${state.page} / ${totalPages} \uD398\uC774\uC9C0`;
 
         const generatedAt = data.generatedAt
@@ -2229,6 +2275,13 @@
       compareBoardSelect.addEventListener("change", (event) => {
         setViewMode("market");
         state.compareBoard = event.target.value || "";
+        state.page = 1;
+        render();
+      });
+
+      compareBoardSelect2.addEventListener("change", (event) => {
+        setViewMode("market");
+        state.compareBoard2 = event.target.value || "";
         state.page = 1;
         render();
       });
