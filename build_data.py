@@ -47,6 +47,12 @@ COINBASE_COMPARE_SYMBOL_MAP = {
 COINBASE_EXCLUDED_SYMBOLS = {
     "ZETACHAIN",
 }
+AMBIGUOUS_SYMBOLS_REQUIRE_NAME_OVERLAP = {
+    "AI",
+}
+GENSYN_SYMBOL = "AI"
+GENSYN_TOTAL_SUPPLY = 10_000_000_000.0
+GENSYN_CIRCULATING_SUPPLY = 1_304_675_313.0
 SUSPICIOUS_DROP_MIN_RATIO = 0.90
 SUSPICIOUS_DROP_MIN_ABS = {
     "binance": 40,
@@ -693,6 +699,31 @@ def build_name_keys(name: str, english_name: str, korean_name: str) -> set[str]:
     }
 
 
+def is_gensyn_identity(row: dict) -> bool:
+    symbol = str(row.get("symbol") or row.get("compareSymbol") or "").upper()
+    if symbol != GENSYN_SYMBOL:
+        return False
+    name_text = " ".join(
+        str(row.get(key) or "")
+        for key in ("name", "englishName", "koreanName", "pair")
+    ).lower()
+    return "gensyn" in name_text or "젠신" in name_text
+
+
+def apply_gensyn_supply_override(row: dict, *, source_detail: str) -> None:
+    row["name"] = "Gensyn"
+    row["englishName"] = "Gensyn"
+    row["koreanName"] = "젠신"
+    row["circulatingSupply"] = GENSYN_CIRCULATING_SUPPLY
+    row["totalSupply"] = GENSYN_TOTAL_SUPPLY
+    row["circulatingRatio"] = compute_circulating_ratio(
+        GENSYN_CIRCULATING_SUPPLY,
+        GENSYN_TOTAL_SUPPLY,
+    )
+    row["supplyDetail"] = source_detail
+    row["nameKeys"] = list(build_name_keys("Gensyn", "Gensyn", "젠신"))
+
+
 def fetch_binance() -> tuple[list[dict], dict[str, list[dict]]]:
     payload = fetch_json("https://www.binance.com/bapi/apex/v1/public/apex/marketing/symbol/list")
     rows: list[dict] = []
@@ -745,6 +776,8 @@ def fetch_binance() -> tuple[list[dict], dict[str, list[dict]]]:
                 )
             ),
         }
+        if is_gensyn_identity(row):
+            apply_gensyn_supply_override(row, source_detail="known_gensyn_tokenomics")
         rows.append(row)
         lookup.setdefault(symbol.lower(), []).append(row)
     return rows, lookup
@@ -951,8 +984,7 @@ def fetch_bithumb() -> list[dict]:
         symbol = str(item.get("coinSymbol") or "").upper()
         price_krw = bithumb_prices.get(symbol)
         price_usd = safe_div(price_krw, FX_USD_KRW)
-        rows.append(
-            {
+        row = {
                 "coinType": coin_type,
                 "symbol": symbol,
                 "pair": f"{symbol}/KRW",
@@ -983,8 +1015,10 @@ def fetch_bithumb() -> list[dict]:
                         item.get("coinName") or "",
                     )
                 ),
-            }
-        )
+        }
+        if is_gensyn_identity(row):
+            apply_gensyn_supply_override(row, source_detail="known_gensyn_tokenomics|bithumb_identity")
+        rows.append(row)
     return rows
 
 
@@ -1018,15 +1052,14 @@ def fetch_coinbase() -> list[dict]:
         compare_symbol = COINBASE_COMPARE_SYMBOL_MAP.get(base_currency, base_currency)
         symbol_alias_of = compare_symbol if compare_symbol != base_currency else None
 
-        rows.append(
-            {
+        row = {
                 "symbol": base_currency,
                 "pair": f"{base_currency}/USD",
                 "compareSymbol": compare_symbol,
                 "symbolAliasOf": symbol_alias_of,
-                "name": base_currency,
-                "englishName": base_currency,
-                "koreanName": base_currency,
+                "name": "Gensyn" if base_currency == GENSYN_SYMBOL else base_currency,
+                "englishName": "Gensyn" if base_currency == GENSYN_SYMBOL else base_currency,
+                "koreanName": "젠신" if base_currency == GENSYN_SYMBOL else base_currency,
                 "marketCapUsd": None,
                 "marketCapKrw": None,
                 "priceUsd": None,
@@ -1042,8 +1075,18 @@ def fetch_coinbase() -> list[dict]:
                 "capSource": "coinbase_usd_list",
                 "capSourceDetail": "coinbase_exchange_markets",
                 "status": "missing",
-                "nameKeys": list(build_name_keys(base_currency, base_currency, compare_symbol)),
-            }
+                "nameKeys": list(
+                    build_name_keys(
+                        "Gensyn" if base_currency == GENSYN_SYMBOL else base_currency,
+                        "Gensyn" if base_currency == GENSYN_SYMBOL else base_currency,
+                        "젠신" if base_currency == GENSYN_SYMBOL else compare_symbol,
+                    )
+                ),
+        }
+        if base_currency == GENSYN_SYMBOL:
+            apply_gensyn_supply_override(row, source_detail="known_gensyn_tokenomics|coinbase_identity")
+        rows.append(
+            row
         )
     return rows
 
@@ -1056,6 +1099,20 @@ def pick_first_candidate_with_any_signal(candidate_rows: list[dict]) -> dict | N
         if has_market_cap or has_price or has_supply:
             return candidate
     return None
+
+
+def pick_reference_fill_candidate(target_row: dict, candidate_rows: list[dict]) -> dict | None:
+    symbol = str(target_row.get("compareSymbol") or target_row.get("symbol") or "").upper()
+    if symbol in AMBIGUOUS_SYMBOLS_REQUIRE_NAME_OVERLAP:
+        return pick_supply_fill_candidate(target_row, candidate_rows) or next(
+            (
+                candidate
+                for candidate in candidate_rows
+                if has_name_key_overlap(target_row, candidate)
+            ),
+            None,
+        )
+    return pick_first_candidate_with_any_signal(candidate_rows)
 
 
 def apply_coinbase_reference_fills(
@@ -1073,14 +1130,14 @@ def apply_coinbase_reference_fills(
         if not symbol:
             continue
 
-        candidate = pick_first_candidate_with_any_signal(binance_by_symbol.get(symbol, []))
+        candidate = pick_reference_fill_candidate(coinbase_row, binance_by_symbol.get(symbol, []))
         source_detail = "binance_symbol_list"
 
         if candidate is None:
-            candidate = pick_first_candidate_with_any_signal(upbit_by_symbol.get(symbol, []))
+            candidate = pick_reference_fill_candidate(coinbase_row, upbit_by_symbol.get(symbol, []))
             source_detail = "upbit_info_tab_cmc_first"
         if candidate is None:
-            candidate = pick_first_candidate_with_any_signal(bithumb_by_symbol.get(symbol, []))
+            candidate = pick_reference_fill_candidate(coinbase_row, bithumb_by_symbol.get(symbol, []))
             source_detail = "bithumb_main_today_price"
         if candidate is None:
             continue
@@ -1225,7 +1282,9 @@ def apply_bithumb_supply_fills(
             continue
 
         # Same-symbol is the most stable primary key between Binance and Bithumb here.
-        candidate = pick_first_candidate_with_supply(binance_by_symbol.get(symbol, []))
+        candidate = None
+        if symbol not in AMBIGUOUS_SYMBOLS_REQUIRE_NAME_OVERLAP:
+            candidate = pick_first_candidate_with_supply(binance_by_symbol.get(symbol, []))
         source_detail = "binance_symbol_list|same_symbol"
 
         if candidate is None:
