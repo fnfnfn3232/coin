@@ -146,6 +146,49 @@
       cursor: not-allowed;
     }
 
+    .scroll-controls {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 3500;
+      display: grid;
+      gap: 8px;
+      opacity: 0;
+      transform: translateY(10px);
+      pointer-events: none;
+      transition: opacity 0.18s ease, transform 0.18s ease;
+    }
+
+    .scroll-controls.visible {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+
+    .scroll-btn {
+      width: 44px;
+      height: 44px;
+      border: 1px solid rgba(117, 221, 255, 0.28);
+      border-radius: 999px;
+      background: rgba(9, 22, 31, 0.9);
+      color: #e6f7ff;
+      font-size: 22px;
+      font-weight: 900;
+      line-height: 1;
+      cursor: pointer;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.32);
+    }
+
+    .scroll-btn:hover {
+      border-color: rgba(117, 221, 255, 0.56);
+      background: rgba(13, 40, 55, 0.94);
+    }
+
+    .scroll-btn:focus-visible {
+      outline: 2px solid rgba(117, 221, 255, 0.72);
+      outline-offset: 3px;
+    }
+
     .panel {
       margin-bottom: 14px;
       border: 1px solid var(--line);
@@ -883,6 +926,11 @@
     </section>
   </div>
 
+  <div class="scroll-controls" id="scrollControls" aria-label="페이지 이동">
+    <button class="scroll-btn" id="scrollTopBtn" type="button" aria-label="맨 위로 이동">↑</button>
+    <button class="scroll-btn" id="scrollBottomBtn" type="button" aria-label="맨 아래로 이동">↓</button>
+  </div>
+
   <script src="./data.js"></script>
   <script>
     const SITE_PASSWORD = "";
@@ -898,6 +946,11 @@
     const BOOT_REFRESH_LAST_KEY = "fdv_boot_refresh_last_v2";
     const LAST_GOOD_DATA_KEY = "fdv_last_good_data_v2";
     const UPBIT_TICKER_BATCH_SIZE = 100;
+    const GENSYN_SYMBOL = "AI";
+    const GENSYN_BINANCE_SYMBOL = "AIGENSYN";
+    const GENSYN_CIRCULATING_SUPPLY = 1_304_675_313;
+    const GENSYN_TOTAL_SUPPLY = 10_000_000_000;
+    const GENSYN_KOREAN_NAME = "\uC820\uC2E0";
 
     const TEXT = {
       eyebrow: "Exchange Market Cap",
@@ -1481,6 +1534,39 @@
         return Math.min(1, Math.max(0, circulating / total));
       }
 
+      function isGensynName(row) {
+        const text = [
+          row?.name,
+          row?.englishName,
+          row?.koreanName,
+          row?.pair,
+        ]
+          .map((value) => String(value || "").toLowerCase())
+          .join(" ");
+        return text.includes("gensyn") || text.includes(GENSYN_KOREAN_NAME);
+      }
+
+      function isGensynRow(row, boardName) {
+        const symbol = String(row?.symbol || "").toUpperCase();
+        const compareSymbol = String(row?.compareSymbol || "").toUpperCase();
+
+        if (boardName === "binance") {
+          return symbol === GENSYN_BINANCE_SYMBOL || isGensynName(row);
+        }
+        if (boardName === "bithumb") {
+          return symbol === GENSYN_SYMBOL || isGensynName(row);
+        }
+        if (boardName === "coinbase") {
+          return symbol === GENSYN_SYMBOL || compareSymbol === GENSYN_SYMBOL || isGensynName(row);
+        }
+        return isGensynName(row);
+      }
+
+      function copyReferenceNumber(target, source, key) {
+        const value = toPositiveNumber(source?.[key]);
+        if (value !== null) target[key] = value;
+      }
+
       function recomputeDerivedFields(row, options = {}) {
         const opts = options || {};
         const preferComputedCap = Boolean(opts.preferComputedCap);
@@ -1547,6 +1633,86 @@
         } else {
           row.sortCapUsd = null;
         }
+      }
+
+      function normalizeKnownAssetIdentities() {
+        let changed = 0;
+        const boards = data.boards || {};
+        const bithumbGensyn = (boards.bithumb || []).find((row) => isGensynRow(row, "bithumb"));
+        const binanceGensyn = (boards.binance || []).find((row) => isGensynRow(row, "binance"));
+
+        for (const boardName of ["binance", "bithumb", "coinbase"]) {
+          const rows = boards[boardName] || [];
+          for (const row of rows) {
+            if (!isGensynRow(row, boardName)) continue;
+
+            const before = JSON.stringify([
+              row.name,
+              row.englishName,
+              row.koreanName,
+              row.marketCapUsd,
+              row.marketCapKrw,
+              row.priceUsd,
+              row.priceKrw,
+              row.circulatingSupply,
+              row.totalSupply,
+              row.fdvUsd,
+              row.fdvKrw,
+              row.circulatingRatio,
+              row.capSource,
+              row.capSourceDetail,
+              row.supplyDetail,
+            ]);
+
+            row.name = "Gensyn";
+            row.englishName = "Gensyn";
+            row.koreanName = GENSYN_KOREAN_NAME;
+            row.circulatingSupply = GENSYN_CIRCULATING_SUPPLY;
+            row.totalSupply = GENSYN_TOTAL_SUPPLY;
+            row.circulatingRatio = computeCirculatingRatio(GENSYN_CIRCULATING_SUPPLY, GENSYN_TOTAL_SUPPLY);
+            row.supplyDetail = "known_gensyn_tokenomics|client_identity";
+
+            if (boardName === "coinbase") {
+              const reference = bithumbGensyn || binanceGensyn;
+              if (reference) {
+                for (const key of ["marketCapUsd", "marketCapKrw", "priceUsd", "priceKrw"]) {
+                  copyReferenceNumber(row, reference, key);
+                }
+                row.capSource = "coinbase_fill_same_symbol";
+                row.capSourceDetail =
+                  reference === bithumbGensyn
+                    ? "coinbase_exchange_markets|bithumb_main_today_price"
+                    : "coinbase_exchange_markets|binance_symbol_list";
+                row.priceSource = reference.priceSource || row.priceSource;
+              }
+            }
+
+            recomputeDerivedFields(row, { preferComputedCap: false });
+
+            const after = JSON.stringify([
+              row.name,
+              row.englishName,
+              row.koreanName,
+              row.marketCapUsd,
+              row.marketCapKrw,
+              row.priceUsd,
+              row.priceKrw,
+              row.circulatingSupply,
+              row.totalSupply,
+              row.fdvUsd,
+              row.fdvKrw,
+              row.circulatingRatio,
+              row.capSource,
+              row.capSourceDetail,
+              row.supplyDetail,
+            ]);
+            if (before !== after) changed += 1;
+          }
+
+          if (changed > 0) sortBoardRowsByCap(rows);
+        }
+
+        return changed;
       }
 
       function sortBoardRowsByCap(rows) {
@@ -1877,6 +2043,7 @@
             const count = Number(item.value);
             return sum + (Number.isFinite(count) ? count : 0);
           }, 0);
+          changed += normalizeKnownAssetIdentities();
 
           if (changed > 0) {
             data.generatedAt = Math.floor(Date.now() / 1000);
@@ -1989,6 +2156,7 @@
 
         data = parsed;
         window.BOARD_DATA = parsed;
+        normalizeKnownAssetIdentities();
         saveLastGoodData(parsed);
         renderSummaryStats();
         renderAutoStatus();
@@ -2217,6 +2385,7 @@
     }
 
       function render() {
+        normalizeKnownAssetIdentities();
         normalizeCompareBoards();
         const rows = getRows();
         const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
@@ -2319,13 +2488,34 @@
         goHomeView();
       });
 
+      const scrollControls = document.getElementById("scrollControls");
+      const scrollTopBtn = document.getElementById("scrollTopBtn");
+      const scrollBottomBtn = document.getElementById("scrollBottomBtn");
+      const updateScrollControls = () => {
+        if (!scrollControls) return;
+        const pageScrollable = document.documentElement.scrollHeight > window.innerHeight + 80;
+        const hasScrolled = window.scrollY > 220;
+        scrollControls.classList.toggle("visible", pageScrollable && hasScrolled);
+      };
+      scrollTopBtn.addEventListener("click", () => {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      });
+      scrollBottomBtn.addEventListener("click", () => {
+        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" });
+      });
+      window.addEventListener("scroll", updateScrollControls, { passive: true });
+      window.addEventListener("resize", updateScrollControls);
+
       manualRefreshBtn.textContent = TEXT.manualRefresh;
+      normalizeKnownAssetIdentities();
+      saveLastGoodData(data);
       renderSummaryStats();
       renderAutoStatus();
       renderManualRefreshState();
       renderLockTtl();
       setViewMode("market");
       checkSiteLock();
+      updateScrollControls();
 
       manualRefreshBtn.addEventListener("click", async () => {
         const now = Date.now();
