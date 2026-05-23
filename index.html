@@ -148,40 +148,46 @@
 
     .scroll-controls {
       position: fixed;
-      right: 18px;
-      bottom: 18px;
+      right: 10px;
+      bottom: 22px;
       z-index: 3500;
       display: grid;
-      gap: 8px;
+      gap: 6px;
       opacity: 0;
-      transform: translateY(10px);
+      transform: translateY(8px);
       pointer-events: none;
       transition: opacity 0.18s ease, transform 0.18s ease;
     }
 
     .scroll-controls.visible {
-      opacity: 1;
+      opacity: 0.74;
       transform: translateY(0);
       pointer-events: auto;
     }
 
+    .scroll-controls.visible:hover {
+      opacity: 1;
+    }
+
     .scroll-btn {
-      width: 44px;
-      height: 44px;
-      border: 1px solid rgba(117, 221, 255, 0.28);
+      width: 32px;
+      height: 32px;
+      border: 1px solid rgba(117, 221, 255, 0.18);
       border-radius: 999px;
-      background: rgba(9, 22, 31, 0.9);
-      color: #e6f7ff;
-      font-size: 22px;
-      font-weight: 900;
+      background: rgba(9, 22, 31, 0.62);
+      color: rgba(230, 247, 255, 0.82);
+      font-size: 15px;
+      font-weight: 800;
       line-height: 1;
       cursor: pointer;
-      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.32);
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.22);
+      backdrop-filter: blur(8px);
     }
 
     .scroll-btn:hover {
-      border-color: rgba(117, 221, 255, 0.56);
-      background: rgba(13, 40, 55, 0.94);
+      border-color: rgba(117, 221, 255, 0.36);
+      background: rgba(13, 40, 55, 0.76);
+      color: #eff9ff;
     }
 
     .scroll-btn:focus-visible {
@@ -2494,7 +2500,7 @@
       const updateScrollControls = () => {
         if (!scrollControls) return;
         const pageScrollable = document.documentElement.scrollHeight > window.innerHeight + 80;
-        const hasScrolled = window.scrollY > 220;
+        const hasScrolled = window.scrollY > 320;
         scrollControls.classList.toggle("visible", pageScrollable && hasScrolled);
       };
       scrollTopBtn.addEventListener("click", () => {
