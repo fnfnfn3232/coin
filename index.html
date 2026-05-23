@@ -148,20 +148,26 @@
 
     .scroll-controls {
       position: fixed;
-      right: 10px;
-      bottom: 22px;
+      right: max(22px, calc((100vw - 1360px) / 2 + 22px));
+      bottom: clamp(86px, 13vh, 150px);
       z-index: 3500;
       display: grid;
-      gap: 6px;
+      gap: 5px;
+      padding: 5px;
+      border: 1px solid rgba(117, 221, 255, 0.22);
+      border-radius: 999px;
+      background: rgba(9, 22, 31, 0.78);
+      box-shadow: 0 14px 34px rgba(0, 0, 0, 0.32);
+      backdrop-filter: blur(10px);
       opacity: 0;
-      transform: translateY(8px);
+      transform: translateY(8px) scale(0.96);
       pointer-events: none;
       transition: opacity 0.18s ease, transform 0.18s ease;
     }
 
     .scroll-controls.visible {
-      opacity: 0.74;
-      transform: translateY(0);
+      opacity: 0.9;
+      transform: translateY(0) scale(1);
       pointer-events: auto;
     }
 
@@ -170,23 +176,22 @@
     }
 
     .scroll-btn {
-      width: 32px;
-      height: 32px;
-      border: 1px solid rgba(117, 221, 255, 0.18);
+      width: 36px;
+      height: 36px;
+      border: 1px solid rgba(204, 232, 243, 0.2);
       border-radius: 999px;
-      background: rgba(9, 22, 31, 0.62);
-      color: rgba(230, 247, 255, 0.82);
-      font-size: 15px;
-      font-weight: 800;
+      background: rgba(16, 42, 56, 0.72);
+      color: rgba(238, 249, 255, 0.92);
+      font-size: 16px;
+      font-weight: 900;
       line-height: 1;
       cursor: pointer;
-      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.22);
-      backdrop-filter: blur(8px);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
     }
 
     .scroll-btn:hover {
-      border-color: rgba(117, 221, 255, 0.36);
-      background: rgba(13, 40, 55, 0.76);
+      border-color: rgba(117, 221, 255, 0.48);
+      background: rgba(21, 58, 76, 0.9);
       color: #eff9ff;
     }
 
