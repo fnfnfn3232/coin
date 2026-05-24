@@ -2506,6 +2506,16 @@
         if (!scrollControls) return;
         const pageScrollable = document.documentElement.scrollHeight > window.innerHeight + 80;
         const hasScrolled = window.scrollY > 320;
+        const tableWrap = document.querySelector(".table-wrap");
+        if (tableWrap) {
+          const tableRect = tableWrap.getBoundingClientRect();
+          const controlWidth = scrollControls.offsetWidth || 50;
+          const preferredLeft = tableRect.right + 12;
+          const maxLeft = window.innerWidth - controlWidth - 18;
+          const left = Math.max(18, Math.min(preferredLeft, maxLeft));
+          scrollControls.style.left = `${left}px`;
+          scrollControls.style.right = "auto";
+        }
         scrollControls.classList.toggle("visible", pageScrollable && hasScrolled);
       };
       scrollTopBtn.addEventListener("click", () => {
