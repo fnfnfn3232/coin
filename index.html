@@ -131,6 +131,202 @@
       font-size: 13px;
     }
 
+    .admin-launch {
+      position: fixed;
+      left: 14px;
+      bottom: 14px;
+      z-index: 3600;
+      padding: 7px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(151, 183, 198, 0.22);
+      background: rgba(9, 22, 31, 0.72);
+      color: #bfd6e1;
+      font-size: 12px;
+      box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
+      backdrop-filter: blur(8px);
+    }
+
+    .admin-launch:hover {
+      border-color: rgba(117, 221, 255, 0.38);
+      background: rgba(13, 35, 48, 0.9);
+      color: #eff9ff;
+    }
+
+    .admin-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 5000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      background: rgba(3, 10, 15, 0.66);
+      backdrop-filter: blur(4px);
+    }
+
+    .admin-modal.hidden {
+      display: none;
+    }
+
+    .admin-card {
+      width: min(860px, calc(100vw - 32px));
+      max-height: calc(100vh - 40px);
+      overflow: auto;
+      border: 1px solid rgba(151, 183, 198, 0.28);
+      border-radius: 18px;
+      background: rgba(8, 20, 29, 0.98);
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.48);
+    }
+
+    .admin-auth,
+    .admin-dashboard {
+      padding: 18px;
+    }
+
+    .admin-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+
+    .admin-title {
+      margin: 0 0 6px;
+      color: var(--text);
+      font-size: 22px;
+      font-weight: 850;
+      letter-spacing: -0.02em;
+    }
+
+    .admin-desc,
+    .admin-note {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .admin-note {
+      margin-bottom: 14px;
+      padding: 10px 12px;
+      border: 1px solid rgba(255, 204, 120, 0.18);
+      border-radius: 12px;
+      background: rgba(255, 184, 77, 0.06);
+      color: #d9c39c;
+    }
+
+    .admin-form {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 8px;
+      align-items: start;
+      margin-top: 14px;
+    }
+
+    .admin-form input {
+      width: 100%;
+      min-width: 0;
+    }
+
+    .admin-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .admin-close,
+    .admin-refresh {
+      border-color: rgba(151, 183, 198, 0.24);
+      background: rgba(255, 255, 255, 0.04);
+      color: #d6edf7;
+    }
+
+    .admin-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .admin-stat,
+    .admin-section {
+      border: 1px solid rgba(151, 183, 198, 0.16);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.035);
+    }
+
+    .admin-stat {
+      padding: 12px;
+    }
+
+    .admin-stat-label {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .admin-stat-value {
+      margin-top: 8px;
+      color: #eaf7fc;
+      font-size: 22px;
+      font-weight: 850;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+    }
+
+    .admin-stat-sub {
+      margin-top: 6px;
+      color: #a8bfca;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .admin-sections {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .admin-section {
+      padding: 13px;
+    }
+
+    .admin-section-title {
+      margin: 0 0 10px;
+      color: #eaf7fc;
+      font-size: 15px;
+      font-weight: 800;
+    }
+
+    .admin-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .admin-row {
+      display: grid;
+      grid-template-columns: minmax(110px, 0.42fr) minmax(0, 1fr);
+      gap: 10px;
+      color: #d6edf7;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .admin-row span:first-child {
+      color: var(--muted);
+    }
+
+    .admin-row span:last-child {
+      overflow-wrap: anywhere;
+    }
+
+    .admin-error {
+      margin-top: 8px;
+      min-height: 20px;
+      color: #ff9a9a;
+      font-size: 13px;
+    }
+
     .lock-ttl-wrap {
       position: fixed;
       top: 10px;
@@ -814,6 +1010,17 @@
           width: 100%;
         }
 
+          .admin-form,
+          .admin-grid,
+          .admin-sections {
+            grid-template-columns: 1fr;
+          }
+
+          .admin-row {
+            grid-template-columns: 1fr;
+            gap: 3px;
+          }
+
           .compare-grid {
             grid-template-columns: 1fr;
           }
@@ -965,6 +1172,85 @@
     </section>
   </div>
 
+  <button class="admin-launch" id="adminLaunchBtn" type="button">관리자</button>
+
+  <div class="admin-modal hidden" id="adminModal" aria-modal="true" role="dialog" aria-labelledby="adminTitle">
+    <section class="admin-card">
+      <div class="admin-auth" id="adminAuthPanel">
+        <div class="admin-head">
+          <div>
+            <h2 class="admin-title" id="adminTitle">관리자 모드</h2>
+            <p class="admin-desc">운영 통계를 보려면 비밀번호를 다시 입력해 주세요.</p>
+          </div>
+          <button class="admin-close" id="adminAuthCloseBtn" type="button">닫기</button>
+        </div>
+        <form class="admin-form" id="adminForm">
+          <div class="lock-input-wrap">
+            <input id="adminPasswordInput" type="password" autocomplete="off" placeholder="관리자 비밀번호" />
+            <div class="lock-caps-warning" id="adminCapsWarning" role="status" aria-live="polite" hidden>Caps Lock이 켜져 있습니다.</div>
+          </div>
+          <button type="submit">확인</button>
+          <button class="admin-close" id="adminCancelBtn" type="button">취소</button>
+        </form>
+        <div class="admin-error" id="adminError"></div>
+      </div>
+
+      <div class="admin-dashboard" id="adminDashboard" hidden>
+        <div class="admin-head">
+          <div>
+            <h2 class="admin-title">관리자 통계</h2>
+            <p class="admin-desc">사이트 상태, 데이터 갱신, 브라우저 기준 트래픽을 한눈에 확인합니다.</p>
+          </div>
+          <div class="admin-actions">
+            <button class="admin-refresh" id="adminRefreshBtn" type="button">새로고침</button>
+            <button class="admin-close" id="adminCloseBtn" type="button">닫기</button>
+          </div>
+        </div>
+        <div class="admin-note">정적 사이트라 전체 방문자 기준 서버 로그는 브라우저에서 직접 볼 수 없습니다. 아래 트래픽은 현재 브라우저에 저장된 기준이며, 전체 통계는 분석 서비스나 서버 연동 후 표시할 수 있습니다.</div>
+        <div class="admin-grid">
+          <article class="admin-stat">
+            <div class="admin-stat-label">오늘 트래픽</div>
+            <div class="admin-stat-value" id="adminDailyTraffic">-</div>
+            <div class="admin-stat-sub">이 브라우저 페이지 조회</div>
+          </article>
+          <article class="admin-stat">
+            <div class="admin-stat-label">최근 30일 트래픽</div>
+            <div class="admin-stat-value" id="adminMonthlyTraffic">-</div>
+            <div class="admin-stat-sub">이 브라우저 페이지 조회</div>
+          </article>
+          <article class="admin-stat">
+            <div class="admin-stat-label">전체 누적</div>
+            <div class="admin-stat-value" id="adminTotalTraffic">-</div>
+            <div class="admin-stat-sub" id="adminFirstSeen">-</div>
+          </article>
+          <article class="admin-stat">
+            <div class="admin-stat-label">데이터 최신성</div>
+            <div class="admin-stat-value" id="adminDataAge">-</div>
+            <div class="admin-stat-sub" id="adminDataGenerated">-</div>
+          </article>
+        </div>
+        <div class="admin-sections">
+          <section class="admin-section">
+            <h3 class="admin-section-title">데이터 관리</h3>
+            <div class="admin-list" id="adminDataStats"></div>
+          </section>
+          <section class="admin-section">
+            <h3 class="admin-section-title">거래소 데이터</h3>
+            <div class="admin-list" id="adminBoardStats"></div>
+          </section>
+          <section class="admin-section">
+            <h3 class="admin-section-title">접속/캐시</h3>
+            <div class="admin-list" id="adminClientStats"></div>
+          </section>
+          <section class="admin-section">
+            <h3 class="admin-section-title">서버/호스팅</h3>
+            <div class="admin-list" id="adminServerStats"></div>
+          </section>
+        </div>
+      </div>
+    </section>
+  </div>
+
   <div class="scroll-controls" id="scrollControls" aria-label="페이지 이동">
     <button class="scroll-btn" id="scrollTopBtn" type="button" aria-label="맨 위로 이동">↑</button>
     <button class="scroll-btn" id="scrollBottomBtn" type="button" aria-label="맨 아래로 이동">↓</button>
@@ -976,6 +1262,7 @@
     const LOCK_AUTH_UNTIL_KEY = "fdv_lock_until_v1";
     const LOCK_EXTEND_COUNT_KEY = "fdv_lock_extend_count_v1";
     const MANUAL_REFRESH_LAST_KEY = "fdv_manual_refresh_last_v1";
+    const ADMIN_TRAFFIC_KEY = "fdv_admin_traffic_v1";
     const LOCK_TTL_MS = 24 * 60 * 60 * 1000;
     const LOCK_EXTEND_MAX = 3;
     const MANUAL_REFRESH_COOLDOWN_MS = 30 * 1000;
@@ -1135,6 +1422,28 @@
       const lockPasswordInput = document.getElementById("lockPasswordInput");
       const lockCapsWarning = document.getElementById("lockCapsWarning");
       const lockError = document.getElementById("lockError");
+      const adminLaunchBtn = document.getElementById("adminLaunchBtn");
+      const adminModal = document.getElementById("adminModal");
+      const adminAuthPanel = document.getElementById("adminAuthPanel");
+      const adminDashboard = document.getElementById("adminDashboard");
+      const adminForm = document.getElementById("adminForm");
+      const adminPasswordInput = document.getElementById("adminPasswordInput");
+      const adminCapsWarning = document.getElementById("adminCapsWarning");
+      const adminError = document.getElementById("adminError");
+      const adminDailyTraffic = document.getElementById("adminDailyTraffic");
+      const adminMonthlyTraffic = document.getElementById("adminMonthlyTraffic");
+      const adminTotalTraffic = document.getElementById("adminTotalTraffic");
+      const adminFirstSeen = document.getElementById("adminFirstSeen");
+      const adminDataAge = document.getElementById("adminDataAge");
+      const adminDataGenerated = document.getElementById("adminDataGenerated");
+      const adminDataStats = document.getElementById("adminDataStats");
+      const adminBoardStats = document.getElementById("adminBoardStats");
+      const adminClientStats = document.getElementById("adminClientStats");
+      const adminServerStats = document.getElementById("adminServerStats");
+      const adminRefreshBtn = document.getElementById("adminRefreshBtn");
+      const adminCloseBtn = document.getElementById("adminCloseBtn");
+      const adminAuthCloseBtn = document.getElementById("adminAuthCloseBtn");
+      const adminCancelBtn = document.getElementById("adminCancelBtn");
 
       function setLockCapsWarning(active) {
         lockCapsWarning.hidden = !active;
@@ -1145,6 +1454,209 @@
           setLockCapsWarning(event.getModifierState("CapsLock"));
         }
       }
+
+      function setAdminCapsWarning(active) {
+        adminCapsWarning.hidden = !active;
+      }
+
+      function updateAdminCapsWarning(event) {
+        if (event && typeof event.getModifierState === "function") {
+          setAdminCapsWarning(event.getModifierState("CapsLock"));
+        }
+      }
+
+      function getLocalDateKey(date = new Date()) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, "0");
+        const day = String(date.getDate()).padStart(2, "0");
+        return `${year}-${month}-${day}`;
+      }
+
+      function loadAdminTraffic() {
+        try {
+          const parsed = JSON.parse(localStorage.getItem(ADMIN_TRAFFIC_KEY) || "{}");
+          return {
+            days: parsed && typeof parsed.days === "object" && parsed.days ? parsed.days : {},
+            total: Math.max(0, Math.floor(Number(parsed?.total) || 0)),
+            firstSeen: Math.max(0, Math.floor(Number(parsed?.firstSeen) || 0)),
+            lastSeen: Math.max(0, Math.floor(Number(parsed?.lastSeen) || 0)),
+          };
+        } catch (_error) {
+          return { days: {}, total: 0, firstSeen: 0, lastSeen: 0 };
+        }
+      }
+
+      function saveAdminTraffic(traffic) {
+        try {
+          localStorage.setItem(ADMIN_TRAFFIC_KEY, JSON.stringify(traffic));
+        } catch (_error) {
+          // Traffic is a convenience metric; ignore storage limits.
+        }
+      }
+
+      function sumAdminTrafficDays(days, rangeDays) {
+        const today = new Date();
+        let total = 0;
+        for (let offset = 0; offset < rangeDays; offset += 1) {
+          const date = new Date(today);
+          date.setDate(today.getDate() - offset);
+          total += Math.max(0, Math.floor(Number(days[getLocalDateKey(date)]) || 0));
+        }
+        return total;
+      }
+
+      function pruneAdminTrafficDays(days) {
+        const keep = new Set();
+        const today = new Date();
+        for (let offset = 0; offset < 90; offset += 1) {
+          const date = new Date(today);
+          date.setDate(today.getDate() - offset);
+          keep.add(getLocalDateKey(date));
+        }
+        Object.keys(days).forEach((key) => {
+          if (!keep.has(key)) delete days[key];
+        });
+      }
+
+      function recordAdminTraffic() {
+        const now = Date.now();
+        const traffic = loadAdminTraffic();
+        const today = getLocalDateKey();
+        traffic.days[today] = Math.max(0, Math.floor(Number(traffic.days[today]) || 0)) + 1;
+        traffic.total = Math.max(0, Math.floor(Number(traffic.total) || 0)) + 1;
+        traffic.firstSeen = traffic.firstSeen || now;
+        traffic.lastSeen = now;
+        pruneAdminTrafficDays(traffic.days);
+        saveAdminTraffic(traffic);
+      }
+
+      function formatLocalDateTimeMs(ms) {
+        const value = Number(ms);
+        if (!Number.isFinite(value) || value <= 0) return "-";
+        return new Date(value).toLocaleString("ko-KR");
+      }
+
+      function formatAdminDuration(ms) {
+        const totalSeconds = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+        const days = Math.floor(totalSeconds / 86400);
+        const hours = Math.floor((totalSeconds % 86400) / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        if (days > 0) return `${days}일 ${hours}시간`;
+        if (hours > 0) return `${hours}시간 ${minutes}분`;
+        if (minutes > 0) return `${minutes}분`;
+        return `${totalSeconds}초`;
+      }
+
+      function setAdminRows(container, rows) {
+        container.replaceChildren(
+          ...rows.map(([label, value]) => {
+            const row = document.createElement("div");
+            row.className = "admin-row";
+            const labelEl = document.createElement("span");
+            labelEl.textContent = label;
+            const valueEl = document.createElement("span");
+            valueEl.textContent = value;
+            row.append(labelEl, valueEl);
+            return row;
+          })
+        );
+      }
+
+      function renderAdminDashboard() {
+        const traffic = loadAdminTraffic();
+        const todayTraffic = Math.max(0, Math.floor(Number(traffic.days[getLocalDateKey()]) || 0));
+        const monthlyTraffic = sumAdminTrafficDays(traffic.days, 30);
+        adminDailyTraffic.textContent = formatNumber(todayTraffic, 0);
+        adminMonthlyTraffic.textContent = formatNumber(monthlyTraffic, 0);
+        adminTotalTraffic.textContent = formatNumber(traffic.total, 0);
+        adminFirstSeen.textContent = traffic.firstSeen ? `첫 기록 ${formatLocalDateTimeMs(traffic.firstSeen)}` : "첫 기록 없음";
+
+        const generatedAtMs = Number(data.generatedAt) ? Number(data.generatedAt) * 1000 : 0;
+        adminDataAge.textContent = generatedAtMs ? `${formatAdminDuration(Date.now() - generatedAtMs)} 전` : "-";
+        adminDataGenerated.textContent = generatedAtMs ? `생성 ${formatLocalDateTimeMs(generatedAtMs)}` : "생성시각 없음";
+
+        const liveMinutes = Math.max(1, Math.floor(LIVE_MARKET_REFRESH_MS / (60 * 1000)));
+        const serverMinutes = Math.max(1, Number(data.autoRefreshMinutes) || 60);
+        const fxRate = Number(data.fxUsdKrw);
+        const fxText = Number.isFinite(fxRate) ? `${formatNumber(fxRate, 2)}원 (${fxSourceLabel(data.fxSource)})` : "-";
+        const newsCount = Array.isArray(data.news?.items) ? data.news.items.length : 0;
+        const cachedText = localStorage.getItem(LAST_GOOD_DATA_KEY) || "";
+        setAdminRows(adminDataStats, [
+          ["자동 갱신", `서버 ${serverMinutes}분 · 화면 ${liveMinutes}분`],
+          ["마지막 수동 갱신", getManualRefreshLastTs() ? formatLocalDateTimeMs(getManualRefreshLastTs()) : "기록 없음"],
+          ["부팅 갱신 체크", getBootRefreshLastTs() ? formatLocalDateTimeMs(getBootRefreshLastTs()) : "기록 없음"],
+          ["USDT 환율", fxText],
+          ["뉴스 항목", `${formatNumber(newsCount, 0)}건`],
+          ["데이터 캐시", cachedText ? `${formatNumber(Math.ceil(cachedText.length / 1024), 0)}KB 저장됨` : "없음"],
+        ]);
+
+        const boardRows = ["binance", "upbit", "bithumb", "coinbase"].map((board) => {
+          const rows = Array.isArray(data.boards?.[board]) ? data.boards[board] : [];
+          const capCount = rows.filter((row) => Number.isFinite(Number(row.marketCapUsd)) || Number.isFinite(Number(row.sortCapUsd))).length;
+          const priceCount = rows.filter((row) => Number.isFinite(Number(row.priceUsd)) || Number.isFinite(Number(row.priceKrw))).length;
+          const supplyCount = rows.filter((row) =>
+            Number.isFinite(Number(row.circulatingSupply)) || Number.isFinite(Number(row.totalSupply))
+          ).length;
+          return [
+            boardLabel(board),
+            `${formatNumber(rows.length, 0)}개 · 시총 ${formatNumber(capCount, 0)}개 · 가격 ${formatNumber(priceCount, 0)}개 · 유통 ${formatNumber(supplyCount, 0)}개`,
+          ];
+        });
+        setAdminRows(adminBoardStats, boardRows);
+
+        const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+        const connectionText = connection
+          ? `${connection.effectiveType || "unknown"} · ${connection.downlink ? `${connection.downlink}Mbps` : "속도 미제공"}`
+          : "브라우저 미제공";
+        const authRemain = Math.max(0, getLockAuthUntil() - Date.now());
+        setAdminRows(adminClientStats, [
+          ["현재 주소", location.href],
+          ["화면 크기", `${window.innerWidth} x ${window.innerHeight}`],
+          ["온라인 상태", navigator.onLine ? "온라인" : "오프라인"],
+          ["네트워크", connectionText],
+          ["로그인 남은 시간", formatRemainingLockTime(authRemain)],
+          ["마지막 접속 기록", traffic.lastSeen ? formatLocalDateTimeMs(traffic.lastSeen) : "기록 없음"],
+        ]);
+
+        const hostLabel = location.hostname.includes("github.io")
+          ? "GitHub Pages"
+          : location.hostname || "로컬 파일";
+        const navEntry = performance.getEntriesByType("navigation")[0];
+        const loadMs = navEntry ? Math.max(0, Math.round(navEntry.loadEventEnd - navEntry.startTime)) : 0;
+        setAdminRows(adminServerStats, [
+          ["호스팅", hostLabel],
+          ["서버 로그", "정적 사이트라 브라우저 직접 접근 불가"],
+          ["데이터 원본", REMOTE_DATA_URL],
+          ["페이지 로드", loadMs ? `${formatNumber(loadMs, 0)}ms` : "측정 전"],
+          ["현재 시간", formatLocalDateTimeMs(Date.now())],
+          ["브라우저", navigator.userAgent],
+        ]);
+      }
+
+      function showAdminModal() {
+        adminModal.classList.remove("hidden");
+        adminAuthPanel.hidden = false;
+        adminDashboard.hidden = true;
+        adminPasswordInput.value = "";
+        adminError.textContent = "";
+        setAdminCapsWarning(false);
+        window.setTimeout(() => adminPasswordInput.focus(), 0);
+      }
+
+      function closeAdminModal() {
+        adminModal.classList.add("hidden");
+        adminPasswordInput.value = "";
+        adminError.textContent = "";
+        setAdminCapsWarning(false);
+      }
+
+      function showAdminDashboard() {
+        renderAdminDashboard();
+        adminAuthPanel.hidden = true;
+        adminDashboard.hidden = false;
+      }
+
+      recordAdminTraffic();
 
       function showSiteLock() {
         document.body.classList.add("locked");
@@ -1254,6 +1766,41 @@
       lockPasswordInput.addEventListener("keydown", updateLockCapsWarning);
       lockPasswordInput.addEventListener("keyup", updateLockCapsWarning);
       lockPasswordInput.addEventListener("blur", () => setLockCapsWarning(false));
+
+      adminLaunchBtn.addEventListener("click", showAdminModal);
+      adminAuthCloseBtn.addEventListener("click", closeAdminModal);
+      adminCancelBtn.addEventListener("click", closeAdminModal);
+      adminCloseBtn.addEventListener("click", closeAdminModal);
+      adminRefreshBtn.addEventListener("click", renderAdminDashboard);
+      adminModal.addEventListener("click", (event) => {
+        if (event.target === adminModal) {
+          closeAdminModal();
+        }
+      });
+      adminPasswordInput.addEventListener("keydown", updateAdminCapsWarning);
+      adminPasswordInput.addEventListener("keyup", updateAdminCapsWarning);
+      adminPasswordInput.addEventListener("blur", () => setAdminCapsWarning(false));
+      adminForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const value = String(adminPasswordInput.value || "");
+        if (value === SITE_PASSWORD) {
+          showAdminDashboard();
+          return;
+        }
+        if (value && value.toLowerCase() === SITE_PASSWORD.toLowerCase()) {
+          setAdminCapsWarning(true);
+          adminError.textContent = "Caps Lock 때문에 대문자로 입력된 것 같습니다.";
+        } else {
+          adminError.textContent = "비밀번호가 맞지 않습니다.";
+        }
+        adminPasswordInput.value = "";
+        adminPasswordInput.focus();
+      });
+      window.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && !adminModal.classList.contains("hidden")) {
+          closeAdminModal();
+        }
+      });
 
       lockExtendBtn.addEventListener("click", () => {
         const until = getLockAuthUntil();
