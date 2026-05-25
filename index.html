@@ -2519,10 +2519,10 @@
         scrollControls.classList.toggle("visible", pageScrollable && hasScrolled);
       };
       scrollTopBtn.addEventListener("click", () => {
-        window.scrollTo({ top: 0, behavior: "smooth" });
+        window.scrollTo(0, 0);
       });
       scrollBottomBtn.addEventListener("click", () => {
-        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" });
+        window.scrollTo(0, document.documentElement.scrollHeight);
       });
       window.addEventListener("scroll", updateScrollControls, { passive: true });
       window.addEventListener("resize", updateScrollControls);
