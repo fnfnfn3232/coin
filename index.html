@@ -1277,6 +1277,8 @@
     const GENSYN_CIRCULATING_SUPPLY = 1_304_675_313;
     const GENSYN_TOTAL_SUPPLY = 10_000_000_000;
     const GENSYN_KOREAN_NAME = "\uC820\uC2E0";
+    const METEORA_UPBIT_SYMBOL = "MET2";
+    const METEORA_SYMBOL = "MET";
 
     const TEXT = {
       eyebrow: "Exchange Market Cap",
@@ -2246,6 +2248,18 @@
       function normalizeKnownAssetIdentities() {
         let changed = 0;
         const boards = data.boards || {};
+        const upbitRows = boards.upbit || [];
+        for (const row of upbitRows) {
+          const symbol = String(row?.symbol || "").toUpperCase();
+          if (symbol !== METEORA_UPBIT_SYMBOL) continue;
+
+          const before = JSON.stringify([row.compareSymbol, row.symbolAliasOf]);
+          row.compareSymbol = METEORA_SYMBOL;
+          row.symbolAliasOf = METEORA_SYMBOL;
+          const after = JSON.stringify([row.compareSymbol, row.symbolAliasOf]);
+          if (before !== after) changed += 1;
+        }
+
         const bithumbGensyn = (boards.bithumb || []).find((row) => isGensynRow(row, "bithumb"));
         const binanceGensyn = (boards.binance || []).find((row) => isGensynRow(row, "binance"));
 
