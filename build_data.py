@@ -33,6 +33,9 @@ UPBIT_PREFER_BITHUMB_FILL_SYMBOL_MAP = {
     "ORDER": "ORDER",
     "ORDI": "ORDI",
 }
+UPBIT_COMPARE_SYMBOL_MAP = {
+    "MET2": "MET",
+}
 BITHUMB_SUPPLY_PREFER_UPBIT_SYMBOL_MAP = {
     "ORDER": "ORDER",
 }
@@ -914,6 +917,8 @@ def fetch_upbit() -> tuple[list[dict], dict[str, list[dict]]]:
     lookup: dict[str, list[dict]] = {}
     for row in base_rows:
         detail = details[row["symbol"]]
+        compare_symbol = UPBIT_COMPARE_SYMBOL_MAP.get(row["symbol"], row["symbol"])
+        symbol_alias_of = compare_symbol if compare_symbol != row["symbol"] else None
         price_krw = upbit_prices.get(row["symbol"])
         price_usd = safe_div(price_krw, FX_USD_KRW)
         circulating_supply = to_float(detail.get("circulatingSupply"))
@@ -930,6 +935,8 @@ def fetch_upbit() -> tuple[list[dict], dict[str, list[dict]]]:
         merged = {
             **row,
             **detail,
+            "compareSymbol": compare_symbol,
+            "symbolAliasOf": symbol_alias_of,
             "priceKrw": price_krw,
             "priceUsd": price_usd,
             "priceSource": "upbit_krw_ticker" if price_krw is not None else "upbit_price_missing",
@@ -1222,10 +1229,14 @@ def has_name_key_overlap(row_a: dict, row_b: dict) -> bool:
 def build_rows_by_symbol(rows: list[dict]) -> dict[str, list[dict]]:
     indexed: dict[str, list[dict]] = {}
     for row in rows:
-        symbol = str(row.get("symbol") or "").upper()
-        if not symbol:
-            continue
-        indexed.setdefault(symbol, []).append(row)
+        symbols = {
+            str(row.get("symbol") or "").upper(),
+            str(row.get("compareSymbol") or "").upper(),
+        }
+        for symbol in symbols:
+            if not symbol:
+                continue
+            indexed.setdefault(symbol, []).append(row)
     return indexed
 
 
