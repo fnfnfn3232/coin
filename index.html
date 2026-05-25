@@ -92,11 +92,36 @@
       display: grid;
       grid-template-columns: 1fr auto;
       gap: 8px;
+      align-items: start;
+    }
+
+    .lock-input-wrap {
+      display: grid;
+      gap: 7px;
+      min-width: 0;
     }
 
     .lock-form input {
       width: 100%;
       min-width: 0;
+    }
+
+    .lock-caps-warning {
+      display: inline-flex;
+      align-items: center;
+      width: fit-content;
+      max-width: 100%;
+      padding: 6px 9px;
+      border: 1px solid rgba(255, 204, 120, 0.36);
+      border-radius: 10px;
+      background: rgba(255, 184, 77, 0.1);
+      color: #ffd99a;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .lock-caps-warning[hidden] {
+      display: none;
     }
 
     .lock-error {
@@ -930,7 +955,10 @@
       <h2 class="lock-title">비밀번호 입력</h2>
       <p class="lock-desc">설정된 비밀번호를 입력해야 이 페이지를 볼 수 있습니다.</p>
       <form class="lock-form" id="lockForm">
-        <input id="lockPasswordInput" type="password" autocomplete="off" placeholder="비밀번호" />
+        <div class="lock-input-wrap">
+          <input id="lockPasswordInput" type="password" autocomplete="off" placeholder="비밀번호" />
+          <div class="lock-caps-warning" id="lockCapsWarning" role="status" aria-live="polite" hidden>Caps Lock이 켜져 있습니다.</div>
+        </div>
         <button type="submit" id="lockSubmitBtn">확인</button>
       </form>
       <div class="lock-error" id="lockError"></div>
@@ -1105,19 +1133,32 @@
       const lockExtendBtn = document.getElementById("lockExtendBtn");
       const lockForm = document.getElementById("lockForm");
       const lockPasswordInput = document.getElementById("lockPasswordInput");
+      const lockCapsWarning = document.getElementById("lockCapsWarning");
       const lockError = document.getElementById("lockError");
+
+      function setLockCapsWarning(active) {
+        lockCapsWarning.hidden = !active;
+      }
+
+      function updateLockCapsWarning(event) {
+        if (event && typeof event.getModifierState === "function") {
+          setLockCapsWarning(event.getModifierState("CapsLock"));
+        }
+      }
 
       function showSiteLock() {
         document.body.classList.add("locked");
         siteLock.classList.remove("hidden");
         lockPasswordInput.value = "";
         lockError.textContent = "";
+        setLockCapsWarning(false);
         window.setTimeout(() => lockPasswordInput.focus(), 0);
       }
 
       function hideSiteLock() {
         document.body.classList.remove("locked");
         siteLock.classList.add("hidden");
+        setLockCapsWarning(false);
       }
 
       function getLockAuthUntil() {
@@ -1200,10 +1241,19 @@
           renderLockTtl();
           return;
         }
-        lockError.textContent = "비밀번호가 맞지 않습니다.";
+        if (value && value.toLowerCase() === SITE_PASSWORD.toLowerCase()) {
+          setLockCapsWarning(true);
+          lockError.textContent = "Caps Lock 때문에 대문자로 입력된 것 같습니다.";
+        } else {
+          lockError.textContent = "비밀번호가 맞지 않습니다.";
+        }
         lockPasswordInput.value = "";
         lockPasswordInput.focus();
       });
+
+      lockPasswordInput.addEventListener("keydown", updateLockCapsWarning);
+      lockPasswordInput.addEventListener("keyup", updateLockCapsWarning);
+      lockPasswordInput.addEventListener("blur", () => setLockCapsWarning(false));
 
       lockExtendBtn.addEventListener("click", () => {
         const until = getLockAuthUntil();
