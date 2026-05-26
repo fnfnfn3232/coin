@@ -25,6 +25,15 @@ COINNESS_NEWS_MAX_ITEMS = 1000
 COINNESS_NEWS_BATCH_LIMIT = 20
 COINNESS_NEWS_ENDPOINT = "https://api.coinness.com/feed/v1/breaking-news"
 NEWS_RETENTION_DAYS = 7
+COINGECKO_MARKETS_ENDPOINT = "https://api.coingecko.com/api/v3/coins/markets"
+COINGECKO_MARKETS_PAGE_SIZE = 250
+COINGECKO_MARKETS_MAX_PAGES = 4
+COINBASE_CURRENCIES_ENDPOINT = "https://api.exchange.coinbase.com/currencies"
+ETHEREUM_RPC_ENDPOINT = "https://ethereum-rpc.publicnode.com"
+ERC20_DECIMALS_SELECTOR = "0x313ce567"
+ERC20_TOTAL_SUPPLY_SELECTOR = "0x18160ddd"
+CONTRACT_SUPPLY_WORKERS = 8
+CONTRACT_SUPPLY_MAX_REQUESTS = 260
 UPBIT_PREFER_BITHUMB_FILL_SYMBOL_MAP = {
     "1INCH": "1INCH",
     "BLEND": "BLEND",
@@ -171,6 +180,30 @@ def fetch_json(url: str, *, retries: int = 3, pause: float = 1.0) -> dict | list
                 headers={
                     "User-Agent": USER_AGENT,
                     "Accept": "application/json,text/plain,*/*",
+                },
+            )
+            with urllib.request.urlopen(request, timeout=45) as response:
+                charset = response.headers.get_content_charset() or "utf-8"
+                return json.loads(response.read().decode(charset))
+        except Exception as error:  # noqa: BLE001
+            last_error = error
+            if attempt < retries - 1:
+                time.sleep(pause * (attempt + 1))
+    raise last_error  # type: ignore[misc]
+
+
+def fetch_json_post(url: str, payload: object, *, retries: int = 3, pause: float = 1.0) -> dict | list:
+    last_error = None
+    body = json.dumps(payload).encode("utf-8")
+    for attempt in range(retries):
+        try:
+            request = urllib.request.Request(
+                url,
+                data=body,
+                headers={
+                    "User-Agent": USER_AGENT,
+                    "Accept": "application/json,text/plain,*/*",
+                    "Content-Type": "application/json",
                 },
             )
             with urllib.request.urlopen(request, timeout=45) as response:
@@ -1098,28 +1131,65 @@ def fetch_coinbase() -> list[dict]:
     return rows
 
 
-def pick_first_candidate_with_any_signal(candidate_rows: list[dict]) -> dict | None:
+def pick_first_candidate_with_market_signal(candidate_rows: list[dict]) -> dict | None:
     for candidate in candidate_rows:
         has_market_cap = to_float(candidate.get("marketCapUsd")) is not None or to_float(candidate.get("marketCapKrw")) is not None
         has_price = to_float(candidate.get("priceUsd")) is not None or to_float(candidate.get("priceKrw")) is not None
-        has_supply = to_float(candidate.get("circulatingSupply")) is not None or to_float(candidate.get("totalSupply")) is not None
-        if has_market_cap or has_price or has_supply:
+        if has_market_cap or has_price:
             return candidate
     return None
 
 
-def pick_reference_fill_candidate(target_row: dict, candidate_rows: list[dict]) -> dict | None:
+def derive_circulating_supply(
+    *,
+    market_cap_usd: float | None,
+    market_cap_krw: float | None,
+    price_usd: float | None,
+    price_krw: float | None,
+) -> float | None:
+    if market_cap_usd is not None and price_usd is not None:
+        return safe_div(market_cap_usd, price_usd)
+    if market_cap_krw is not None and price_krw is not None:
+        return safe_div(market_cap_krw, price_krw)
+    return None
+
+
+def pick_reference_market_candidate(target_row: dict, candidate_rows: list[dict]) -> dict | None:
     symbol = str(target_row.get("compareSymbol") or target_row.get("symbol") or "").upper()
     if symbol in AMBIGUOUS_SYMBOLS_REQUIRE_NAME_OVERLAP:
-        return pick_supply_fill_candidate(target_row, candidate_rows) or next(
+        return next(
             (
                 candidate
                 for candidate in candidate_rows
                 if has_name_key_overlap(target_row, candidate)
+                and (
+                    to_float(candidate.get("marketCapUsd")) is not None
+                    or to_float(candidate.get("marketCapKrw")) is not None
+                    or to_float(candidate.get("priceUsd")) is not None
+                    or to_float(candidate.get("priceKrw")) is not None
+                )
             ),
             None,
         )
-    return pick_first_candidate_with_any_signal(candidate_rows)
+    return pick_first_candidate_with_market_signal(candidate_rows)
+
+
+def pick_reference_supply_candidate(target_row: dict, candidate_rows: list[dict]) -> dict | None:
+    symbol = str(target_row.get("compareSymbol") or target_row.get("symbol") or "").upper()
+    if symbol in AMBIGUOUS_SYMBOLS_REQUIRE_NAME_OVERLAP:
+        return pick_supply_fill_candidate(target_row, candidate_rows)
+    return pick_first_candidate_with_supply(candidate_rows)
+
+
+def copy_positive_numbers(target_row: dict, source_row: dict, keys: tuple[str, ...]) -> bool:
+    changed = False
+    for key in keys:
+        number = to_float(source_row.get(key))
+        if number is not None:
+            if target_row.get(key) != number:
+                changed = True
+            target_row[key] = number
+    return changed
 
 
 def apply_coinbase_reference_fills(
@@ -1131,48 +1201,65 @@ def apply_coinbase_reference_fills(
     binance_by_symbol = build_rows_by_symbol(binance_rows)
     upbit_by_symbol = build_rows_by_symbol(upbit_rows)
     bithumb_by_symbol = build_rows_by_symbol(bithumb_rows)
+    reference_sources = (
+        ("binance_symbol_list", binance_by_symbol),
+        ("upbit_info_tab_cmc_first", upbit_by_symbol),
+        ("bithumb_main_today_price", bithumb_by_symbol),
+    )
 
     for coinbase_row in coinbase_rows:
         symbol = str(coinbase_row.get("compareSymbol") or coinbase_row.get("symbol") or "").upper()
         if not symbol:
             continue
 
-        candidate = pick_reference_fill_candidate(coinbase_row, binance_by_symbol.get(symbol, []))
-        source_detail = "binance_symbol_list"
+        market_candidate = None
+        market_source_detail = ""
+        for source_detail, rows_by_symbol in reference_sources:
+            market_candidate = pick_reference_market_candidate(coinbase_row, rows_by_symbol.get(symbol, []))
+            if market_candidate is not None:
+                market_source_detail = source_detail
+                break
 
-        if candidate is None:
-            candidate = pick_reference_fill_candidate(coinbase_row, upbit_by_symbol.get(symbol, []))
-            source_detail = "upbit_info_tab_cmc_first"
-        if candidate is None:
-            candidate = pick_reference_fill_candidate(coinbase_row, bithumb_by_symbol.get(symbol, []))
-            source_detail = "bithumb_main_today_price"
-        if candidate is None:
+        supply_candidate = None
+        supply_source_detail = ""
+        for source_detail, rows_by_symbol in reference_sources:
+            supply_candidate = pick_reference_supply_candidate(coinbase_row, rows_by_symbol.get(symbol, []))
+            if supply_candidate is not None:
+                supply_source_detail = source_detail
+                break
+
+        if market_candidate is None and supply_candidate is None:
             continue
 
-        for key in (
-            "marketCapUsd",
-            "marketCapKrw",
-            "priceUsd",
-            "priceKrw",
-            "circulatingSupply",
-            "totalSupply",
-            "fdvUsd",
-            "fdvKrw",
-            "circulatingRatio",
-        ):
-            value = candidate.get(key)
-            if key == "circulatingRatio":
-                number = float(value) if isinstance(value, (int, float)) else None
-                if number is not None:
-                    coinbase_row[key] = number
-                continue
-            number = to_float(value)
-            if number is not None:
-                coinbase_row[key] = number
+        if market_candidate is not None:
+            copy_positive_numbers(
+                coinbase_row,
+                market_candidate,
+                ("marketCapUsd", "marketCapKrw", "priceUsd", "priceKrw"),
+            )
+            coinbase_row["priceSource"] = str(market_candidate.get("priceSource") or coinbase_row.get("priceSource") or "")
+
+        if supply_candidate is not None:
+            supply_changed = copy_positive_numbers(
+                coinbase_row,
+                supply_candidate,
+                ("circulatingSupply", "totalSupply"),
+            )
+            ratio = supply_candidate.get("circulatingRatio")
+            if isinstance(ratio, (int, float)) and ratio >= 0:
+                coinbase_row["circulatingRatio"] = float(ratio)
+            else:
+                coinbase_row["circulatingRatio"] = compute_circulating_ratio(
+                    to_float(coinbase_row.get("circulatingSupply")),
+                    to_float(coinbase_row.get("totalSupply")),
+                )
+            coinbase_row["supplyDetail"] = f"coinbase_supply_fill:{supply_source_detail}"
+            if supply_changed:
+                coinbase_row["fdvUsd"] = None
+                coinbase_row["fdvKrw"] = None
 
         coinbase_row["capSource"] = "coinbase_fill_same_symbol"
-        coinbase_row["capSourceDetail"] = f"coinbase_exchange_markets|{source_detail}"
-        coinbase_row["priceSource"] = str(candidate.get("priceSource") or coinbase_row.get("priceSource") or "")
+        coinbase_row["capSourceDetail"] = f"coinbase_exchange_markets|{market_source_detail or supply_source_detail}"
         if to_float(coinbase_row.get("marketCapUsd")) is not None or to_float(coinbase_row.get("marketCapKrw")) is not None:
             coinbase_row["status"] = "ok"
 
@@ -1274,6 +1361,329 @@ def pick_supply_fill_candidate(target_row: dict, candidate_rows: list[dict]) -> 
             continue
         return candidate
     return None
+
+
+def row_has_complete_supply(row: dict) -> bool:
+    return (
+        to_float(row.get("circulatingSupply")) is not None
+        and to_float(row.get("totalSupply")) is not None
+    )
+
+
+def row_symbols(row: dict) -> set[str]:
+    return {
+        symbol
+        for symbol in {
+            str(row.get("symbol") or "").upper(),
+            str(row.get("compareSymbol") or "").upper(),
+        }
+        if symbol
+    }
+
+
+def fetch_coingecko_supply_candidates(target_symbols: set[str]) -> dict[str, list[dict]]:
+    if not target_symbols:
+        return {}
+
+    candidates: dict[str, list[dict]] = {}
+    for page in range(1, COINGECKO_MARKETS_MAX_PAGES + 1):
+        query = urllib.parse.urlencode(
+            {
+                "vs_currency": "usd",
+                "order": "market_cap_desc",
+                "per_page": COINGECKO_MARKETS_PAGE_SIZE,
+                "page": page,
+                "sparkline": "false",
+            }
+        )
+        payload = fetch_json(f"{COINGECKO_MARKETS_ENDPOINT}?{query}", retries=2, pause=1.5)
+        if not isinstance(payload, list) or not payload:
+            break
+
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("symbol") or "").upper()
+            if symbol not in target_symbols:
+                continue
+
+            circulating_supply = to_float(item.get("circulating_supply"))
+            total_supply = to_float(item.get("max_supply")) or to_float(item.get("total_supply"))
+            if circulating_supply is None and total_supply is None:
+                continue
+
+            gecko_id = str(item.get("id") or "")
+            name = str(item.get("name") or symbol)
+            fdv_usd = to_float(item.get("fully_diluted_valuation"))
+            candidate = {
+                "symbol": symbol,
+                "name": name,
+                "englishName": name,
+                "koreanName": name,
+                "circulatingSupply": circulating_supply,
+                "totalSupply": total_supply,
+                "circulatingRatio": compute_circulating_ratio(circulating_supply, total_supply),
+                "fdvUsd": fdv_usd,
+                "fdvKrw": fdv_usd * FX_USD_KRW if fdv_usd is not None else None,
+                "marketCapUsd": to_float(item.get("market_cap")),
+                "priceUsd": to_float(item.get("current_price")),
+                "marketCapRank": item.get("market_cap_rank"),
+                "supplyDetail": f"coingecko_markets:{gecko_id}",
+                "nameKeys": list(
+                    {
+                        key
+                        for key in {
+                            normalize_text(symbol),
+                            normalize_text(name),
+                            normalize_text(gecko_id),
+                        }
+                        if key
+                    }
+                ),
+            }
+            candidates.setdefault(symbol, []).append(candidate)
+
+    return candidates
+
+
+def pick_coingecko_supply_candidate(target_row: dict, candidate_rows: list[dict]) -> dict | None:
+    if not candidate_rows:
+        return None
+
+    symbols = row_symbols(target_row)
+    symbol_keys = {normalize_text(symbol) for symbol in symbols}
+    target_keys = set(target_row.get("nameKeys") or [])
+    non_symbol_keys = target_keys - symbol_keys
+
+    for candidate in candidate_rows:
+        candidate_keys = set(candidate.get("nameKeys") or [])
+        if non_symbol_keys and (non_symbol_keys & candidate_keys):
+            return candidate
+
+    if len(candidate_rows) == 1:
+        symbol = next(iter(symbols), "")
+        if symbol not in AMBIGUOUS_SYMBOLS_REQUIRE_NAME_OVERLAP:
+            return candidate_rows[0]
+
+    return None
+
+
+def apply_coingecko_supply_fills(board_name: str, rows: list[dict], candidates_by_symbol: dict[str, list[dict]]) -> None:
+    for row in rows:
+        if row_has_complete_supply(row):
+            continue
+
+        candidate = None
+        for symbol in row_symbols(row):
+            candidate = pick_coingecko_supply_candidate(row, candidates_by_symbol.get(symbol, []))
+            if candidate is not None:
+                break
+        if candidate is None:
+            continue
+
+        current_circulating_supply = to_float(row.get("circulatingSupply"))
+        current_total_supply = to_float(row.get("totalSupply"))
+        candidate_circulating_supply = to_float(candidate.get("circulatingSupply"))
+        candidate_total_supply = to_float(candidate.get("totalSupply"))
+        circulating_supply = current_circulating_supply or candidate_circulating_supply
+        total_supply = current_total_supply or candidate_total_supply
+        if circulating_supply is None and total_supply is None:
+            continue
+
+        fdv_usd = to_float(candidate.get("fdvUsd"))
+
+        row["circulatingSupply"] = circulating_supply
+        row["totalSupply"] = total_supply
+        row["circulatingRatio"] = compute_circulating_ratio(circulating_supply, total_supply)
+        row["supplyDetail"] = f"{board_name}_supply_fill:{candidate.get('supplyDetail')}"
+        if fdv_usd is not None:
+            row["fdvUsd"] = fdv_usd
+            row["fdvKrw"] = fdv_usd * FX_USD_KRW
+
+
+def fetch_erc20_total_supply(address: str) -> float | None:
+    calls = [
+        {
+            "jsonrpc": "2.0",
+            "id": "decimals",
+            "method": "eth_call",
+            "params": [{"to": address, "data": ERC20_DECIMALS_SELECTOR}, "latest"],
+        },
+        {
+            "jsonrpc": "2.0",
+            "id": "totalSupply",
+            "method": "eth_call",
+            "params": [{"to": address, "data": ERC20_TOTAL_SUPPLY_SELECTOR}, "latest"],
+        },
+    ]
+    payload = fetch_json_post(ETHEREUM_RPC_ENDPOINT, calls, retries=2, pause=1.0)
+    if not isinstance(payload, list):
+        return None
+
+    result_map = {
+        str(item.get("id")): item.get("result")
+        for item in payload
+        if isinstance(item, dict) and item.get("result")
+    }
+    try:
+        decimals = int(str(result_map.get("decimals") or "0"), 16)
+        raw_total_supply = int(str(result_map.get("totalSupply") or "0"), 16)
+    except ValueError:
+        return None
+    if decimals < 0 or decimals > 36 or raw_total_supply <= 0:
+        return None
+    return raw_total_supply / (10**decimals)
+
+
+def fetch_coinbase_contract_supply_candidates(target_rows: list[dict]) -> dict[str, list[dict]]:
+    target_symbols = {
+        symbol
+        for row in target_rows
+        if not row_has_complete_supply(row)
+        for symbol in row_symbols(row)
+    }
+    if not target_symbols:
+        return {}
+
+    payload = fetch_json(COINBASE_CURRENCIES_ENDPOINT, retries=2, pause=1.5)
+    if not isinstance(payload, list):
+        return {}
+
+    refs: list[dict] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("id") or "").upper()
+        if symbol not in target_symbols:
+            continue
+        supported_networks = item.get("supported_networks") or []
+        if not isinstance(supported_networks, list):
+            continue
+        eth_network = next(
+            (
+                network
+                for network in supported_networks
+                if isinstance(network, dict)
+                and str(network.get("id") or "").lower() == "ethereum"
+                and str(network.get("contract_address") or "").startswith("0x")
+            ),
+            None,
+        )
+        if not eth_network:
+            continue
+        name = str(item.get("name") or item.get("display_name") or symbol)
+        refs.append(
+            {
+                "symbol": symbol,
+                "name": name,
+                "englishName": name,
+                "koreanName": name,
+                "contractAddress": str(eth_network.get("contract_address")),
+                "supplyDetail": f"coinbase_erc20_total_supply:{eth_network.get('contract_address')}",
+                "nameKeys": list(
+                    {
+                        key
+                        for key in {
+                            normalize_text(symbol),
+                            normalize_text(name),
+                            normalize_text(item.get("display_name") or ""),
+                        }
+                        if key
+                    }
+                ),
+            }
+        )
+
+    refs_by_symbol: dict[str, list[dict]] = {}
+    for ref in refs:
+        refs_by_symbol.setdefault(str(ref.get("symbol") or ""), []).append(ref)
+
+    selected_refs: dict[str, dict] = {}
+    for row in target_rows:
+        if row_has_complete_supply(row):
+            continue
+        for symbol in row_symbols(row):
+            ref = pick_coingecko_supply_candidate(row, refs_by_symbol.get(symbol, []))
+            if ref is not None:
+                selected_refs[str(ref["contractAddress"]).lower()] = ref
+                break
+
+    candidates_by_symbol: dict[str, list[dict]] = {}
+
+    def fetch_contract_ref(ref: dict) -> tuple[dict, float | None]:
+        try:
+            return ref, fetch_erc20_total_supply(str(ref["contractAddress"]))
+        except Exception:  # noqa: BLE001
+            return ref, None
+
+    with ThreadPoolExecutor(max_workers=CONTRACT_SUPPLY_WORKERS) as executor:
+        futures = {
+            executor.submit(fetch_contract_ref, ref): ref
+            for ref in list(selected_refs.values())[:CONTRACT_SUPPLY_MAX_REQUESTS]
+        }
+        for future in as_completed(futures):
+            ref, total_supply = future.result()
+            if total_supply is None:
+                continue
+            symbol = str(ref.get("symbol") or "").upper()
+            candidate = {
+                **ref,
+                "totalSupply": total_supply,
+                "circulatingSupply": None,
+                "circulatingRatio": None,
+            }
+            candidates_by_symbol.setdefault(symbol, []).append(candidate)
+
+    return candidates_by_symbol
+
+
+def apply_contract_total_supply_fills(
+    board_name: str,
+    rows: list[dict],
+    candidates_by_symbol: dict[str, list[dict]],
+) -> None:
+    for row in rows:
+        if to_float(row.get("totalSupply")) is not None:
+            continue
+
+        candidate = None
+        for symbol in row_symbols(row):
+            candidate = pick_coingecko_supply_candidate(row, candidates_by_symbol.get(symbol, []))
+            if candidate is not None:
+                break
+        if candidate is None:
+            continue
+
+        total_supply = to_float(candidate.get("totalSupply"))
+        if total_supply is None:
+            continue
+
+        circulating_supply = to_float(row.get("circulatingSupply"))
+        row["totalSupply"] = total_supply
+        row["circulatingRatio"] = compute_circulating_ratio(circulating_supply, total_supply)
+        row["supplyDetail"] = f"{board_name}_supply_fill:{candidate.get('supplyDetail')}"
+
+
+def apply_implied_circulating_supply_fills(board_name: str, rows: list[dict]) -> None:
+    for row in rows:
+        if to_float(row.get("circulatingSupply")) is not None:
+            continue
+
+        circulating_supply = derive_circulating_supply(
+            market_cap_usd=to_float(row.get("marketCapUsd")),
+            market_cap_krw=to_float(row.get("marketCapKrw")),
+            price_usd=to_float(row.get("priceUsd")),
+            price_krw=to_float(row.get("priceKrw")),
+        )
+        if circulating_supply is None:
+            continue
+
+        row["circulatingSupply"] = circulating_supply
+        row["circulatingRatio"] = compute_circulating_ratio(
+            circulating_supply,
+            to_float(row.get("totalSupply")),
+        )
+        row["supplyDetail"] = f"{board_name}_supply_fill:implied_market_cap_price"
 
 
 def apply_bithumb_supply_fills(
@@ -1564,7 +1974,39 @@ def make_payload(previous_payload: dict | None = None) -> dict:
     apply_upbit_live_fills(upbit_rows, binance_rows, bithumb_rows)
     apply_upbit_targeted_fills(upbit_rows, bithumb_rows)
     apply_bithumb_supply_fills(bithumb_rows, upbit_rows, binance_rows)
+
+    all_supply_rows = binance_rows + upbit_rows + bithumb_rows + coinbase_rows
+    supply_target_symbols = set()
+    for rows in (binance_rows, upbit_rows, bithumb_rows, coinbase_rows):
+        for row in rows:
+            if not row_has_complete_supply(row):
+                supply_target_symbols.update(row_symbols(row))
+
+    coingecko_supply_candidates = {}
+    try:
+        coingecko_supply_candidates = fetch_coingecko_supply_candidates(supply_target_symbols)
+    except Exception as error:  # noqa: BLE001
+        coingecko_supply_candidates = {}
+
+    coinbase_contract_supply_candidates = {}
+    try:
+        coinbase_contract_supply_candidates = fetch_coinbase_contract_supply_candidates(all_supply_rows)
+    except Exception as error:  # noqa: BLE001
+        refresh_issues["coinbase_contract_supply"] = f"fetch_failed:{error}"
+
+    for board_name, rows in (
+        ("binance", binance_rows),
+        ("upbit", upbit_rows),
+        ("bithumb", bithumb_rows),
+    ):
+        apply_coingecko_supply_fills(board_name, rows, coingecko_supply_candidates)
+        apply_contract_total_supply_fills(board_name, rows, coinbase_contract_supply_candidates)
+        apply_implied_circulating_supply_fills(board_name, rows)
+
     apply_coinbase_reference_fills(coinbase_rows, binance_rows, upbit_rows, bithumb_rows)
+    apply_coingecko_supply_fills("coinbase", coinbase_rows, coingecko_supply_candidates)
+    apply_contract_total_supply_fills("coinbase", coinbase_rows, coinbase_contract_supply_candidates)
+    apply_implied_circulating_supply_fills("coinbase", coinbase_rows)
 
     boards = {
         "binance": finalize_rows(binance_rows),

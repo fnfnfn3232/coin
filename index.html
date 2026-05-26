@@ -1597,7 +1597,7 @@
           const capCount = rows.filter((row) => Number.isFinite(Number(row.marketCapUsd)) || Number.isFinite(Number(row.sortCapUsd))).length;
           const priceCount = rows.filter((row) => Number.isFinite(Number(row.priceUsd)) || Number.isFinite(Number(row.priceKrw))).length;
           const supplyCount = rows.filter((row) =>
-            Number.isFinite(Number(row.circulatingSupply)) || Number.isFinite(Number(row.totalSupply))
+            toPositiveNumber(row.circulatingSupply) !== null || toPositiveNumber(row.totalSupply) !== null
           ).length;
           return [
             boardLabel(board),
@@ -1942,8 +1942,9 @@
     }
 
     function formatTokenAmount(value) {
-      if (!Number.isFinite(value)) return "-";
-      const amount = Math.floor(Math.max(0, value));
+      const number = toPositiveNumber(value);
+      if (number === null) return "-";
+      const amount = Math.floor(number);
       const jo = Math.floor(amount / 1_0000_0000_0000);
       const eok = Math.floor((amount % 1_0000_0000_0000) / 1_0000_0000);
       const man = Math.floor((amount % 1_0000_0000) / 1_0000);
@@ -1967,26 +1968,33 @@
     }
 
     function supplyDisplay(row) {
-      const fdvUsd = Number(row.fdvUsd);
-      const fdvKrw = Number(row.fdvKrw);
-      const circulating = Number(row.circulatingSupply);
-      const total = Number(row.totalSupply);
-      const ratio = Number(row.circulatingRatio);
+      const fdvUsd = toPositiveNumber(row.fdvUsd);
+      const fdvKrw = toPositiveNumber(row.fdvKrw);
+      const circulating = toPositiveNumber(row.circulatingSupply);
+      const total = toPositiveNumber(row.totalSupply);
+      const ratioNumber = row.circulatingRatio === null || row.circulatingRatio === undefined || row.circulatingRatio === ""
+        ? null
+        : Number(row.circulatingRatio);
+      const ratio = Number.isFinite(ratioNumber) && ratioNumber > 0 ? ratioNumber : null;
 
       let fdvText = TEXT.unknown;
-      if (Number.isFinite(fdvKrw)) {
+      if (fdvKrw !== null) {
         fdvText = formatKrwShort(fdvKrw);
-      } else if (Number.isFinite(fdvUsd)) {
-        const fdvKrwFallback = fdvUsd * Number(data.fxUsdKrw || 0);
+      } else if (fdvUsd !== null) {
+        const fx = toPositiveNumber(data.fxUsdKrw);
+        const fdvKrwFallback = fx !== null ? fdvUsd * fx : null;
         fdvText = Number.isFinite(fdvKrwFallback) ? formatKrwShort(fdvKrwFallback) : TEXT.unknown;
       }
 
       const circulatingText = formatTokenAmount(circulating);
       const totalText = formatTokenAmount(total);
-      const ratioText = Number.isFinite(ratio) ? `${formatNumber(ratio * 100, 2)}%` : "-";
+      const ratioText = ratio !== null ? `${formatNumber(ratio * 100, 2)}%` : "-";
+      const mainText = circulating === null && total === null
+        ? TEXT.noSupply
+        : `유통량 ${circulatingText} · 총발행량 ${totalText} · 유통비율 ${ratioText}`;
 
       return {
-        main: `유통량 ${circulatingText} · 총발행량 ${totalText} · 유통비율 ${ratioText}`,
+        main: mainText,
         sub: `총발행 기준 시총 ${fdvText}`,
       };
     }
@@ -2550,28 +2558,45 @@
           const map = new Map();
           for (const row of data.boards?.[boardName] || []) {
             const symbol = getComparableSymbol(row);
-            if (!symbol || map.has(symbol)) continue;
-            map.set(symbol, row);
+            if (!symbol) continue;
+            if (!map.has(symbol)) map.set(symbol, []);
+            map.get(symbol).push(row);
           }
           symbolMaps.push({ boardName, map });
         }
+
+        const detailForBoard = (boardName) => {
+          if (boardName === "binance") return "binance_symbol_list";
+          if (boardName === "upbit") return "upbit_info_tab_cmc_first";
+          return "bithumb_main_today_price";
+        };
 
         let changed = 0;
         for (const row of rows) {
           const symbol = getComparableSymbol(row);
           if (!symbol) continue;
 
-          let ref = null;
-          let refBoardName = "";
-          for (const source of symbolMaps) {
-            const hit = source.map.get(symbol);
-            if (hit) {
-              ref = hit;
-              refBoardName = source.boardName;
-              break;
+          const findReference = (predicate) => {
+            for (const source of symbolMaps) {
+              for (const hit of source.map.get(symbol) || []) {
+                if (predicate(hit)) {
+                  return { row: hit, boardName: source.boardName };
+                }
+              }
             }
-          }
-          if (!ref) continue;
+            return null;
+          };
+          const marketRef = findReference((candidate) =>
+            toPositiveNumber(candidate.marketCapUsd) !== null ||
+            toPositiveNumber(candidate.marketCapKrw) !== null ||
+            toPositiveNumber(candidate.priceUsd) !== null ||
+            toPositiveNumber(candidate.priceKrw) !== null
+          );
+          const supplyRef = findReference((candidate) =>
+            toPositiveNumber(candidate.circulatingSupply) !== null ||
+            toPositiveNumber(candidate.totalSupply) !== null
+          );
+          if (!marketRef && !supplyRef) continue;
 
           const before = JSON.stringify([
             row.marketCapUsd,
@@ -2585,36 +2610,43 @@
             row.circulatingRatio,
           ]);
 
-          for (const key of [
-            "marketCapUsd",
-            "marketCapKrw",
-            "priceUsd",
-            "priceKrw",
-            "circulatingSupply",
-            "totalSupply",
-            "fdvUsd",
-            "fdvKrw",
-          ]) {
-            const value = toPositiveNumber(ref[key]);
-            if (value !== null) {
-              row[key] = value;
+          if (marketRef) {
+            for (const key of ["marketCapUsd", "marketCapKrw", "priceUsd", "priceKrw"]) {
+              const value = toPositiveNumber(marketRef.row[key]);
+              if (value !== null) {
+                row[key] = value;
+              }
+            }
+            row.priceSource = marketRef.row.priceSource || row.priceSource;
+          }
+
+          if (supplyRef) {
+            let supplyChanged = false;
+            for (const key of ["circulatingSupply", "totalSupply"]) {
+              const value = toPositiveNumber(supplyRef.row[key]);
+              if (value !== null) {
+                if (row[key] !== value) supplyChanged = true;
+                row[key] = value;
+              }
+            }
+            const ratioNumber = Number(supplyRef.row.circulatingRatio);
+            if (Number.isFinite(ratioNumber) && ratioNumber >= 0) {
+              row.circulatingRatio = ratioNumber;
+            } else {
+              row.circulatingRatio = computeCirculatingRatio(
+                toPositiveNumber(row.circulatingSupply),
+                toPositiveNumber(row.totalSupply)
+              );
+            }
+            row.supplyDetail = `coinbase_supply_fill:${detailForBoard(supplyRef.boardName)}`;
+            if (supplyChanged) {
+              row.fdvUsd = null;
+              row.fdvKrw = null;
             }
           }
 
-          const ratioNumber = Number(ref.circulatingRatio);
-          if (Number.isFinite(ratioNumber) && ratioNumber >= 0) {
-            row.circulatingRatio = ratioNumber;
-          }
-
           row.capSource = "coinbase_fill_same_symbol";
-          if (refBoardName === "binance") {
-            row.capSourceDetail = "coinbase_exchange_markets|binance_symbol_list";
-          } else if (refBoardName === "upbit") {
-            row.capSourceDetail = "coinbase_exchange_markets|upbit_info_tab_cmc_first";
-          } else {
-            row.capSourceDetail = "coinbase_exchange_markets|bithumb_main_today_price";
-          }
-          row.priceSource = ref.priceSource || row.priceSource;
+          row.capSourceDetail = `coinbase_exchange_markets|${detailForBoard((marketRef || supplyRef).boardName)}`;
 
           recomputeDerivedFields(row, { preferComputedCap: false });
           if (Number.isFinite(Number(row.marketCapUsd)) || Number.isFinite(Number(row.marketCapKrw))) {
@@ -3030,8 +3062,8 @@
         const withCapCount = rows.filter((row) => Number.isFinite(row.sortCapUsd)).length;
         const withPriceCount = rows.filter((row) => Number.isFinite(Number(row.priceUsd)) || Number.isFinite(Number(row.priceKrw))).length;
         const withSupplyCount = rows.filter((row) =>
-          Number.isFinite(Number(row.circulatingSupply)) ||
-          Number.isFinite(Number(row.totalSupply))
+          toPositiveNumber(row.circulatingSupply) !== null ||
+          toPositiveNumber(row.totalSupply) !== null
         ).length;
         const totalLabel = state.board === "triple"
           ? `4개 동시상장 ${formatNumber(rows.length, 0)}개`
