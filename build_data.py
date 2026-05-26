@@ -34,6 +34,7 @@ ERC20_DECIMALS_SELECTOR = "0x313ce567"
 ERC20_TOTAL_SUPPLY_SELECTOR = "0x18160ddd"
 CONTRACT_SUPPLY_WORKERS = 8
 CONTRACT_SUPPLY_MAX_REQUESTS = 260
+BITHUMB_BASIC_INFO_WORKERS = 8
 UPBIT_PREFER_BITHUMB_FILL_SYMBOL_MAP = {
     "1INCH": "1INCH",
     "BLEND": "BLEND",
@@ -1007,6 +1008,48 @@ def fetch_bithumb_prices() -> dict[str, float]:
     return prices
 
 
+def parse_bithumb_supply_quantity(value: object) -> float | None:
+    if isinstance(value, str) and value.strip() == "-":
+        return None
+    return to_float(value)
+
+
+def fetch_bithumb_basic_info_map(coin_types: list[str]) -> dict[str, dict]:
+    unique_coin_types = [
+        coin_type
+        for coin_type in dict.fromkeys(str(coin_type or "").strip() for coin_type in coin_types)
+        if coin_type
+    ]
+    if not unique_coin_types:
+        return {}
+
+    def fetch_one(coin_type: str) -> tuple[str, dict | None]:
+        query = urllib.parse.urlencode({"lang": "korean"})
+        url = (
+            "https://gw.bithumb.com/exchange/v2/trade/info-coin/"
+            f"{urllib.parse.quote(coin_type)}-C0100?{query}"
+        )
+        try:
+            payload = fetch_json(url, retries=2, pause=0.5)
+        except Exception:  # noqa: BLE001
+            return coin_type, None
+        if not isinstance(payload, dict) or payload.get("status") != 200:
+            return coin_type, None
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            return coin_type, None
+        return coin_type, data
+
+    basic_info_by_coin_type: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=BITHUMB_BASIC_INFO_WORKERS) as executor:
+        futures = {executor.submit(fetch_one, coin_type): coin_type for coin_type in unique_coin_types}
+        for future in as_completed(futures):
+            coin_type, data = future.result()
+            if data:
+                basic_info_by_coin_type[coin_type] = data
+    return basic_info_by_coin_type
+
+
 def fetch_bithumb() -> list[dict]:
     cap_payload = fetch_json("https://gw.bithumb.com/exchange/v1/trade/coinmarketcap")
     cap_map = (cap_payload.get("data") or {}) if isinstance(cap_payload, dict) else {}
@@ -1017,6 +1060,9 @@ def fetch_bithumb() -> list[dict]:
     payload = fetch_json("https://gw.bithumb.com/exchange/v1/comn/intro")
     data = payload.get("data") or {}  # type: ignore[union-attr]
     krw_market = (data.get("coinsOnMarketList") or {}).get("C0100") or []
+    basic_info_by_coin_type = fetch_bithumb_basic_info_map(
+        [str(item.get("coinType") or "") for item in krw_market if isinstance(item, dict)]
+    )
     rows: list[dict] = []
     for item in krw_market:
         coin_type = item.get("coinType") or ""
@@ -1024,6 +1070,21 @@ def fetch_bithumb() -> list[dict]:
         symbol = str(item.get("coinSymbol") or "").upper()
         price_krw = bithumb_prices.get(symbol)
         price_usd = safe_div(price_krw, FX_USD_KRW)
+        basic_info = basic_info_by_coin_type.get(str(coin_type), {})
+        circulating_supply = parse_bithumb_supply_quantity(basic_info.get("marketAvailableSupply"))
+        total_supply = parse_bithumb_supply_quantity(basic_info.get("totalIssueQty"))
+        fdv_usd = compute_fdv_usd(
+            fdv_usd=None,
+            price_usd=price_usd,
+            total_supply=total_supply,
+            market_cap_usd=float(market_cap_krw) / FX_USD_KRW if market_cap_krw is not None else None,
+            circulating_supply=circulating_supply,
+        )
+        supply_sources = []
+        if circulating_supply is not None:
+            supply_sources.append("marketAvailableSupply")
+        if total_supply is not None:
+            supply_sources.append("totalIssueQty")
         row = {
                 "coinType": coin_type,
                 "symbol": symbol,
@@ -1038,15 +1099,20 @@ def fetch_bithumb() -> list[dict]:
                 "priceKrw": price_krw,
                 "priceUsd": price_usd,
                 "priceSource": "bithumb_public_ticker" if price_krw is not None else "bithumb_price_missing",
-                "circulatingSupply": None,
-                "totalSupply": None,
-                "fdvUsd": None,
-                "fdvKrw": None,
-                "circulatingRatio": None,
+                "circulatingSupply": circulating_supply,
+                "totalSupply": total_supply,
+                "fdvUsd": fdv_usd,
+                "fdvKrw": fdv_usd * FX_USD_KRW if fdv_usd is not None else None,
+                "circulatingRatio": compute_circulating_ratio(circulating_supply, total_supply),
                 "nativeCurrency": "KRW",
                 "marketCapRank": None,
                 "capSource": "bithumb_coinmarketcap" if market_cap_krw is not None else "bithumb_missing",
                 "capSourceDetail": "bithumb_main_today_price",
+                "supplyDetail": (
+                    "bithumb_basic_info:" + "|".join(supply_sources)
+                    if supply_sources
+                    else "bithumb_basic_info_missing"
+                ),
                 "status": "ok" if market_cap_krw is not None else "missing",
                 "nameKeys": list(
                     build_name_keys(
@@ -1693,9 +1759,9 @@ def apply_bithumb_supply_fills(
     binance_by_symbol = build_rows_by_symbol(binance_rows)
 
     for bithumb_row in bithumb_rows:
-        if to_float(bithumb_row.get("circulatingSupply")) is not None or to_float(
-            bithumb_row.get("totalSupply")
-        ) is not None:
+        current_circulating_supply = to_float(bithumb_row.get("circulatingSupply"))
+        current_total_supply = to_float(bithumb_row.get("totalSupply"))
+        if current_circulating_supply is not None and current_total_supply is not None:
             continue
 
         symbol = str(bithumb_row.get("symbol") or "").upper()
@@ -1726,8 +1792,13 @@ def apply_bithumb_supply_fills(
         if candidate is None:
             continue
 
-        circulating_supply = to_float(candidate.get("circulatingSupply"))
-        total_supply = to_float(candidate.get("totalSupply"))
+        candidate_circulating_supply = to_float(candidate.get("circulatingSupply"))
+        candidate_total_supply = to_float(candidate.get("totalSupply"))
+        circulating_supply = current_circulating_supply or candidate_circulating_supply
+        total_supply = current_total_supply or candidate_total_supply
+        if circulating_supply is None and total_supply is None:
+            continue
+
         price_usd = to_float(bithumb_row.get("priceUsd")) or to_float(candidate.get("priceUsd"))
         market_cap_usd = to_float(bithumb_row.get("marketCapUsd")) or to_float(candidate.get("marketCapUsd"))
         fdv_usd = compute_fdv_usd(
@@ -1743,7 +1814,9 @@ def apply_bithumb_supply_fills(
         bithumb_row["circulatingRatio"] = compute_circulating_ratio(circulating_supply, total_supply)
         bithumb_row["fdvUsd"] = fdv_usd
         bithumb_row["fdvKrw"] = fdv_usd * FX_USD_KRW if fdv_usd is not None else None
-        bithumb_row["supplyDetail"] = f"bithumb_supply_fill:{source_detail}"
+        previous_detail = str(bithumb_row.get("supplyDetail") or "").strip()
+        detail_prefix = f"{previous_detail}|" if previous_detail else ""
+        bithumb_row["supplyDetail"] = f"{detail_prefix}bithumb_supply_fill:{source_detail}"
 
 
 def apply_upbit_live_fills(
