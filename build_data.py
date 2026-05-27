@@ -1410,6 +1410,32 @@ def pick_first_candidate_with_cap(candidate_rows: list[dict]) -> dict | None:
     return None
 
 
+def apply_supply_from_reference(
+    target_row: dict,
+    candidate: dict,
+    *,
+    source_detail: str,
+    stale_source_detail: str,
+) -> bool:
+    circulating_supply = to_float(candidate.get("circulatingSupply"))
+    total_supply = to_float(candidate.get("totalSupply"))
+    if circulating_supply is None and total_supply is None:
+        return False
+
+    circulating_supply = circulating_supply or to_float(target_row.get("circulatingSupply"))
+    total_supply = total_supply or to_float(target_row.get("totalSupply"))
+    target_row["circulatingSupply"] = circulating_supply
+    target_row["totalSupply"] = total_supply
+    target_row["circulatingRatio"] = compute_circulating_ratio(circulating_supply, total_supply)
+    target_row["fdvUsd"] = None
+    target_row["fdvKrw"] = None
+    target_row["supplyDetail"] = (
+        f"stale_upbit_supply_date:{stale_source_detail}|"
+        f"{source_detail}|{candidate.get('supplyDetail') or 'supply_reference'}"
+    )
+    return True
+
+
 def pick_first_candidate_with_supply(candidate_rows: list[dict]) -> dict | None:
     for candidate in candidate_rows:
         if to_float(candidate.get("circulatingSupply")) is not None or to_float(candidate.get("totalSupply")) is not None:
@@ -1852,6 +1878,12 @@ def apply_upbit_live_fills(
                         f"stale_upbit_base_date:{base_date_text}|"
                         f"bithumb_main_today_price|preferred:{preferred_bithumb_symbol}"
                     )
+                    apply_supply_from_reference(
+                        upbit_row,
+                        preferred_candidate,
+                        source_detail=f"bithumb_basic_info|preferred:{preferred_bithumb_symbol}",
+                        stale_source_detail=str(upbit_row.get("supplyDetail") or base_date_text),
+                    )
                     upbit_row["status"] = "ok"
                     continue
 
@@ -1876,6 +1908,16 @@ def apply_upbit_live_fills(
         upbit_row["marketCapKrw"] = market_cap_usd * FX_USD_KRW
         upbit_row["capSource"] = candidate_source
         upbit_row["capSourceDetail"] = f"stale_upbit_base_date:{base_date_text}|{source_detail}"
+        apply_supply_from_reference(
+            upbit_row,
+            candidate,
+            source_detail=(
+                "bithumb_basic_info"
+                if candidate_source == "upbit_fill_from_bithumb_live"
+                else source_detail
+            ),
+            stale_source_detail=str(upbit_row.get("supplyDetail") or base_date_text),
+        )
         upbit_row["status"] = "ok"
 
 
