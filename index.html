@@ -144,6 +144,7 @@
       font-size: 12px;
       box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
       backdrop-filter: blur(8px);
+      transition: opacity 0.16s ease, transform 0.16s ease, visibility 0.16s ease, border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease;
     }
 
     .admin-launch:hover {
@@ -335,6 +336,22 @@
       display: grid;
       gap: 6px;
       justify-items: end;
+      transition: opacity 0.16s ease, transform 0.16s ease, visibility 0.16s ease;
+    }
+
+    body.scrolled-past-top .lock-ttl-wrap,
+    body.scrolled-past-top .admin-launch {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    body.scrolled-past-top .lock-ttl-wrap {
+      transform: translateY(-8px);
+    }
+
+    body.scrolled-past-top .admin-launch {
+      transform: translateY(8px);
     }
 
     .lock-ttl {
@@ -368,11 +385,11 @@
     }
 
     .scroll-controls {
+      display: none !important;
       position: fixed;
       right: clamp(18px, 1.8vw, 34px);
       bottom: clamp(110px, 16vh, 180px);
       z-index: 3500;
-      display: grid;
       gap: 5px;
       padding: 5px;
       border: 1px solid rgba(117, 221, 255, 0.34);
@@ -878,8 +895,7 @@
       }
 
       .sort-arrow {
-        font-size: 12px;
-        opacity: 0.9;
+        display: none;
       }
 
     tbody td {
@@ -990,17 +1006,82 @@
 
       }
 
-      @media (max-width: 640px) {
+      @media (max-width: 820px), (hover: none) and (pointer: coarse) {
+        body {
+          font-size: 15px;
+          line-height: 1.55;
+        }
+
         .shell {
           width: calc(100vw - 12px);
-        margin: 6px auto 18px;
-        padding: 8px;
-        border-radius: 18px;
-      }
+          margin: 6px auto 18px;
+          padding: 8px;
+          border-radius: 18px;
+        }
 
-      .panel, .hero, .controls {
-        border-radius: 16px;
-      }
+        .panel, .hero, .controls {
+          border-radius: 16px;
+        }
+
+        .hero,
+        .controls {
+          padding: 14px;
+        }
+
+        .eyebrow {
+          padding: 6px 10px;
+          font-size: 11px;
+        }
+
+        h1 {
+          margin-top: 10px;
+          font-size: 29px;
+          line-height: 1.08;
+          letter-spacing: -0.035em;
+        }
+
+        .view-link {
+          font-size: 21px;
+        }
+
+        .summary {
+          gap: 8px;
+          margin-top: 14px;
+        }
+
+        .stat {
+          padding: 12px;
+        }
+
+        .stat-value {
+          font-size: 22px;
+        }
+
+        .auto-strip,
+        .tabs,
+        .row,
+        .pages {
+          gap: 8px;
+        }
+
+        .auto-pill,
+        button {
+          min-height: 42px;
+        }
+
+        .auto-pill {
+          width: 100%;
+          justify-content: center;
+          border-radius: 14px;
+          line-height: 1.35;
+        }
+
+        .tabs .tab,
+        .pages .page {
+          flex: 1 1 calc(50% - 8px);
+          padding: 11px 10px;
+          line-height: 1.25;
+        }
 
         .meta {
           align-items: flex-start;
@@ -1010,27 +1091,164 @@
           width: 100%;
         }
 
-          .admin-form,
-          .admin-grid,
-          .admin-sections {
-            grid-template-columns: 1fr;
-          }
+        .admin-form,
+        .admin-grid,
+        .admin-sections {
+          grid-template-columns: 1fr;
+        }
 
-          .admin-row {
-            grid-template-columns: 1fr;
-            gap: 3px;
-          }
+        .admin-row {
+          grid-template-columns: 1fr;
+          gap: 3px;
+        }
 
-          .compare-grid {
-            grid-template-columns: 1fr;
-          }
+        .compare-grid {
+          grid-template-columns: 1fr;
+        }
 
-          .compare-swap-wrap {
-            align-items: center;
-            margin-top: -2px;
-          }
+        .compare-swap-wrap {
+          align-items: center;
+          margin-top: -2px;
+        }
 
-          }
+        .status {
+          width: 100%;
+          font-size: 13px;
+          line-height: 1.6;
+        }
+
+        .lock-ttl-wrap {
+          top: 8px;
+          right: 8px;
+          gap: 4px;
+        }
+
+        .lock-ttl,
+        .lock-extend-btn,
+        .admin-launch {
+          font-size: 11px;
+        }
+
+        .lock-ttl {
+          padding: 6px 9px;
+        }
+
+        .lock-extend-btn {
+          padding: 5px 9px;
+        }
+
+        .admin-launch {
+          left: 8px;
+          bottom: 8px;
+        }
+
+        .table-wrap {
+          overflow: visible !important;
+          background: transparent;
+          border: none;
+        }
+
+        table {
+          display: block !important;
+          width: 100%;
+          min-width: 0 !important;
+        }
+
+        thead {
+          display: none !important;
+        }
+
+        tbody {
+          display: grid !important;
+          gap: 10px;
+        }
+
+        tbody tr {
+          display: grid !important;
+          gap: 10px;
+          padding: 15px;
+          border: 1px solid rgba(117, 221, 255, 0.18);
+          border-radius: 18px;
+          background: linear-gradient(180deg, rgba(11, 29, 40, 0.98), rgba(7, 18, 26, 0.98));
+          box-shadow: 0 14px 34px rgba(0, 0, 0, 0.22);
+        }
+
+        tbody tr:hover {
+          background: rgba(12, 28, 39, 0.98);
+        }
+
+        tbody td {
+          display: grid !important;
+          grid-template-columns: 82px minmax(0, 1fr);
+          gap: 10px;
+          align-items: start;
+          padding: 0 !important;
+          border-bottom: none !important;
+          line-height: 1.45;
+        }
+
+        tbody td::before {
+          content: attr(data-label);
+          color: var(--muted);
+          font-size: 12px;
+          font-weight: 700;
+          letter-spacing: -0.01em;
+        }
+
+        tbody td.rank {
+          width: auto;
+          color: #d9edf6;
+        }
+
+        tbody td.empty {
+          display: block;
+          padding: 36px 14px;
+          border: 1px solid rgba(151, 183, 198, 0.16);
+          border-radius: 16px;
+          background: rgba(9, 22, 31, 0.96);
+        }
+
+        tbody td.empty::before {
+          content: none;
+        }
+
+        .coin-name {
+          font-size: 19px;
+          line-height: 1.25;
+        }
+
+        .coin-pair,
+        .cap-sub,
+        .price-sub,
+        .supply-sub,
+        .source {
+          font-size: 12px;
+        }
+
+        .chip {
+          width: fit-content;
+          padding: 6px 10px;
+        }
+
+        .cap-main,
+        .supply-main {
+          font-size: 18px;
+          line-height: 1.4;
+        }
+
+        .price-main {
+          font-size: 17px;
+        }
+
+        .footer-note {
+          margin-top: 10px;
+          padding: 12px;
+          border: 1px solid rgba(151, 183, 198, 0.16);
+          border-radius: 14px;
+          background: rgba(9, 22, 31, 0.96);
+          font-size: 12px;
+        }
+      }
     </style>
   </head>
   <body>
@@ -1861,9 +2079,7 @@
       thFdv.textContent = TEXT.thFdv;
       function renderCapHeader() {
         thCap.classList.add("sortable-th");
-        thCap.innerHTML = `<span class="sort-label">${TEXT.thCap}<span class="sort-arrow">${
-          state.sortDirection === "asc" ? "\u25BC" : "\u25B2"
-        }</span></span>`;
+        thCap.innerHTML = `<span class="sort-label">${TEXT.thCap}</span>`;
         thCap.title =
           state.sortDirection === "asc"
             ? "?대┃?섎㈃ ?쒖킑 ?믪??쒖쑝濡??뺣젹"
@@ -2996,7 +3212,7 @@
 
     function renderTable(rows) {
       if (!rows.length) {
-        tableBody.innerHTML = `<tr><td class="empty" colspan="7">${TEXT.empty}</td></tr>`;
+        tableBody.innerHTML = `<tr><td class="empty" colspan="7" data-label="">${TEXT.empty}</td></tr>`;
         return;
       }
 
@@ -3010,25 +3226,25 @@
           const sourceDetail = sourceDetailText ? `<div class="muted">${sourceDetailText}</div>` : "";
           return `
             <tr>
-              <td class="rank">${rank}</td>
-              <td>
+              <td class="rank" data-label="${TEXT.thRank}">${rank}</td>
+              <td data-label="${TEXT.thCoin}">
                 <div class="coin-name">${row.name}</div>
                 <div class="coin-pair">${row.pair}</div>
               </td>
-              <td><span class="chip">${getDisplaySymbol(row)}</span></td>
-              <td>
+              <td data-label="${TEXT.thSymbol}"><span class="chip">${getDisplaySymbol(row)}</span></td>
+              <td data-label="${TEXT.thPrice}">
                 <div class="price-main">${price.main || TEXT.unknown}</div>
                 <div class="price-sub">${price.sub || TEXT.noPrice}</div>
               </td>
-              <td>
+              <td data-label="${TEXT.thCap}">
                 <div class="cap-main">${cap.main || TEXT.unknown}</div>
                 <div class="cap-sub">${cap.sub || TEXT.noCap}</div>
               </td>
-              <td>
+              <td data-label="${TEXT.thFdv}">
                 <div class="supply-main">${supply.main || TEXT.unknown}</div>
                 <div class="supply-sub">${supply.sub || TEXT.noSupply}</div>
               </td>
-              <td class="source">
+              <td class="source" data-label="${TEXT.thSource}">
                 <div>${sourceLabel(row.capSource)}</div>
                 ${sourceDetail}
               </td>
@@ -3145,6 +3361,9 @@
       const scrollControls = document.getElementById("scrollControls");
       const scrollTopBtn = document.getElementById("scrollTopBtn");
       const scrollBottomBtn = document.getElementById("scrollBottomBtn");
+      const updateTopControlsVisibility = () => {
+        document.body.classList.toggle("scrolled-past-top", window.scrollY > 16);
+      };
       const updateScrollControls = () => {
         if (!scrollControls) return;
         const pageScrollable = document.documentElement.scrollHeight > window.innerHeight + 80;
@@ -3168,6 +3387,7 @@
         window.scrollTo(0, document.documentElement.scrollHeight);
       });
       window.addEventListener("scroll", updateScrollControls, { passive: true });
+      window.addEventListener("scroll", updateTopControlsVisibility, { passive: true });
       window.addEventListener("resize", updateScrollControls);
 
       manualRefreshBtn.textContent = TEXT.manualRefresh;
@@ -3179,6 +3399,7 @@
       renderLockTtl();
       setViewMode("market");
       checkSiteLock();
+      updateTopControlsVisibility();
       updateScrollControls();
 
       manualRefreshBtn.addEventListener("click", async () => {
