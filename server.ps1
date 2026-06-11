@@ -41,6 +41,8 @@ function Get-ContentType {
   param([string] $Path)
   switch -Regex ($Path) {
     "\.html$" { "text/html; charset=utf-8"; break }
+    "\.js$" { "application/javascript; charset=utf-8"; break }
+    "\.json$" { "application/json; charset=utf-8"; break }
     "\.md$" { "text/markdown; charset=utf-8"; break }
     default { "text/plain; charset=utf-8" }
   }
@@ -62,7 +64,7 @@ function Write-HttpResponse {
   }
 
   $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($Body)
-  $header = "HTTP/1.1 $StatusCode $statusText`r`nContent-Type: $ContentType`r`nContent-Length: $($bodyBytes.Length)`r`nConnection: close`r`n`r`n"
+  $header = "HTTP/1.1 $StatusCode $statusText`r`nContent-Type: $ContentType`r`nCache-Control: no-store, max-age=0`r`nPragma: no-cache`r`nContent-Length: $($bodyBytes.Length)`r`nConnection: close`r`n`r`n"
   $headerBytes = [System.Text.Encoding]::ASCII.GetBytes($header)
 
   $stream = $Client.GetStream()
@@ -136,11 +138,16 @@ try {
       $requestTarget = $requestLine.Split(" ")[1]
       if ($requestTarget -eq "/") { $requestTarget = "/index.html" }
 
-      if ($requestTarget -eq "/index.html" -or $requestTarget -eq "/README.md") {
-        $localPath = Join-Path $root ($requestTarget.TrimStart("/"))
+      $requestPath = $requestTarget.Split("?", 2)[0]
+      if ($requestPath -eq "/") { $requestPath = "/index.html" }
+      $relativePath = $requestPath.TrimStart("/")
+      $localPath = Join-Path $root $relativePath
+      $resolvedRoot = [System.IO.Path]::GetFullPath($root)
+      $resolvedLocalPath = [System.IO.Path]::GetFullPath($localPath)
+      if ($resolvedLocalPath.StartsWith($resolvedRoot) -and (Test-Path $resolvedLocalPath) -and -not (Get-Item $resolvedLocalPath).PSIsContainer) {
         if (Test-Path $localPath) {
-          $body = [System.IO.File]::ReadAllText($localPath, [System.Text.Encoding]::UTF8)
-          Write-HttpResponse -Client $client -StatusCode 200 -Body $body -ContentType (Get-ContentType -Path $localPath)
+          $body = [System.IO.File]::ReadAllText($resolvedLocalPath, [System.Text.Encoding]::UTF8)
+          Write-HttpResponse -Client $client -StatusCode 200 -Body $body -ContentType (Get-ContentType -Path $resolvedLocalPath)
         } else {
           Write-HttpResponse -Client $client -StatusCode 404 -Body "Not Found"
         }
