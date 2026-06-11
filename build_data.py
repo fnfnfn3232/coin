@@ -80,6 +80,10 @@ def normalize_text(value: str | None) -> str:
     return "".join(char for char in text if char.isalnum())
 
 
+def has_hangul(value: str | None) -> bool:
+    return any("\u3131" <= char <= "\u318e" or "\uac00" <= char <= "\ud7a3" for char in str(value or ""))
+
+
 def parse_data_js_payload(raw_text: str) -> dict | None:
     prefix = "window.BOARD_DATA = "
     text = raw_text.strip()
@@ -1393,6 +1397,38 @@ def build_rows_by_symbol(rows: list[dict]) -> dict[str, list[dict]]:
     return indexed
 
 
+def apply_binance_korean_name_fills(binance_rows: list[dict], upbit_rows: list[dict], bithumb_rows: list[dict]) -> None:
+    upbit_by_symbol = build_rows_by_symbol(upbit_rows)
+    bithumb_by_symbol = build_rows_by_symbol(bithumb_rows)
+
+    for row in binance_rows:
+        symbol = str(row.get("compareSymbol") or row.get("symbol") or "").upper()
+        if not symbol:
+            continue
+
+        reference_candidates = bithumb_by_symbol.get(symbol, []) + upbit_by_symbol.get(symbol, [])
+        korean_name = next(
+            (
+                str(candidate.get("koreanName") or candidate.get("name") or "").strip()
+                for candidate in reference_candidates
+                if has_hangul(str(candidate.get("koreanName") or candidate.get("name") or ""))
+            ),
+            "",
+        )
+        if not korean_name:
+            continue
+
+        row["name"] = korean_name
+        row["koreanName"] = korean_name
+        row["nameKeys"] = list(
+            build_name_keys(
+                korean_name,
+                str(row.get("englishName") or row.get("symbol") or ""),
+                korean_name,
+            )
+        )
+
+
 def pick_live_fill_candidate(upbit_row: dict, candidate_rows: list[dict]) -> dict | None:
     for candidate in candidate_rows:
         if to_float(candidate.get("marketCapUsd")) is None:
@@ -2122,6 +2158,7 @@ def make_payload(previous_payload: dict | None = None) -> dict:
     apply_coingecko_supply_fills("coinbase", coinbase_rows, coingecko_supply_candidates)
     apply_contract_total_supply_fills("coinbase", coinbase_rows, coinbase_contract_supply_candidates)
     apply_implied_circulating_supply_fills("coinbase", coinbase_rows)
+    apply_binance_korean_name_fills(binance_rows, upbit_rows, bithumb_rows)
 
     boards = {
         "binance": finalize_rows(binance_rows),
