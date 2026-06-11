@@ -920,6 +920,28 @@
       letter-spacing: -0.02em;
     }
 
+    .coin-info-trigger {
+      appearance: none;
+      display: inline-flex;
+      align-items: center;
+      width: fit-content;
+      min-height: 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: #dff6ff;
+      cursor: pointer;
+      text-align: left;
+      text-decoration: underline;
+      text-decoration-color: rgba(117, 221, 255, 0.35);
+      text-underline-offset: 4px;
+    }
+
+    .coin-info-trigger:hover {
+      color: #75ddff;
+      text-decoration-color: rgba(117, 221, 255, 0.9);
+    }
+
     .coin-pair {
       margin-top: 6px;
       color: #b9cbd6;
@@ -991,6 +1013,149 @@
       color: var(--muted);
       font-size: 13px;
       line-height: 1.7;
+    }
+
+    .coin-info-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 80;
+      display: grid;
+      place-items: center;
+      padding: 22px;
+      background: rgba(0, 8, 13, 0.72);
+      backdrop-filter: blur(10px);
+    }
+
+    .coin-info-modal.hidden {
+      display: none;
+    }
+
+    .coin-info-card {
+      width: min(920px, 100%);
+      max-height: min(86vh, 860px);
+      overflow: auto;
+      border: 1px solid rgba(117, 221, 255, 0.22);
+      border-radius: 28px;
+      background:
+        radial-gradient(circle at 12% 0%, rgba(35, 121, 151, 0.22), transparent 36%),
+        linear-gradient(180deg, #071923 0%, #040d13 100%);
+      box-shadow: 0 30px 90px rgba(0, 0, 0, 0.5);
+    }
+
+    .coin-info-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 24px 26px 18px;
+      border-bottom: 1px solid rgba(151, 183, 198, 0.14);
+    }
+
+    .coin-info-eyebrow {
+      color: #75ddff;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .coin-info-title {
+      margin: 8px 0 6px;
+      color: #e9f9ff;
+      font-size: clamp(26px, 4vw, 42px);
+      line-height: 1.05;
+      letter-spacing: -0.04em;
+    }
+
+    .coin-info-subtitle {
+      margin: 0;
+      color: #b8d0dc;
+      font-size: 14px;
+    }
+
+    .coin-info-close {
+      flex: 0 0 auto;
+      min-height: 40px;
+      padding: 9px 14px;
+      border-radius: 999px;
+    }
+
+    .coin-info-body {
+      display: grid;
+      gap: 14px;
+      padding: 18px 26px 26px;
+    }
+
+    .coin-info-section {
+      border: 1px solid rgba(151, 183, 198, 0.14);
+      border-radius: 18px;
+      background: rgba(5, 17, 25, 0.72);
+      padding: 16px;
+    }
+
+    .coin-info-section h3 {
+      margin: 0 0 12px;
+      color: #dff6ff;
+      font-size: 17px;
+    }
+
+    .coin-info-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .coin-info-row {
+      display: grid;
+      gap: 4px;
+      padding: 11px 12px;
+      border-radius: 13px;
+      background: rgba(255, 255, 255, 0.035);
+    }
+
+    .coin-info-label {
+      color: #8fb4c7;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .coin-info-value {
+      color: #d9edf6;
+      font-size: 14px;
+      line-height: 1.58;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .coin-info-text {
+      margin: 0;
+      color: #d9edf6;
+      font-size: 14px;
+      line-height: 1.72;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .coin-info-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .coin-info-link {
+      display: inline-flex;
+      align-items: center;
+      padding: 8px 12px;
+      border: 1px solid rgba(117, 221, 255, 0.28);
+      border-radius: 999px;
+      color: #bfefff;
+      text-decoration: none;
+      font-size: 13px;
+    }
+
+    .coin-info-link:hover {
+      border-color: rgba(117, 221, 255, 0.55);
+      color: #e9fbff;
     }
 
     @media (max-width: 1200px) {
@@ -1215,6 +1380,28 @@
         .coin-name {
           font-size: 19px;
           line-height: 1.25;
+        }
+
+        .coin-info-modal {
+          padding: 8px;
+          align-items: end;
+        }
+
+        .coin-info-card {
+          max-height: 92vh;
+          border-radius: 20px 20px 14px 14px;
+        }
+
+        .coin-info-head {
+          padding: 18px 16px 14px;
+        }
+
+        .coin-info-body {
+          padding: 14px 16px 18px;
+        }
+
+        .coin-info-grid {
+          grid-template-columns: 1fr;
         }
 
         .coin-pair,
@@ -1479,12 +1666,26 @@
     </section>
   </div>
 
+  <div class="coin-info-modal hidden" id="coinInfoModal" aria-modal="true" role="dialog" aria-labelledby="coinInfoTitle">
+    <section class="coin-info-card">
+      <div class="coin-info-head">
+        <div>
+          <div class="coin-info-eyebrow">Coin Info</div>
+          <h2 class="coin-info-title" id="coinInfoTitle">코인 정보</h2>
+          <p class="coin-info-subtitle" id="coinInfoSubtitle"></p>
+        </div>
+        <button class="coin-info-close" id="coinInfoCloseBtn" type="button">닫기</button>
+      </div>
+      <div class="coin-info-body" id="coinInfoBody"></div>
+    </section>
+  </div>
+
   <div class="scroll-controls" id="scrollControls" aria-label="페이지 이동">
     <button class="scroll-btn" id="scrollTopBtn" type="button" aria-label="맨 위로 이동">↑</button>
     <button class="scroll-btn" id="scrollBottomBtn" type="button" aria-label="맨 아래로 이동">↓</button>
   </div>
 
-  <script src="./data.js?v=20260612-korean-quad"></script>
+  <script src="./data.js?v=20260612-coin-info"></script>
   <script>
     const SITE_PASSWORD = "";
     const LOCK_AUTH_UNTIL_KEY = "fdv_lock_until_v1";
@@ -1676,6 +1877,24 @@
       const adminCloseBtn = document.getElementById("adminCloseBtn");
       const adminAuthCloseBtn = document.getElementById("adminAuthCloseBtn");
       const adminCancelBtn = document.getElementById("adminCancelBtn");
+      const coinInfoModal = document.getElementById("coinInfoModal");
+      const coinInfoTitle = document.getElementById("coinInfoTitle");
+      const coinInfoSubtitle = document.getElementById("coinInfoSubtitle");
+      const coinInfoBody = document.getElementById("coinInfoBody");
+      const coinInfoCloseBtn = document.getElementById("coinInfoCloseBtn");
+
+      function escapeHtml(value) {
+        return String(value ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function escapeAttr(value) {
+        return escapeHtml(value);
+      }
 
       function setLockCapsWarning(active) {
         lockCapsWarning.hidden = !active;
@@ -2029,7 +2248,12 @@
         adminPasswordInput.focus();
       });
       window.addEventListener("keydown", (event) => {
-        if (event.key === "Escape" && !adminModal.classList.contains("hidden")) {
+        if (event.key !== "Escape") return;
+        if (!coinInfoModal.classList.contains("hidden")) {
+          closeCoinInfo();
+          return;
+        }
+        if (!adminModal.classList.contains("hidden")) {
           closeAdminModal();
         }
       });
@@ -2372,6 +2596,135 @@
         ];
         const koreanName = candidates.find((value) => hasHangul(value));
         return String(koreanName || row?.koreanName || row?.name || symbol || row?.symbol || "").trim();
+      }
+
+      function isSafeHttpUrl(value) {
+        try {
+          const url = new URL(String(value || ""));
+          return url.protocol === "https:" || url.protocol === "http:";
+        } catch (_error) {
+          return false;
+        }
+      }
+
+      function renderCoinInfoLinks(links) {
+        const safeLinks = (links || [])
+          .filter((link) => link && isSafeHttpUrl(link.url))
+          .map((link) => {
+            const label = escapeHtml(link.label || "링크");
+            const url = escapeAttr(link.url);
+            return `<a class="coin-info-link" href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+          });
+        if (!safeLinks.length) return "";
+        return `<div class="coin-info-links">${safeLinks.join("")}</div>`;
+      }
+
+      function renderCoinInfoGrid(fields) {
+        const rows = fields
+          .filter((field) => field && field.value !== null && field.value !== undefined && String(field.value).trim())
+          .map((field) => `
+            <div class="coin-info-row">
+              <div class="coin-info-label">${escapeHtml(field.label)}</div>
+              <div class="coin-info-value">${escapeHtml(field.value)}</div>
+            </div>
+          `);
+        if (!rows.length) return "";
+        return `<div class="coin-info-grid">${rows.join("")}</div>`;
+      }
+
+      function renderCoinInfoSection(title, innerHtml) {
+        if (!innerHtml) return "";
+        return `
+          <section class="coin-info-section">
+            <h3>${escapeHtml(title)}</h3>
+            ${innerHtml}
+          </section>
+        `;
+      }
+
+      function getCoinInfo(symbol, fallbackRow = null) {
+        const key = String(symbol || "").toUpperCase();
+        const info = data.coinInfo?.[key] || {};
+        return {
+          symbol: key,
+          koreanName: info.koreanName || fallbackRow?.koreanName || fallbackRow?.name || key,
+          englishName: info.englishName || fallbackRow?.englishName || fallbackRow?.name || key,
+          sources: info.sources || {},
+          listings: info.listings || {},
+        };
+      }
+
+      function renderCoinInfo(info) {
+        const upbit = info.sources.upbit || {};
+        const bithumb = info.sources.bithumb || {};
+        const summaryFields = [
+          { label: "심볼", value: info.symbol },
+          { label: "한글명", value: info.koreanName },
+          { label: "영문명", value: info.englishName },
+          { label: "종류", value: upbit.assetType },
+          { label: "주요 목적", value: upbit.purpose },
+          { label: "발행일", value: upbit.releaseDate },
+          { label: "메인넷", value: upbit.mainnet },
+          { label: "발행 방식", value: upbit.issuanceMethod },
+        ];
+        const upbitFields = [
+          { label: "가상자산 명칭", value: upbit.assetName },
+          { label: "발행/운영 주체", value: upbit.issuer },
+          { label: "국내 유통 현황", value: upbit.domesticMarkets },
+          { label: "해외 유통 현황", value: upbit.globalMarkets },
+          { label: "향후 유통 스케줄", value: upbit.circulationSchedule },
+          { label: "최근 보안 사고", value: upbit.securityIncidents },
+          { label: "블록 탐색기", value: upbit.explorer },
+        ];
+        const bithumbFields = [
+          { label: "빗썸 명칭", value: bithumb.assetName },
+          { label: "총 발행량", value: bithumb.totalIssueQty },
+          { label: "유통량", value: bithumb.marketAvailableSupply },
+          { label: "시세 기준시각", value: bithumb.marketStdDatetime },
+          { label: "블록 탐색기", value: bithumb.explorer },
+        ];
+        const listingLinks = Object.entries(info.listings || {}).map(([board, listing]) => ({
+          label: `${listing.label || boardLabel(board)} ${listing.pair || ""}`.trim(),
+          url: listing.url,
+        }));
+
+        const sections = [
+          renderCoinInfoSection("요약", renderCoinInfoGrid(summaryFields)),
+          renderCoinInfoSection(
+            "업비트 정보",
+            [
+              upbit.mainnetFeature ? `<p class="coin-info-text">${escapeHtml(upbit.mainnetFeature)}</p>` : "",
+              renderCoinInfoGrid(upbitFields),
+              renderCoinInfoLinks(upbit.links),
+            ].filter(Boolean).join("")
+          ),
+          renderCoinInfoSection(
+            "빗썸 정보",
+            [
+              bithumb.description ? `<p class="coin-info-text">${escapeHtml(bithumb.description)}</p>` : "",
+              renderCoinInfoGrid(bithumbFields),
+              renderCoinInfoLinks(bithumb.links),
+            ].filter(Boolean).join("")
+          ),
+          renderCoinInfoSection("거래소 링크", renderCoinInfoLinks(listingLinks)),
+        ].filter(Boolean);
+
+        return sections.length
+          ? sections.join("")
+          : renderCoinInfoSection("정보 없음", `<p class="coin-info-text">저장된 코인 정보가 없습니다.</p>`);
+      }
+
+      function openCoinInfo(symbol, fallbackRow = null) {
+        const info = getCoinInfo(symbol, fallbackRow);
+        coinInfoTitle.textContent = info.koreanName || info.symbol;
+        coinInfoSubtitle.textContent = `${info.symbol}${info.englishName ? ` · ${info.englishName}` : ""}`;
+        coinInfoBody.innerHTML = renderCoinInfo(info);
+        coinInfoModal.classList.remove("hidden");
+        coinInfoCloseBtn.focus();
+      }
+
+      function closeCoinInfo() {
+        coinInfoModal.classList.add("hidden");
       }
 
       function formatDateTime(timestampSeconds) {
@@ -3304,30 +3657,31 @@
           const cap = capDisplay(row);
           const supply = supplyDisplay(row);
           const sourceDetailText = sourceDetailLabel(row.capSourceDetail);
-          const sourceDetail = sourceDetailText ? `<div class="muted">${sourceDetailText}</div>` : "";
+          const coinSymbol = getComparableSymbol(row);
+          const displayName = getDisplayName(row, state.board);
           return `
             <tr>
               <td class="rank" data-label="${TEXT.thRank}">${rank}</td>
               <td data-label="${TEXT.thCoin}">
-                <div class="coin-name">${getDisplayName(row, state.board)}</div>
-                <div class="coin-pair">${row.pair}</div>
+                <button class="coin-name coin-info-trigger" type="button" data-coin-info-symbol="${escapeAttr(coinSymbol)}" aria-label="${escapeAttr(`${displayName} 코인 정보 보기`)}">${escapeHtml(displayName)}</button>
+                <div class="coin-pair">${escapeHtml(row.pair)}</div>
               </td>
-              <td data-label="${TEXT.thSymbol}"><span class="chip">${getDisplaySymbol(row)}</span></td>
+              <td data-label="${TEXT.thSymbol}"><span class="chip">${escapeHtml(getDisplaySymbol(row))}</span></td>
               <td data-label="${TEXT.thPrice}">
-                <div class="price-main">${price.main || TEXT.unknown}</div>
-                <div class="price-sub">${price.sub || TEXT.noPrice}</div>
+                <div class="price-main">${escapeHtml(price.main || TEXT.unknown)}</div>
+                <div class="price-sub">${escapeHtml(price.sub || TEXT.noPrice)}</div>
               </td>
               <td data-label="${TEXT.thCap}">
-                <div class="cap-main">${cap.main || TEXT.unknown}</div>
-                <div class="cap-sub">${cap.sub || TEXT.noCap}</div>
+                <div class="cap-main">${escapeHtml(cap.main || TEXT.unknown)}</div>
+                <div class="cap-sub">${escapeHtml(cap.sub || TEXT.noCap)}</div>
               </td>
               <td data-label="${TEXT.thFdv}">
-                <div class="supply-main">${supply.main || TEXT.unknown}</div>
-                <div class="supply-sub">${supply.sub || TEXT.noSupply}</div>
+                <div class="supply-main">${escapeHtml(supply.main || TEXT.unknown)}</div>
+                <div class="supply-sub">${escapeHtml(supply.sub || TEXT.noSupply)}</div>
               </td>
               <td class="source" data-label="${TEXT.thSource}">
-                <div>${sourceLabel(row.capSource)}</div>
-                ${sourceDetail}
+                <div>${escapeHtml(sourceLabel(row.capSource))}</div>
+                ${sourceDetail ? `<div class="muted">${escapeHtml(sourceDetailText)}</div>` : ""}
               </td>
             </tr>
           `;
@@ -3377,6 +3731,19 @@
           : "-";
         footerNote.textContent = TEXT.footer.replace("{time}", generatedAt);
       }
+
+      tableBody.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-coin-info-symbol]");
+        if (!button) return;
+        openCoinInfo(button.dataset.coinInfoSymbol);
+      });
+
+      coinInfoCloseBtn.addEventListener("click", closeCoinInfo);
+      coinInfoModal.addEventListener("click", (event) => {
+        if (event.target === coinInfoModal) {
+          closeCoinInfo();
+        }
+      });
 
       tabs.addEventListener("click", (event) => {
         const button = event.target.closest("[data-board]");
