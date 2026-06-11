@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import html
 import re
 import time
 import urllib.parse
@@ -862,6 +863,122 @@ def extract_upbit_numeric_field(document: dict, field_keys: list[str]) -> tuple[
     return None, ""
 
 
+def clean_info_text(value: object) -> str:
+    if value is None:
+        return ""
+    text = html.unescape(str(value))
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def keep_info_text(value: object) -> str:
+    text = clean_info_text(value)
+    if not text:
+        return ""
+    if text.lower() in {"n/a", "na", "null", "none"}:
+        return ""
+    if text in {"-", "미제공", "알수없음"}:
+        return ""
+    return text
+
+
+def upbit_item_map(document: dict) -> dict[str, dict]:
+    item_by_key: dict[str, dict] = {}
+    for category in document.get("categories") or []:
+        if not isinstance(category, dict):
+            continue
+        for item in category.get("items") or []:
+            if isinstance(item, dict) and item.get("key"):
+                item_by_key[str(item.get("key"))] = item
+    return item_by_key
+
+
+def upbit_text(item_by_key: dict[str, dict], key: str) -> str:
+    item = item_by_key.get(key) or {}
+    content = item.get("content")
+    if isinstance(content, list):
+        parts = []
+        for entry in content:
+            if not isinstance(entry, dict):
+                continue
+            title = keep_info_text(entry.get("title"))
+            entry_content = keep_info_text(entry.get("content"))
+            if title and entry_content:
+                parts.append(f"{title}: {entry_content}")
+            elif entry_content:
+                parts.append(entry_content)
+        return " / ".join(parts)
+    return keep_info_text(content) or keep_info_text(item.get("baseDate")) or keep_info_text(item.get("comment"))
+
+
+def upbit_links(item_by_key: dict[str, dict], key: str) -> list[dict[str, str]]:
+    item = item_by_key.get(key) or {}
+    links = []
+    for entry in item.get("content") or []:
+        if not isinstance(entry, dict):
+            continue
+        url = keep_info_text(entry.get("content"))
+        if not url.startswith(("http://", "https://")):
+            continue
+        label = keep_info_text(entry.get("title")) or keep_info_text(entry.get("key")) or "링크"
+        links.append({"label": label, "url": url})
+    return links
+
+
+def collect_upbit_coin_info(document: dict) -> dict:
+    item_by_key = upbit_item_map(document)
+    fields = {
+        "assetName": upbit_text(item_by_key, "digital_asset_name"),
+        "ticker": upbit_text(item_by_key, "ticker"),
+        "releaseDate": upbit_text(item_by_key, "initial_release"),
+        "assetType": upbit_text(item_by_key, "type"),
+        "purpose": upbit_text(item_by_key, "main_purpose"),
+        "domesticMarkets": upbit_text(item_by_key, "exchange_status_ko"),
+        "globalMarkets": upbit_text(item_by_key, "exchange_status_global"),
+        "mainnet": upbit_text(item_by_key, "mainnet_name") or upbit_text(item_by_key, "mainnet_yn"),
+        "mainnetFeature": upbit_text(item_by_key, "features_of_the_mainnet"),
+        "issuer": upbit_text(item_by_key, "name_of_the_issuing_entity"),
+        "issuanceMethod": upbit_text(item_by_key, "issuance_method"),
+        "circulationSchedule": upbit_text(item_by_key, "circulating_supply_schedule"),
+        "securityIncidents": upbit_text(item_by_key, "security_incidents"),
+        "explorer": upbit_text(item_by_key, "block_explorer"),
+    }
+    info = {key: value for key, value in fields.items() if value}
+    links = upbit_links(item_by_key, "main_official_media")
+    if links:
+        info["links"] = links
+    return info
+
+
+def collect_bithumb_coin_info(basic_info: dict) -> dict:
+    fields = {
+        "assetName": keep_info_text(basic_info.get("coinTitle")),
+        "description": keep_info_text(basic_info.get("description")),
+        "totalIssueQty": keep_info_text(basic_info.get("totalIssueQty")),
+        "marketAvailableSupply": keep_info_text(basic_info.get("marketAvailableSupply")),
+        "marketTotalSupply": keep_info_text(basic_info.get("marketTotalSupply")),
+        "marketStdDatetime": keep_info_text(basic_info.get("marketStdDatetime")),
+        "explorer": keep_info_text(basic_info.get("bcepUrlAddr")),
+    }
+    info = {key: value for key, value in fields.items() if value}
+    link_fields = [
+        ("홈페이지", basic_info.get("websiteUrl")),
+        ("국문 설명서", basic_info.get("manual")),
+        ("백서", basic_info.get("whitePaper")),
+        ("국문 백서", basic_info.get("koWhitePaper")),
+        ("블록 탐색기", basic_info.get("bcepUrlAddr")),
+    ]
+    links = [
+        {"label": label, "url": url_text}
+        for label, url in link_fields
+        if (url_text := keep_info_text(url)).startswith(("http://", "https://"))
+    ]
+    if links:
+        info["links"] = links
+    return info
+
+
 def fetch_upbit_details(symbol: str) -> dict:
     query = urllib.parse.urlencode({"currency": symbol, "language": "ko"})
     payload = fetch_json(f"https://ccx.upbit.com/coin-infos/api/v1/digital-assets?{query}")
@@ -884,6 +1001,7 @@ def fetch_upbit_details(symbol: str) -> dict:
         "circulatingSupply": circulating_supply,
         "totalSupply": total_supply,
         "supplyDetail": circulating_base_date or total_supply_base_date or "",
+        "info": collect_upbit_coin_info(document),
         "status": "ok" if market_cap_krw is not None else "missing",
     }
 
@@ -943,6 +1061,7 @@ def fetch_upbit() -> tuple[list[dict], dict[str, list[dict]]]:
                     "marketCapUsd": None,
                     "capSource": "upbit_fetch_failed",
                     "capSourceDetail": "",
+                    "info": {},
                     "status": "missing",
                 }
 
@@ -1118,6 +1237,7 @@ def fetch_bithumb() -> list[dict]:
                     else "bithumb_basic_info_missing"
                 ),
                 "status": "ok" if market_cap_krw is not None else "missing",
+                "info": collect_bithumb_coin_info(basic_info),
                 "nameKeys": list(
                     build_name_keys(
                         item.get("coinName") or "",
@@ -2045,6 +2165,83 @@ def build_changes(boards: dict[str, list[dict]], previous_payload: dict | None) 
     }
 
 
+def get_row_compare_symbol(row: dict) -> str:
+    return str(row.get("compareSymbol") or row.get("symbol") or "").upper().strip()
+
+
+def first_text(*values: object) -> str:
+    for value in values:
+        text = keep_info_text(value)
+        if text:
+            return text
+    return ""
+
+
+def exchange_listing_url(board_name: str, row: dict) -> str:
+    symbol = str(row.get("symbol") or "").upper().strip()
+    if not symbol:
+        return ""
+    if board_name == "binance":
+        return f"https://www.binance.com/en/trade/{urllib.parse.quote(symbol)}_USDT"
+    if board_name == "upbit":
+        return f"https://upbit.com/exchange?code=CRIX.UPBIT.KRW-{urllib.parse.quote(symbol)}"
+    if board_name == "bithumb":
+        return f"https://www.bithumb.com/trade/order/{urllib.parse.quote(symbol)}_KRW"
+    if board_name == "coinbase":
+        return f"https://exchange.coinbase.com/trade/{urllib.parse.quote(symbol)}-USD"
+    return ""
+
+
+def build_coin_info(boards: dict[str, list[dict]]) -> dict[str, dict]:
+    coin_info: dict[str, dict] = {}
+    for board_name, rows in boards.items():
+        for row in rows:
+            symbol = get_row_compare_symbol(row)
+            if not symbol:
+                continue
+            entry = coin_info.setdefault(
+                symbol,
+                {
+                    "symbol": symbol,
+                    "koreanName": "",
+                    "englishName": "",
+                    "sources": {},
+                    "listings": {},
+                },
+            )
+            korean_name = first_text(row.get("koreanName"), row.get("name"))
+            if korean_name and (has_hangul(korean_name) or not entry.get("koreanName")):
+                entry["koreanName"] = korean_name
+            english_name = first_text(row.get("englishName"), row.get("name"))
+            if english_name and not entry.get("englishName"):
+                entry["englishName"] = english_name
+
+            url = exchange_listing_url(board_name, row)
+            entry["listings"][board_name] = {
+                "label": {
+                    "binance": "바이낸스",
+                    "upbit": "업비트",
+                    "bithumb": "빗썸",
+                    "coinbase": "코인베이스",
+                }.get(board_name, board_name),
+                "pair": row.get("pair") or "",
+                "url": url,
+            }
+
+            source_info = row.get("info")
+            if isinstance(source_info, dict) and source_info:
+                entry["sources"][board_name] = source_info
+
+    for symbol, entry in list(coin_info.items()):
+        if not entry.get("koreanName"):
+            entry["koreanName"] = symbol
+        if not entry.get("englishName"):
+            entry["englishName"] = symbol
+        if not entry.get("sources") and not entry.get("listings"):
+            del coin_info[symbol]
+    return dict(sorted(coin_info.items()))
+
+
 def make_payload(previous_payload: dict | None = None) -> dict:
     refresh_fx_usd_krw(previous_payload)
     refresh_issues: dict[str, str] = {}
@@ -2166,6 +2363,10 @@ def make_payload(previous_payload: dict | None = None) -> dict:
         "bithumb": finalize_rows(bithumb_rows),
         "coinbase": finalize_rows(coinbase_rows),
     }
+    coin_info = build_coin_info(boards)
+    for rows in boards.values():
+        for row in rows:
+            row.pop("info", None)
 
     stats = {}
     for board_name, rows in boards.items():
@@ -2180,6 +2381,7 @@ def make_payload(previous_payload: dict | None = None) -> dict:
         "fxUsdKrw": FX_USD_KRW,
         "fxSource": FX_SOURCE,
         "boards": boards,
+        "coinInfo": coin_info,
         "news": news_payload,
         "stats": stats,
         "changes": build_changes(boards, previous_payload),
