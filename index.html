@@ -2657,18 +2657,13 @@
       function renderCoinInfo(info) {
         const upbit = info.sources.upbit || {};
         const bithumb = info.sources.bithumb || {};
-        const summaryFields = [
-          { label: "심볼", value: info.symbol },
-          { label: "한글명", value: info.koreanName },
-          { label: "영문명", value: info.englishName },
+        const upbitFields = [
+          { label: "가상자산 명칭", value: upbit.assetName },
           { label: "종류", value: upbit.assetType },
           { label: "주요 목적", value: upbit.purpose },
           { label: "발행일", value: upbit.releaseDate },
           { label: "메인넷", value: upbit.mainnet },
           { label: "발행 방식", value: upbit.issuanceMethod },
-        ];
-        const upbitFields = [
-          { label: "가상자산 명칭", value: upbit.assetName },
           { label: "발행/운영 주체", value: upbit.issuer },
           { label: "국내 유통 현황", value: upbit.domesticMarkets },
           { label: "해외 유통 현황", value: upbit.globalMarkets },
@@ -2689,21 +2684,20 @@
         }));
 
         const sections = [
-          renderCoinInfoSection("요약", renderCoinInfoGrid(summaryFields)),
+          renderCoinInfoSection(
+            "빗썸 설명",
+            [
+              bithumb.description ? `<p class="coin-info-text">${escapeHtml(bithumb.description)}</p>` : "",
+              renderCoinInfoGrid(bithumbFields),
+              renderCoinInfoLinks(bithumb.links),
+            ].filter(Boolean).join("")
+          ),
           renderCoinInfoSection(
             "업비트 정보",
             [
               upbit.mainnetFeature ? `<p class="coin-info-text">${escapeHtml(upbit.mainnetFeature)}</p>` : "",
               renderCoinInfoGrid(upbitFields),
               renderCoinInfoLinks(upbit.links),
-            ].filter(Boolean).join("")
-          ),
-          renderCoinInfoSection(
-            "빗썸 정보",
-            [
-              bithumb.description ? `<p class="coin-info-text">${escapeHtml(bithumb.description)}</p>` : "",
-              renderCoinInfoGrid(bithumbFields),
-              renderCoinInfoLinks(bithumb.links),
             ].filter(Boolean).join("")
           ),
           renderCoinInfoSection("거래소 링크", renderCoinInfoLinks(listingLinks)),
