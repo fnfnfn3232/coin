@@ -2364,7 +2364,7 @@
 
         liveNewsPromise = fetchServerAuth(`/api/news?ts=${Date.now()}`, { method: "GET" })
           .then((payload) => {
-            if (!payload || !Array.isArray(payload.items)) {
+            if (!payload || !Array.isArray(payload.items) || !payload.items.length) {
               throw new Error("live_news_empty");
             }
             data.news = payload;
