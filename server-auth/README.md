@@ -81,3 +81,36 @@ After the Worker is deployed, add this before the main inline script in `index.h
 ```
 
 Then remove the legacy client-side fallback password from `index.html` once the Worker login is confirmed.
+
+## Deploy with GitHub Actions
+
+This repo includes `.github/workflows/deploy-worker.yml`.
+
+Add these GitHub repository secrets:
+
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ACCOUNT_ID`
+- `SITE_PASSWORD_SHA256`
+- `SESSION_SECRET`
+
+Korean GitHub menu path:
+
+1. Repository page
+2. `Settings`
+3. `Secrets and variables`
+4. `Actions`
+5. `New repository secret`
+
+After all four secrets are added:
+
+1. Go to `Actions`
+2. Select `Deploy Cloudflare Worker`
+3. Select `Run workflow`
+
+The Worker name is `coin-board-auth`. After a successful deploy, Cloudflare will show a URL similar to:
+
+```text
+https://coin-board-auth.<your-subdomain>.workers.dev
+```
+
+Use that URL as `window.SERVER_AUTH_API_BASE`.
