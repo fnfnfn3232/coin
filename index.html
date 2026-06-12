@@ -2970,13 +2970,20 @@
 
       function deleteFreeBoardPostById(postId) {
         const id = String(postId || "");
-        const posts = loadFreeBoardPosts().filter((post) => post.id !== id);
+        const beforePosts = loadFreeBoardPosts();
+        const posts = beforePosts.filter((post) => post.id !== id);
+        if (posts.length === beforePosts.length) {
+          showFreeBoardMessage("삭제할 글을 찾지 못했습니다.", true);
+          renderFreeBoard();
+          return false;
+        }
         saveFreeBoardPosts(posts);
         freeBoardMode = "list";
         freeBoardSelectedId = "";
         showFreeBoardMessage("삭제했습니다.", false);
         renderFreeBoard();
         writeAppHistoryState();
+        return true;
       }
 
       function showAdminDashboard() {
@@ -3137,13 +3144,21 @@
           closeDeleteAuthModal();
           return;
         }
+        if (!password) {
+          deleteAuthError.textContent = "서버 비밀번호를 입력해 주세요.";
+          deleteAuthPasswordInput.focus();
+          return;
+        }
         try {
           deleteAuthError.textContent = "서버에서 확인 중입니다...";
           await verifySitePassword(password);
-          closeDeleteAuthModal();
           deleteFreeBoardPostById(postId);
-        } catch (_error) {
-          deleteAuthError.textContent = "비밀번호가 맞지 않습니다.";
+          closeDeleteAuthModal();
+        } catch (error) {
+          const message = String(error?.message || "");
+          deleteAuthError.textContent = message.includes("server_auth_failed")
+            ? "서버 인증에 실패했습니다. 비밀번호를 확인해 주세요."
+            : "서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.";
           deleteAuthPasswordInput.value = "";
           deleteAuthPasswordInput.focus();
         }
