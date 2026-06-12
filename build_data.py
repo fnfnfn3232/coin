@@ -565,29 +565,20 @@ def build_news_item(entry: dict) -> dict | None:
     except (TypeError, ValueError):
         return None
 
-    title = str(entry.get("title") or "").strip()
-    content = str(entry.get("content") or "").strip()
-    source_text = f"{title} {content}".strip()
-    exchange = detect_exchange(source_text)
-    symbol, pair = extract_symbol_and_pair(entry, source_text)
-    event_type = detect_event_type(source_text)
-    headline, summary = make_news_summary(
-        publish_at=publish_at,
-        exchange=exchange,
-        event_type=event_type,
-        symbol=symbol,
-        pair=pair,
-        title=title,
-        content=content,
-        source_text=source_text,
-    )
+    title = clean_news_text(entry.get("title"))
+    content = clean_news_text(entry.get("content"))
+    if not title and not content:
+        return None
 
     return {
         "id": news_id,
         "publishAt": publish_at,
         "publishAtTs": publish_at_ts,
-        "headline": headline,
-        "summary": summary,
+        "headline": title or "코인니스 속보",
+        "summary": content or title,
+        "originalTitle": title,
+        "originalContent": content,
+        "contentImage": str(entry.get("contentImage") or "").strip(),
         "articleUrl": f"https://coinness.com/news/{news_id}",
         "originUrl": str(entry.get("link") or "").strip(),
         "originTitle": str(entry.get("linkTitle") or "").strip(),
@@ -608,13 +599,18 @@ def normalize_previous_news_items(previous_news: dict | None, *, cutoff_ts: int)
             if published_ts is None:
                 published_ts = int(raw.get("publishAtTs") or 0)
             if published_ts >= cutoff_ts:
+                title = clean_news_text(raw.get("originalTitle") or raw.get("title") or raw.get("headline"))
+                content = clean_news_text(raw.get("originalContent") or raw.get("content") or raw.get("summary"))
                 normalized.append(
                     {
                         "id": int(raw.get("id") or 0),
                         "publishAt": str(raw.get("publishAt") or ""),
                         "publishAtTs": published_ts,
-                        "headline": str(raw.get("headline") or ""),
-                        "summary": str(raw.get("summary") or ""),
+                        "headline": title or str(raw.get("headline") or ""),
+                        "summary": content or str(raw.get("summary") or ""),
+                        "originalTitle": title,
+                        "originalContent": content,
+                        "contentImage": str(raw.get("contentImage") or ""),
                         "articleUrl": str(raw.get("articleUrl") or ""),
                         "originUrl": str(raw.get("originUrl") or ""),
                         "originTitle": str(raw.get("originTitle") or ""),
@@ -871,6 +867,18 @@ def clean_info_text(value: object) -> str:
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
+
+
+def clean_news_text(value: object) -> str:
+    if value is None:
+        return ""
+    text = html.unescape(str(value))
+    text = re.sub(r"<\s*br\s*/?\s*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</\s*p\s*>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
+    text = "\n".join(line for line in lines if line)
+    return text.strip()
 
 
 def keep_info_text(value: object) -> str:

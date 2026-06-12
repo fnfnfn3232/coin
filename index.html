@@ -2290,9 +2290,9 @@
         newsPanel.innerHTML = `
           <div class="news-text-box">
             ${items.slice(0, 40).map((item) => {
-              const title = item.title || item.headline || item.name || "뉴스";
-              const body = item.summary || item.body || item.description || item.text || "";
-              const time = item.publishedAt || item.time || item.datetime || item.createdAt || "";
+              const title = item.originalTitle || item.title || item.headline || item.name || "뉴스";
+              const body = item.originalContent || item.content || item.body || item.description || item.text || item.summary || "";
+              const time = item.publishAt || item.publishedAt || item.time || item.datetime || item.createdAt || "";
               const url = item.url || item.link || item.articleUrl || "";
               const originUrl = item.originUrl || item.sourceUrl || "";
               const links = [
