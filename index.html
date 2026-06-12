@@ -808,8 +808,11 @@
       }
 
       .news-time {
-        font-size: 12px;
-        color: #90b5c8;
+        flex-shrink: 0;
+        font-size: clamp(14px, 1.45vw, 18px);
+        color: #b9d8e8;
+        font-weight: 800;
+        letter-spacing: -0.02em;
       }
 
       .news-source {
@@ -2450,6 +2453,33 @@
         return `${month}.${day}`;
       }
 
+      function formatNewsTime(value) {
+        if (!value) return "";
+        const raw = String(value);
+        const numeric = Number(raw);
+        const date = Number.isFinite(numeric)
+          ? new Date(numeric < 1000000000000 ? numeric * 1000 : numeric)
+          : new Date(raw);
+        if (Number.isNaN(date.getTime())) return raw;
+        const parts = new Intl.DateTimeFormat("ko-KR", {
+          timeZone: "Asia/Seoul",
+          year: "numeric",
+          month: "numeric",
+          day: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+          hour12: false,
+        }).formatToParts(date);
+        const pick = (type) => parts.find((part) => part.type === type)?.value || "";
+        const year = pick("year");
+        const month = String(Number(pick("month")) || pick("month"));
+        const day = String(Number(pick("day")) || pick("day"));
+        const hour = String(Number(pick("hour")) || pick("hour"));
+        const minute = pick("minute");
+        if (!year || !month || !day || !hour) return raw;
+        return `${year}년 ${month}월 ${day}일 ${hour}시${minute && minute !== "00" ? ` ${minute}분` : ""}`;
+      }
+
       function freeBoardCategoryLabel(category) {
         const map = {
           notice: "공지",
@@ -2654,7 +2684,7 @@
             ${items.slice(0, 40).map((item) => {
               const title = item.originalTitle || item.title || item.headline || item.name || "뉴스";
               const body = item.summary || item.contentPreview || item.body || item.description || item.text || "";
-              const time = item.publishAt || item.publishedAt || item.time || item.datetime || item.createdAt || "";
+              const time = formatNewsTime(item.publishAt || item.publishedAt || item.time || item.datetime || item.createdAt || "");
               const url = item.url || item.link || item.articleUrl || "";
               const originUrl = item.originUrl || item.sourceUrl || "";
               const links = [
@@ -2666,7 +2696,7 @@
                   <div class="news-source">출처: 코인니스</div>
                   <div class="news-item-top">
                     <h3 class="news-item-title">${escapeHtml(title)}</h3>
-                    <span class="news-time">${escapeHtml(time)}</span>
+                    ${time ? `<span class="news-time">${escapeHtml(time)}</span>` : ""}
                   </div>
                   ${body ? `<p class="news-item-body">${escapeHtml(body)}</p>` : ""}
                   ${links ? `<div class="news-item-links">${links}</div>` : ""}
