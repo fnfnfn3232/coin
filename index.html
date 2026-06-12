@@ -2045,6 +2045,7 @@
     const MANUAL_REFRESH_LAST_KEY = "fdv_manual_refresh_last_v1";
     const ADMIN_TRAFFIC_KEY = "fdv_admin_traffic_v1";
     const SERVER_AUTH_API_BASE = String(window.SERVER_AUTH_API_BASE || "").replace(/\/+$/, "");
+    const APP_VIEW_STATE_KEY = "fdv_app_view_state_v1";
     const FREE_BOARD_STORAGE_KEY = "fdv_free_board_posts_v1";
     const FREE_BOARD_MAX_POSTS = 80;
     const FREE_BOARD_MAX_MEDIA = 4;
@@ -4329,9 +4330,29 @@
         };
       }
 
+      function saveAppViewState(payload = getCurrentAppHistoryState()) {
+        try {
+          sessionStorage.setItem(APP_VIEW_STATE_KEY, JSON.stringify(payload));
+        } catch (_error) {
+          // Ignore storage failures; browser history still works for normal back navigation.
+        }
+      }
+
+      function loadAppViewState() {
+        try {
+          const raw = sessionStorage.getItem(APP_VIEW_STATE_KEY);
+          if (!raw) return null;
+          const parsed = JSON.parse(raw);
+          return parsed && parsed.app === "exchange-market-cap" ? parsed : null;
+        } catch (_error) {
+          return null;
+        }
+      }
+
       function writeAppHistoryState(replace = false) {
-        if (isApplyingHistoryState || !window.history?.pushState) return;
         const payload = getCurrentAppHistoryState();
+        saveAppViewState(payload);
+        if (isApplyingHistoryState || !window.history?.pushState) return;
         if (replace) {
           window.history.replaceState(payload, "", window.location.href);
           return;
@@ -4344,6 +4365,7 @@
           freeBoardMode = "list";
           freeBoardSelectedId = "";
           setViewMode("market", { writeHistory: false });
+          saveAppViewState();
           return;
         }
         isApplyingHistoryState = true;
@@ -4353,6 +4375,7 @@
         freeBoardQuery = String(payload.freeBoardQuery || "");
         setViewMode(payload.viewMode, { writeHistory: false });
         isApplyingHistoryState = false;
+        saveAppViewState();
       }
 
       function setViewMode(mode, options = {}) {
@@ -4915,7 +4938,13 @@
       renderAutoStatus();
       renderManualRefreshState();
       renderLockTtl();
-      setViewMode("market", { replaceHistory: true });
+      const savedAppViewState = loadAppViewState();
+      if (savedAppViewState) {
+        applyAppHistoryState(savedAppViewState);
+        writeAppHistoryState(true);
+      } else {
+        setViewMode("market", { replaceHistory: true });
+      }
       checkSiteLock();
       updateTopControlsVisibility();
       updateScrollControls();
