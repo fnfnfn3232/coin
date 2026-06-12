@@ -145,13 +145,14 @@ function normalizeNewsItem(entry, includeFullText) {
   return item;
 }
 
+let lastGoodNews = null;
+
 async function fetchCoinnessNews(env) {
   const limit = Math.min(Math.max(Number(env.NEWS_LIMIT || 40), 1), 100);
   const includeFullText = String(env.NEWS_BODY_MODE || "preview").toLowerCase() === "full";
   const query = new URLSearchParams({ languageCode: "ko", limit: String(limit) });
   const response = await fetch(`${COINNESS_NEWS_ENDPOINT}?${query.toString()}`, {
     headers: {
-      "User-Agent": "Mozilla/5.0 Private Coin Board",
       "Accept": "application/json",
     },
   });
@@ -168,6 +169,31 @@ async function fetchCoinnessNews(env) {
     fetchedAt: Math.floor(Date.now() / 1000),
     items,
   };
+}
+
+async function fetchCoinnessNewsSafely(env) {
+  try {
+    const news = await fetchCoinnessNews(env);
+    if (news.items.length) {
+      lastGoodNews = news;
+    }
+    return news;
+  } catch (error) {
+    if (lastGoodNews) {
+      return {
+        ...lastGoodNews,
+        stale: true,
+        error: "coinness_fetch_failed",
+      };
+    }
+    return {
+      source: "coinness",
+      mode: String(env.NEWS_BODY_MODE || "preview").toLowerCase() === "full" ? "full" : "preview",
+      fetchedAt: Math.floor(Date.now() / 1000),
+      error: error instanceof Error ? error.message : "coinness_fetch_failed",
+      items: [],
+    };
+  }
 }
 
 async function handleLogin(request, env) {
@@ -208,7 +234,7 @@ export default {
       return handleLogout(env);
     }
     if (url.pathname === "/api/news" && request.method === "GET") {
-      return jsonResponse(await fetchCoinnessNews(env), 200, env);
+      return jsonResponse(await fetchCoinnessNewsSafely(env), 200, env);
     }
 
     return jsonResponse({ error: "not_found" }, 404, env);
