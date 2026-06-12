@@ -812,16 +812,31 @@
         color: #90b5c8;
       }
 
+      .news-source {
+        display: inline-flex;
+        width: fit-content;
+        margin-bottom: 6px;
+        padding: 4px 9px;
+        border: 1px solid rgba(117, 221, 255, 0.2);
+        border-radius: 999px;
+        background: rgba(117, 221, 255, 0.07);
+        color: #bfefff;
+        font-size: 12px;
+        font-weight: 750;
+      }
+
       .news-item-title {
         margin: 0;
-        font-size: 15px;
+        font-size: clamp(20px, 2.3vw, 28px);
         color: #e7f4fa;
-        font-weight: 700;
+        font-weight: 900;
+        letter-spacing: -0.035em;
+        line-height: 1.25;
       }
 
       .news-item-body {
         margin: 8px 0 0;
-        font-size: 13px;
+        font-size: 15px;
         color: #c5d8e2;
         line-height: 1.6;
         white-space: pre-wrap;
@@ -2291,7 +2306,7 @@
           <div class="news-text-box">
             ${items.slice(0, 40).map((item) => {
               const title = item.originalTitle || item.title || item.headline || item.name || "뉴스";
-              const body = item.originalContent || item.content || item.body || item.description || item.text || item.summary || "";
+              const body = item.summary || item.contentPreview || item.body || item.description || item.text || "";
               const time = item.publishAt || item.publishedAt || item.time || item.datetime || item.createdAt || "";
               const url = item.url || item.link || item.articleUrl || "";
               const originUrl = item.originUrl || item.sourceUrl || "";
@@ -2301,6 +2316,7 @@
               ].filter(Boolean).join("");
               return `
                 <article class="news-item">
+                  <div class="news-source">출처: 코인니스</div>
                   <div class="news-item-top">
                     <h3 class="news-item-title">${escapeHtml(title)}</h3>
                     <span class="news-time">${escapeHtml(time)}</span>
