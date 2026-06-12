@@ -30,7 +30,7 @@ COINGECKO_MARKETS_ENDPOINT = "https://api.coingecko.com/api/v3/coins/markets"
 COINGECKO_MARKETS_PAGE_SIZE = 250
 COINGECKO_MARKETS_MAX_PAGES = 4
 COINBASE_CURRENCIES_ENDPOINT = "https://api.exchange.coinbase.com/currencies"
-COINBASE_MARKET_PRODUCTS_ENDPOINT = "https://api.coinbase.com/api/v3/brokerage/market/products"
+COINBASE_PRODUCT_STATS_ENDPOINT = "https://api.exchange.coinbase.com/products/stats"
 ETHEREUM_RPC_ENDPOINT = "https://ethereum-rpc.publicnode.com"
 ERC20_DECIMALS_SELECTOR = "0x313ce567"
 ERC20_TOTAL_SUPPLY_SELECTOR = "0x18160ddd"
@@ -1254,26 +1254,19 @@ def fetch_bithumb() -> list[dict]:
 
 
 def fetch_coinbase_usd_price_map() -> dict[str, float]:
-    query = urllib.parse.urlencode({"limit": 500})
-    payload = fetch_json(f"{COINBASE_MARKET_PRODUCTS_ENDPOINT}?{query}", retries=2, pause=1.0)
-    products = payload.get("products") if isinstance(payload, dict) else None
     price_map: dict[str, float] = {}
-    if isinstance(products, list):
-        for item in products:
-            if not isinstance(item, dict):
+    payload = fetch_json(COINBASE_PRODUCT_STATS_ENDPOINT, retries=2, pause=1.0)
+    if isinstance(payload, dict):
+        for product_id, stats in payload.items():
+            product_id_text = str(product_id or "").upper().strip()
+            if not product_id_text.endswith("-USD") or not isinstance(stats, dict):
                 continue
-            product_id = str(item.get("product_id") or "").upper().strip()
-            quote_currency = str(item.get("quote_currency_id") or "").upper().strip()
-            status = str(item.get("status") or "").lower().strip()
-            product_type = str(item.get("product_type") or "").upper().strip()
-            trading_disabled = bool(item.get("trading_disabled") or item.get("is_disabled") or item.get("view_only"))
-            price = to_float(item.get("price"))
-            if not product_id or quote_currency != "USD" or status != "online" or trading_disabled:
+            stats_24h = stats.get("stats_24hour")
+            if not isinstance(stats_24h, dict):
                 continue
-            if product_type and product_type != "SPOT":
-                continue
+            price = to_float(stats_24h.get("last"))
             if price is not None:
-                price_map[product_id] = price
+                price_map[product_id_text] = price
     return price_map
 
 
