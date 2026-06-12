@@ -889,9 +889,7 @@
 
       .free-board-shell {
         display: grid;
-        grid-template-columns: minmax(320px, 0.92fr) minmax(0, 1.08fr);
         gap: 14px;
-        align-items: start;
       }
 
       .free-board-card {
@@ -906,6 +904,155 @@
         display: grid;
         gap: 10px;
         padding: 14px;
+      }
+
+      .free-board-toolbar,
+      .free-board-bottom,
+      .free-board-search {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .free-board-toolbar,
+      .free-board-bottom {
+        justify-content: space-between;
+      }
+
+      .free-board-tabs {
+        display: flex;
+        gap: 4px;
+        flex-wrap: wrap;
+      }
+
+      .free-board-tab,
+      .free-board-write-btn,
+      .free-board-list-btn {
+        min-width: 82px;
+        border-radius: 4px;
+        border-color: rgba(84, 104, 255, 0.6);
+        background: rgba(46, 58, 130, 0.55);
+        color: #e8f4ff;
+        font-weight: 850;
+      }
+
+      .free-board-tab.active,
+      .free-board-write-btn {
+        background: rgba(70, 84, 180, 0.8);
+        border-color: rgba(103, 119, 255, 0.9);
+      }
+
+      .free-board-table-wrap {
+        overflow-x: auto;
+        border-top: 1px solid rgba(84, 104, 255, 0.65);
+        border-bottom: 1px solid rgba(84, 104, 255, 0.65);
+      }
+
+      .free-board-table {
+        width: 100%;
+        min-width: 900px;
+        border-collapse: collapse;
+      }
+
+      .free-board-table th,
+      .free-board-table td {
+        padding: 9px 10px;
+        border-bottom: 1px solid rgba(151, 183, 198, 0.14);
+        color: #dfeef5;
+        font-size: 14px;
+        line-height: 1.35;
+        white-space: nowrap;
+      }
+
+      .free-board-table th {
+        color: #f0f6fa;
+        font-weight: 850;
+        text-align: center;
+      }
+
+      .free-board-table td:nth-child(3) {
+        width: 46%;
+        white-space: normal;
+      }
+
+      .free-board-title-btn {
+        width: 100%;
+        padding: 0;
+        border: none;
+        border-radius: 0;
+        background: transparent;
+        color: #f1e0bd;
+        text-align: left;
+        font-weight: 750;
+      }
+
+      .free-board-title-btn:hover {
+        color: #fff1cf;
+        text-decoration: underline;
+      }
+
+      .free-board-pagination {
+        display: flex;
+        justify-content: center;
+        gap: 6px;
+        margin: 8px 0;
+      }
+
+      .free-board-page {
+        min-width: 34px;
+        padding: 6px 8px;
+        border: none;
+        background: transparent;
+        color: #d9e8f0;
+        font-weight: 850;
+      }
+
+      .free-board-page.active {
+        color: #ff5548;
+      }
+
+      .free-board-search {
+        justify-content: center;
+      }
+
+      .free-board-search select,
+      .free-board-search input {
+        width: auto;
+        border-radius: 3px;
+      }
+
+      .free-board-search input {
+        width: min(420px, 100%);
+      }
+
+      .free-board-read {
+        display: grid;
+        gap: 12px;
+        padding: 14px;
+      }
+
+      .free-board-read-head {
+        display: grid;
+        gap: 8px;
+        padding-bottom: 12px;
+        border-bottom: 1px solid rgba(84, 104, 255, 0.45);
+      }
+
+      .free-board-read-title {
+        margin: 0;
+        color: #fff1cf;
+        font-size: clamp(22px, 3vw, 34px);
+        line-height: 1.25;
+        letter-spacing: -0.03em;
+      }
+
+      .free-board-read-body {
+        min-height: 260px;
+        padding: 18px;
+        border: 1px solid rgba(151, 183, 198, 0.14);
+        border-radius: 12px;
+        background: rgba(4, 14, 22, 0.72);
       }
 
       .free-board-title {
@@ -1894,6 +2041,7 @@
     const FREE_BOARD_STORAGE_KEY = "fdv_free_board_posts_v1";
     const FREE_BOARD_MAX_POSTS = 80;
     const FREE_BOARD_MAX_MEDIA = 4;
+    const FREE_BOARD_PAGE_SIZE = 20;
     const LOCK_TTL_MS = 24 * 60 * 60 * 1000;
     const LOCK_EXTEND_MAX = 3;
     const MANUAL_REFRESH_COOLDOWN_MS = 30 * 1000;
@@ -2139,6 +2287,14 @@
         });
       }
 
+      async function verifySitePassword(password) {
+        if (hasServerAuth()) {
+          await loginWithServerPassword(password);
+          return true;
+        }
+        return Boolean(SITE_PASSWORD) && String(password || "") === SITE_PASSWORD;
+      }
+
       let serverNewsPromise = null;
       async function loadServerNews() {
         if (!hasServerAuth()) return null;
@@ -2162,6 +2318,11 @@
 
       let freeBoardMessage = "";
       let freeBoardMessageIsError = false;
+      let freeBoardMode = "list";
+      let freeBoardFilter = "all";
+      let freeBoardQuery = "";
+      let freeBoardPage = 1;
+      let freeBoardSelectedId = "";
 
       function showFreeBoardMessage(message, isError = false) {
         freeBoardMessage = String(message || "");
@@ -2184,11 +2345,14 @@
           : [];
         return {
           id: String(post.id || `post-${createdAt || Date.now()}`),
+          category: ["notice", "general", "info", "event"].includes(String(post.category || "")) ? String(post.category) : "general",
           title,
           author: String(post.author || "").trim().slice(0, 40),
           body,
           mediaUrls,
           createdAt: Number.isFinite(createdAt) ? createdAt : Date.now(),
+          views: Math.max(0, Math.floor(Number(post.views) || 0)),
+          likes: Math.max(0, Math.floor(Number(post.likes) || 0)),
         };
       }
 
@@ -2283,71 +2447,203 @@
         return date.toLocaleString("ko-KR");
       }
 
+      function formatFreeBoardShortTime(value) {
+        const date = new Date(Number(value) || Date.now());
+        const now = new Date();
+        if (
+          date.getFullYear() === now.getFullYear() &&
+          date.getMonth() === now.getMonth() &&
+          date.getDate() === now.getDate()
+        ) {
+          return date.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false });
+        }
+        const month = String(date.getMonth() + 1).padStart(2, "0");
+        const day = String(date.getDate()).padStart(2, "0");
+        return `${month}.${day}`;
+      }
+
+      function freeBoardCategoryLabel(category) {
+        const map = {
+          notice: "공지",
+          general: "일반",
+          info: "정보",
+          event: "대회",
+        };
+        return map[category] || "일반";
+      }
+
+      function getFilteredFreeBoardPosts(posts) {
+        const query = freeBoardQuery.trim().toLowerCase();
+        return posts.filter((post) => {
+          if (freeBoardFilter !== "all" && post.category !== freeBoardFilter) return false;
+          if (!query) return true;
+          return [post.title, post.body, post.author, freeBoardCategoryLabel(post.category)]
+            .some((value) => String(value || "").toLowerCase().includes(query));
+        });
+      }
+
+      function renderFreeBoardTabs() {
+        const tabs = [
+          ["all", "전체글"],
+          ["general", "일반"],
+          ["info", "정보"],
+          ["notice", "공지"],
+          ["event", "대회"],
+        ];
+        return `<div class="free-board-tabs">${tabs.map(([value, label]) => `
+          <button class="free-board-tab${freeBoardFilter === value ? " active" : ""}" type="button" data-free-board-filter="${escapeAttr(value)}">${escapeHtml(label)}</button>
+        `).join("")}</div>`;
+      }
+
+      function renderFreeBoardPagination(totalPages) {
+        if (totalPages <= 1) return "";
+        const pages = [];
+        for (let page = 1; page <= totalPages; page += 1) {
+          pages.push(`<button class="free-board-page${page === freeBoardPage ? " active" : ""}" type="button" data-free-board-page="${page}">${page}</button>`);
+        }
+        return `<div class="free-board-pagination">${pages.join("")}</div>`;
+      }
+
       function renderFreeBoardPosts(posts) {
         if (!posts.length) {
           return `<div class="free-board-empty">아직 등록된 글이 없습니다.</div>`;
         }
-        return posts
-          .map((post) => `
-            <article class="free-board-post">
-              <div class="free-board-post-head">
-                <div>
-                  <h3 class="free-board-post-title">${escapeHtml(post.title)}</h3>
-                  <div class="free-board-meta">${escapeHtml(post.author || "익명")} · ${escapeHtml(formatFreeBoardTime(post.createdAt))}</div>
-                </div>
-                <button class="free-board-delete" type="button" data-free-board-delete="${escapeAttr(post.id)}">삭제</button>
-              </div>
-              <div class="free-board-body">${renderSafePostBody(post.body)}</div>
-              ${renderFreeBoardMedia(post.mediaUrls)}
-            </article>
-          `)
-          .join("");
+        return `
+          <div class="free-board-table-wrap">
+            <table class="free-board-table">
+              <thead>
+                <tr>
+                  <th>번호</th>
+                  <th>말머리</th>
+                  <th>제목</th>
+                  <th>글쓴이</th>
+                  <th>작성일</th>
+                  <th>조회</th>
+                  <th>추천</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${posts.map((post, index) => `
+                  <tr>
+                    <td>${escapeHtml(String(posts.length - index))}</td>
+                    <td>${escapeHtml(freeBoardCategoryLabel(post.category))}</td>
+                    <td><button class="free-board-title-btn" type="button" data-free-board-open="${escapeAttr(post.id)}">${escapeHtml(post.title)}</button></td>
+                    <td>${escapeHtml(post.author || "익명")}</td>
+                    <td>${escapeHtml(formatFreeBoardShortTime(post.createdAt))}</td>
+                    <td>${formatNumber(post.views, 0)}</td>
+                    <td>${formatNumber(post.likes, 0)}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        `;
       }
 
       function renderFreeBoard() {
         const posts = loadFreeBoardPosts();
+        const filteredPosts = getFilteredFreeBoardPosts(posts);
+        const totalPages = Math.max(1, Math.ceil(filteredPosts.length / FREE_BOARD_PAGE_SIZE));
+        if (freeBoardPage > totalPages) freeBoardPage = 1;
+        const pagePosts = filteredPosts.slice((freeBoardPage - 1) * FREE_BOARD_PAGE_SIZE, freeBoardPage * FREE_BOARD_PAGE_SIZE);
+        const selectedPost = posts.find((post) => post.id === freeBoardSelectedId);
+
+        if (freeBoardMode === "read" && selectedPost) {
+          newsPanel.innerHTML = `
+            <div class="free-board-shell">
+              <section class="free-board-card">
+                <article class="free-board-read">
+                  <div class="free-board-read-head">
+                    <div class="free-board-meta">${escapeHtml(freeBoardCategoryLabel(selectedPost.category))} · ${escapeHtml(selectedPost.author || "익명")} · ${escapeHtml(formatFreeBoardTime(selectedPost.createdAt))} · 조회 ${formatNumber(selectedPost.views, 0)}</div>
+                    <h2 class="free-board-read-title">${escapeHtml(selectedPost.title)}</h2>
+                  </div>
+                  <div class="free-board-read-body">
+                    <div class="free-board-body">${renderSafePostBody(selectedPost.body)}</div>
+                    ${renderFreeBoardMedia(selectedPost.mediaUrls)}
+                  </div>
+                  <div class="free-board-actions">
+                    <button class="free-board-list-btn" type="button" data-free-board-list>목록</button>
+                    <button class="free-board-delete" type="button" data-free-board-delete="${escapeAttr(selectedPost.id)}">삭제</button>
+                  </div>
+                </article>
+              </section>
+            </div>
+          `;
+          return;
+        }
+
+        if (freeBoardMode === "write") {
+          newsPanel.innerHTML = `
+            <div class="free-board-shell">
+              <section class="free-board-card">
+                <form class="free-board-form" id="freeBoardForm">
+                  <div>
+                    <h2 class="free-board-title">글쓰기</h2>
+                    <p class="free-board-desc">제목과 내용을 입력한 뒤 서버 비밀번호로 등록합니다.</p>
+                  </div>
+                  <div class="free-board-field">
+                    <label for="freeBoardCategory">말머리</label>
+                    <select id="freeBoardCategory" name="category">
+                      <option value="general">일반</option>
+                      <option value="info">정보</option>
+                      <option value="notice">공지</option>
+                      <option value="event">대회</option>
+                    </select>
+                  </div>
+                  <div class="free-board-field">
+                    <label for="freeBoardTitle">제목</label>
+                    <input id="freeBoardTitle" name="title" type="text" maxlength="120" autocomplete="off" placeholder="제목" required />
+                  </div>
+                  <div class="free-board-field">
+                    <label for="freeBoardAuthor">글쓴이</label>
+                    <input id="freeBoardAuthor" name="author" type="text" maxlength="40" autocomplete="off" placeholder="익명 가능" />
+                  </div>
+                  <div class="free-board-field">
+                    <label for="freeBoardBody">내용 / 소스코드</label>
+                    <textarea id="freeBoardBody" name="body" maxlength="12000" placeholder="내용을 입력하세요. 코드는 \`\`\` 코드 \`\`\` 형태로 넣으면 코드 박스로 표시됩니다." required></textarea>
+                  </div>
+                  <div class="free-board-field">
+                    <label for="freeBoardMedia">이미지/동영상 URL</label>
+                    <textarea id="freeBoardMedia" name="media" placeholder="한 줄에 하나씩 입력하세요. 이미지와 mp4/webm/ogv 동영상만 허용됩니다."></textarea>
+                  </div>
+                  <div class="free-board-field">
+                    <label for="freeBoardPassword">등록 비밀번호</label>
+                    <input id="freeBoardPassword" name="password" type="password" autocomplete="off" placeholder="서버 비밀번호" required />
+                  </div>
+                  <div class="free-board-actions">
+                    <button class="free-board-submit" type="submit">등록</button>
+                    <button class="free-board-list-btn" type="button" data-free-board-list>목록</button>
+                    <span class="free-board-message${freeBoardMessageIsError ? " error" : ""}" id="freeBoardMessage">${escapeHtml(freeBoardMessage)}</span>
+                  </div>
+                </form>
+              </section>
+            </div>
+          `;
+          return;
+        }
+
         newsPanel.innerHTML = `
           <div class="free-board-shell">
             <section class="free-board-card">
-              <form class="free-board-form" id="freeBoardForm">
-                <div>
-                  <h2 class="free-board-title">${escapeHtml(TEXT.boardTitle)}</h2>
-                  <p class="free-board-desc">${escapeHtml(TEXT.boardDesc)}</p>
+              <div class="free-board-list">
+                <div class="free-board-toolbar">
+                  ${renderFreeBoardTabs()}
+                  <button class="free-board-write-btn" type="button" data-free-board-write>글쓰기</button>
                 </div>
-                <div class="free-board-help">${escapeHtml(TEXT.boardSafeHelp)}<br />${escapeHtml(TEXT.boardMediaHelp)}</div>
-                <div class="free-board-field">
-                  <label for="freeBoardTitle">제목</label>
-                  <input id="freeBoardTitle" name="title" type="text" maxlength="120" autocomplete="off" placeholder="제목" required />
+                ${renderFreeBoardPosts(pagePosts)}
+                <div class="free-board-bottom">
+                  ${renderFreeBoardTabs()}
+                  <button class="free-board-write-btn" type="button" data-free-board-write>글쓰기</button>
                 </div>
-                <div class="free-board-field">
-                  <label for="freeBoardAuthor">작성자</label>
-                  <input id="freeBoardAuthor" name="author" type="text" maxlength="40" autocomplete="off" placeholder="익명 가능" />
-                </div>
-                <div class="free-board-field">
-                  <label for="freeBoardBody">내용 / 소스코드</label>
-                  <textarea id="freeBoardBody" name="body" maxlength="12000" placeholder="내용을 입력하세요. 코드는 \`\`\` 코드 \`\`\` 형태로 넣으면 코드 박스로 표시됩니다." required></textarea>
-                </div>
-                <div class="free-board-field">
-                  <label for="freeBoardMedia">이미지/동영상 URL</label>
-                  <textarea id="freeBoardMedia" name="media" placeholder="한 줄에 하나씩 입력하세요. 이미지와 mp4/webm/ogv 동영상만 허용됩니다."></textarea>
-                </div>
-                <div class="free-board-field">
-                  <label for="freeBoardPassword">등록 비밀번호</label>
-                  <input id="freeBoardPassword" name="password" type="password" autocomplete="off" placeholder="사이트 비밀번호" required />
-                </div>
-                <div class="free-board-actions">
-                  <button class="free-board-submit" type="submit">등록</button>
+                ${renderFreeBoardPagination(totalPages)}
+                <div class="free-board-search">
+                  <select id="freeBoardSearchType" aria-label="검색 범위">
+                    <option value="titleBody">제목+내용</option>
+                  </select>
+                  <input id="freeBoardSearchInput" type="search" value="${escapeAttr(freeBoardQuery)}" placeholder="검색어" />
+                  <button class="free-board-submit" type="button" data-free-board-search>검색</button>
                   <span class="free-board-message${freeBoardMessageIsError ? " error" : ""}" id="freeBoardMessage">${escapeHtml(freeBoardMessage)}</span>
                 </div>
-              </form>
-            </section>
-            <section class="free-board-card">
-              <div class="free-board-list">
-                <div>
-                  <h2 class="free-board-title">게시글</h2>
-                  <p class="free-board-desc">최근 글 ${formatNumber(posts.length, 0)}개</p>
-                </div>
-                ${renderFreeBoardPosts(posts)}
               </div>
             </section>
           </div>
@@ -2729,14 +3025,14 @@
           }
           return;
         }
-        if (value === SITE_PASSWORD) {
+        if (SITE_PASSWORD && value === SITE_PASSWORD) {
           setLockExtendCount(0);
           setLockAuthFor24Hours();
           hideSiteLock();
           renderLockTtl();
           return;
         }
-        if (value && value.toLowerCase() === SITE_PASSWORD.toLowerCase()) {
+        if (SITE_PASSWORD && value && value.toLowerCase() === SITE_PASSWORD.toLowerCase()) {
           setLockCapsWarning(true);
           lockError.textContent = "Caps Lock 때문에 대문자로 입력된 것 같습니다.";
         } else {
@@ -2763,14 +3059,27 @@
       adminPasswordInput.addEventListener("keydown", updateAdminCapsWarning);
       adminPasswordInput.addEventListener("keyup", updateAdminCapsWarning);
       adminPasswordInput.addEventListener("blur", () => setAdminCapsWarning(false));
-      adminForm.addEventListener("submit", (event) => {
+      adminForm.addEventListener("submit", async (event) => {
         event.preventDefault();
         const value = String(adminPasswordInput.value || "");
-        if (value === SITE_PASSWORD) {
+        if (hasServerAuth()) {
+          try {
+            adminError.textContent = "서버에서 확인 중입니다...";
+            await loginWithServerPassword(value);
+            adminError.textContent = "";
+            showAdminDashboard();
+          } catch (_error) {
+            adminError.textContent = "비밀번호가 맞지 않거나 인증 서버에 연결할 수 없습니다.";
+            adminPasswordInput.value = "";
+            adminPasswordInput.focus();
+          }
+          return;
+        }
+        if (SITE_PASSWORD && value === SITE_PASSWORD) {
           showAdminDashboard();
           return;
         }
-        if (value && value.toLowerCase() === SITE_PASSWORD.toLowerCase()) {
+        if (SITE_PASSWORD && value && value.toLowerCase() === SITE_PASSWORD.toLowerCase()) {
           setAdminCapsWarning(true);
           adminError.textContent = "Caps Lock 때문에 대문자로 입력된 것 같습니다.";
         } else {
@@ -4394,19 +4703,23 @@
         render();
       });
 
-      newsPanel.addEventListener("submit", (event) => {
+      newsPanel.addEventListener("submit", async (event) => {
         const form = event.target.closest("#freeBoardForm");
         if (!form) return;
         event.preventDefault();
 
         const formData = new FormData(form);
         const password = String(formData.get("password") || "");
+        const category = String(formData.get("category") || "general");
         const title = String(formData.get("title") || "").trim();
         const author = String(formData.get("author") || "").trim();
         const body = String(formData.get("body") || "").trim();
         const mediaText = String(formData.get("media") || "");
 
-        if (password !== SITE_PASSWORD) {
+        try {
+          showFreeBoardMessage("서버에서 비밀번호 확인 중입니다...", false);
+          await verifySitePassword(password);
+        } catch (_error) {
           showFreeBoardMessage("비밀번호가 맞지 않습니다.", true);
           return;
         }
@@ -4425,33 +4738,107 @@
           const posts = loadFreeBoardPosts();
           posts.unshift({
             id: `post-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            category,
             title,
             author,
             body,
             mediaUrls: mediaResult.urls,
             createdAt: Date.now(),
+            views: 0,
+            likes: 0,
           });
           saveFreeBoardPosts(posts);
           form.reset();
           showFreeBoardMessage("등록했습니다.", false);
+          freeBoardMode = "list";
+          freeBoardPage = 1;
           renderFreeBoard();
         } catch (_error) {
           showFreeBoardMessage("저장 공간이 부족해서 등록하지 못했습니다.", true);
         }
       });
 
-      newsPanel.addEventListener("click", (event) => {
-        const button = event.target.closest("[data-free-board-delete]");
-        if (!button) return;
-        const password = window.prompt("삭제하려면 사이트 비밀번호를 입력하세요.");
-        if (password !== SITE_PASSWORD) {
+      newsPanel.addEventListener("click", async (event) => {
+        const filterButton = event.target.closest("[data-free-board-filter]");
+        if (filterButton) {
+          freeBoardFilter = String(filterButton.dataset.freeBoardFilter || "all");
+          freeBoardPage = 1;
+          freeBoardMode = "list";
+          renderFreeBoard();
+          return;
+        }
+
+        const pageButton = event.target.closest("[data-free-board-page]");
+        if (pageButton) {
+          freeBoardPage = Number(pageButton.dataset.freeBoardPage) || 1;
+          freeBoardMode = "list";
+          renderFreeBoard();
+          return;
+        }
+
+        if (event.target.closest("[data-free-board-search]")) {
+          const input = document.getElementById("freeBoardSearchInput");
+          freeBoardQuery = String(input?.value || "");
+          freeBoardPage = 1;
+          freeBoardMode = "list";
+          renderFreeBoard();
+          return;
+        }
+
+        const openButton = event.target.closest("[data-free-board-open]");
+        if (openButton) {
+          const id = String(openButton.dataset.freeBoardOpen || "");
+          const posts = loadFreeBoardPosts();
+          const target = posts.find((post) => post.id === id);
+          if (target) {
+            target.views = Math.max(0, Math.floor(Number(target.views) || 0)) + 1;
+            saveFreeBoardPosts(posts);
+            freeBoardSelectedId = id;
+            freeBoardMode = "read";
+            renderFreeBoard();
+          }
+          return;
+        }
+
+        if (event.target.closest("[data-free-board-write]")) {
+          freeBoardMode = "write";
+          showFreeBoardMessage("", false);
+          renderFreeBoard();
+          return;
+        }
+
+        if (event.target.closest("[data-free-board-list]")) {
+          freeBoardMode = "list";
+          freeBoardSelectedId = "";
+          renderFreeBoard();
+          return;
+        }
+
+        const deleteButton = event.target.closest("[data-free-board-delete]");
+        if (!deleteButton) return;
+        const password = window.prompt("삭제하려면 서버 비밀번호를 입력하세요.");
+        try {
+          await verifySitePassword(password);
+        } catch (_error) {
           showFreeBoardMessage("삭제 비밀번호가 맞지 않습니다.", true);
           return;
         }
-        const id = String(button.dataset.freeBoardDelete || "");
+        const id = String(deleteButton.dataset.freeBoardDelete || "");
         const posts = loadFreeBoardPosts().filter((post) => post.id !== id);
         saveFreeBoardPosts(posts);
+        freeBoardMode = "list";
+        freeBoardSelectedId = "";
         showFreeBoardMessage("삭제했습니다.", false);
+        renderFreeBoard();
+      });
+
+      newsPanel.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        if (!event.target.closest("#freeBoardSearchInput")) return;
+        event.preventDefault();
+        freeBoardQuery = String(event.target.value || "");
+        freeBoardPage = 1;
+        freeBoardMode = "list";
         renderFreeBoard();
       });
 
