@@ -1,0 +1,47 @@
+name: Deploy Cloudflare Worker
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "server-auth/**"
+      - ".github/workflows/deploy-worker.yml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Write Worker config
+        working-directory: server-auth
+        run: |
+          cat > wrangler.toml <<'EOF'
+          name = "coin-board-auth"
+          main = "cloudflare-worker.js"
+          compatibility_date = "2026-06-12"
+
+          [vars]
+          FRONTEND_ORIGIN = "https://fnfnfn3232.github.io"
+          NEWS_LIMIT = "40"
+          NEWS_BODY_MODE = "preview"
+          EOF
+
+      - name: Deploy Worker
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: server-auth
+          secrets: |
+            SITE_PASSWORD_SHA256
+            SESSION_SECRET
+        env:
+          SITE_PASSWORD_SHA256: ${{ secrets.SITE_PASSWORD_SHA256 }}
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+
