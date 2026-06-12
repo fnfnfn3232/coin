@@ -4,6 +4,8 @@ GitHub Pages is static hosting. A password written in `index.html` only hides th
 
 This folder contains a Cloudflare Worker template for that server API.
 
+The current frontend is wired to use this API when `window.SERVER_AUTH_API_BASE` is set before the main script runs. Until a Worker URL is configured, the existing client-side lock remains as a fallback so the live site does not break.
+
 ## What changes
 
 - Password is not stored in `index.html`.
@@ -66,3 +68,16 @@ POST /api/logout
 
 This protects data served by the Worker. It does not protect any data that is still committed into public `data.js`, `board_snapshot.json`, or the GitHub repository. If full text should be private, do not write it to those files.
 
+Also, do not reuse the old client-side password as the Worker password after deployment. The old password has already existed in public frontend code. Use a new password when setting `SITE_PASSWORD_SHA256`.
+
+## Frontend hookup
+
+After the Worker is deployed, add this before the main inline script in `index.html`:
+
+```html
+<script>
+  window.SERVER_AUTH_API_BASE = "https://coin-board-auth.your-subdomain.workers.dev";
+</script>
+```
+
+Then remove the legacy client-side fallback password from `index.html` once the Worker login is confirmed.
