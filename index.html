@@ -179,6 +179,10 @@
       box-shadow: 0 24px 70px rgba(0, 0, 0, 0.48);
     }
 
+    .delete-auth-card {
+      width: min(520px, calc(100vw - 32px));
+    }
+
     .admin-auth,
     .admin-dashboard {
       padding: 18px;
@@ -2018,6 +2022,28 @@
     </section>
   </div>
 
+  <div class="admin-modal hidden" id="deleteAuthModal" aria-modal="true" role="dialog" aria-labelledby="deleteAuthTitle">
+    <section class="admin-card delete-auth-card">
+      <div class="admin-auth">
+        <div class="admin-head">
+          <div>
+            <h2 class="admin-title" id="deleteAuthTitle">글 삭제 확인</h2>
+            <p class="admin-desc">삭제하려면 서버 비밀번호를 입력해 주세요.</p>
+          </div>
+          <button class="admin-close" id="deleteAuthCloseBtn" type="button">닫기</button>
+        </div>
+        <form class="admin-form" id="deleteAuthForm">
+          <div class="lock-input-wrap">
+            <input id="deleteAuthPasswordInput" type="password" autocomplete="off" placeholder="서버 비밀번호" />
+          </div>
+          <button type="submit">삭제</button>
+          <button class="admin-close" id="deleteAuthCancelBtn" type="button">취소</button>
+        </form>
+        <div class="admin-error" id="deleteAuthError"></div>
+      </div>
+    </section>
+  </div>
+
   <div class="coin-info-modal hidden" id="coinInfoModal" aria-modal="true" role="dialog" aria-labelledby="coinInfoTitle">
     <section class="coin-info-card">
       <div class="coin-info-head">
@@ -2246,6 +2272,12 @@
       const adminCloseBtn = document.getElementById("adminCloseBtn");
       const adminAuthCloseBtn = document.getElementById("adminAuthCloseBtn");
       const adminCancelBtn = document.getElementById("adminCancelBtn");
+      const deleteAuthModal = document.getElementById("deleteAuthModal");
+      const deleteAuthForm = document.getElementById("deleteAuthForm");
+      const deleteAuthPasswordInput = document.getElementById("deleteAuthPasswordInput");
+      const deleteAuthError = document.getElementById("deleteAuthError");
+      const deleteAuthCloseBtn = document.getElementById("deleteAuthCloseBtn");
+      const deleteAuthCancelBtn = document.getElementById("deleteAuthCancelBtn");
       const coinInfoModal = document.getElementById("coinInfoModal");
       const coinInfoTitle = document.getElementById("coinInfoTitle");
       const coinInfoSubtitle = document.getElementById("coinInfoSubtitle");
@@ -2313,6 +2345,7 @@
       let freeBoardQuery = "";
       let freeBoardPage = 1;
       let freeBoardSelectedId = "";
+      let pendingDeletePostId = "";
       let isApplyingHistoryState = false;
 
       function showFreeBoardMessage(message, isError = false) {
@@ -2920,6 +2953,32 @@
         setAdminCapsWarning(false);
       }
 
+      function showDeleteAuthModal(postId) {
+        pendingDeletePostId = String(postId || "");
+        deleteAuthModal.classList.remove("hidden");
+        deleteAuthPasswordInput.value = "";
+        deleteAuthError.textContent = "";
+        window.setTimeout(() => deleteAuthPasswordInput.focus(), 0);
+      }
+
+      function closeDeleteAuthModal() {
+        deleteAuthModal.classList.add("hidden");
+        deleteAuthPasswordInput.value = "";
+        deleteAuthError.textContent = "";
+        pendingDeletePostId = "";
+      }
+
+      function deleteFreeBoardPostById(postId) {
+        const id = String(postId || "");
+        const posts = loadFreeBoardPosts().filter((post) => post.id !== id);
+        saveFreeBoardPosts(posts);
+        freeBoardMode = "list";
+        freeBoardSelectedId = "";
+        showFreeBoardMessage("삭제했습니다.", false);
+        renderFreeBoard();
+        writeAppHistoryState();
+      }
+
       function showAdminDashboard() {
         renderAdminDashboard();
         adminAuthPanel.hidden = true;
@@ -3063,6 +3122,32 @@
           closeAdminModal();
         }
       });
+      deleteAuthCloseBtn.addEventListener("click", closeDeleteAuthModal);
+      deleteAuthCancelBtn.addEventListener("click", closeDeleteAuthModal);
+      deleteAuthModal.addEventListener("click", (event) => {
+        if (event.target === deleteAuthModal) {
+          closeDeleteAuthModal();
+        }
+      });
+      deleteAuthForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const postId = pendingDeletePostId;
+        const password = String(deleteAuthPasswordInput.value || "");
+        if (!postId) {
+          closeDeleteAuthModal();
+          return;
+        }
+        try {
+          deleteAuthError.textContent = "서버에서 확인 중입니다...";
+          await verifySitePassword(password);
+          closeDeleteAuthModal();
+          deleteFreeBoardPostById(postId);
+        } catch (_error) {
+          deleteAuthError.textContent = "비밀번호가 맞지 않습니다.";
+          deleteAuthPasswordInput.value = "";
+          deleteAuthPasswordInput.focus();
+        }
+      });
       adminPasswordInput.addEventListener("keydown", updateAdminCapsWarning);
       adminPasswordInput.addEventListener("keyup", updateAdminCapsWarning);
       adminPasswordInput.addEventListener("blur", () => setAdminCapsWarning(false));
@@ -3103,6 +3188,10 @@
         }
         if (!adminModal.classList.contains("hidden")) {
           closeAdminModal();
+          return;
+        }
+        if (!deleteAuthModal.classList.contains("hidden")) {
+          closeDeleteAuthModal();
         }
       });
 
@@ -4924,21 +5013,7 @@
 
         const deleteButton = event.target.closest("[data-free-board-delete]");
         if (!deleteButton) return;
-        const password = window.prompt("삭제하려면 서버 비밀번호를 입력하세요.");
-        try {
-          await verifySitePassword(password);
-        } catch (_error) {
-          showFreeBoardMessage("삭제 비밀번호가 맞지 않습니다.", true);
-          return;
-        }
-        const id = String(deleteButton.dataset.freeBoardDelete || "");
-        const posts = loadFreeBoardPosts().filter((post) => post.id !== id);
-        saveFreeBoardPosts(posts);
-        freeBoardMode = "list";
-        freeBoardSelectedId = "";
-        showFreeBoardMessage("삭제했습니다.", false);
-        renderFreeBoard();
-        writeAppHistoryState();
+        showDeleteAuthModal(deleteButton.dataset.freeBoardDelete || "");
       });
 
       newsPanel.addEventListener("keydown", (event) => {
