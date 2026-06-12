@@ -569,15 +569,15 @@ def build_news_item(entry: dict) -> dict | None:
     content = clean_news_text(entry.get("content"))
     if not title and not content:
         return None
+    preview = make_news_preview(content or title)
 
     return {
         "id": news_id,
         "publishAt": publish_at,
         "publishAtTs": publish_at_ts,
         "headline": title or "코인니스 속보",
-        "summary": content or title,
+        "summary": preview,
         "originalTitle": title,
-        "originalContent": content,
         "contentImage": str(entry.get("contentImage") or "").strip(),
         "articleUrl": f"https://coinness.com/news/{news_id}",
         "originUrl": str(entry.get("link") or "").strip(),
@@ -600,16 +600,15 @@ def normalize_previous_news_items(previous_news: dict | None, *, cutoff_ts: int)
                 published_ts = int(raw.get("publishAtTs") or 0)
             if published_ts >= cutoff_ts:
                 title = clean_news_text(raw.get("originalTitle") or raw.get("title") or raw.get("headline"))
-                content = clean_news_text(raw.get("originalContent") or raw.get("content") or raw.get("summary"))
+                preview = make_news_preview(raw.get("contentPreview") or raw.get("summary") or raw.get("content"))
                 normalized.append(
                     {
                         "id": int(raw.get("id") or 0),
                         "publishAt": str(raw.get("publishAt") or ""),
                         "publishAtTs": published_ts,
                         "headline": title or str(raw.get("headline") or ""),
-                        "summary": content or str(raw.get("summary") or ""),
+                        "summary": preview,
                         "originalTitle": title,
-                        "originalContent": content,
                         "contentImage": str(raw.get("contentImage") or ""),
                         "articleUrl": str(raw.get("articleUrl") or ""),
                         "originUrl": str(raw.get("originUrl") or ""),
@@ -879,6 +878,13 @@ def clean_news_text(value: object) -> str:
     lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
     text = "\n".join(line for line in lines if line)
     return text.strip()
+
+
+def make_news_preview(value: object, *, max_chars: int = 140) -> str:
+    text = re.sub(r"\s+", " ", clean_news_text(value)).strip()
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1].rstrip() + "…"
 
 
 def keep_info_text(value: object) -> str:
