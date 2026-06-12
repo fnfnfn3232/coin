@@ -30,6 +30,7 @@ COINGECKO_MARKETS_ENDPOINT = "https://api.coingecko.com/api/v3/coins/markets"
 COINGECKO_MARKETS_PAGE_SIZE = 250
 COINGECKO_MARKETS_MAX_PAGES = 4
 COINBASE_CURRENCIES_ENDPOINT = "https://api.exchange.coinbase.com/currencies"
+COINBASE_MARKET_PRODUCTS_ENDPOINT = "https://api.coinbase.com/api/v3/brokerage/market/products"
 ETHEREUM_RPC_ENDPOINT = "https://ethereum-rpc.publicnode.com"
 ERC20_DECIMALS_SELECTOR = "0x313ce567"
 ERC20_TOTAL_SUPPLY_SELECTOR = "0x18160ddd"
@@ -1252,14 +1253,46 @@ def fetch_bithumb() -> list[dict]:
     return rows
 
 
+def fetch_coinbase_usd_price_map() -> dict[str, float]:
+    query = urllib.parse.urlencode({"limit": 500})
+    payload = fetch_json(f"{COINBASE_MARKET_PRODUCTS_ENDPOINT}?{query}", retries=2, pause=1.0)
+    products = payload.get("products") if isinstance(payload, dict) else None
+    price_map: dict[str, float] = {}
+    if isinstance(products, list):
+        for item in products:
+            if not isinstance(item, dict):
+                continue
+            product_id = str(item.get("product_id") or "").upper().strip()
+            quote_currency = str(item.get("quote_currency_id") or "").upper().strip()
+            status = str(item.get("status") or "").lower().strip()
+            product_type = str(item.get("product_type") or "").upper().strip()
+            trading_disabled = bool(item.get("trading_disabled") or item.get("is_disabled") or item.get("view_only"))
+            price = to_float(item.get("price"))
+            if not product_id or quote_currency != "USD" or status != "online" or trading_disabled:
+                continue
+            if product_type and product_type != "SPOT":
+                continue
+            if price is not None:
+                price_map[product_id] = price
+    return price_map
+
+
 def fetch_coinbase() -> list[dict]:
     payload = fetch_json("https://api.exchange.coinbase.com/products")
     if not isinstance(payload, list):
         return []
+    try:
+        price_map = fetch_coinbase_usd_price_map()
+    except Exception:  # noqa: BLE001
+        price_map = {}
+
+    products = payload
+    if not isinstance(products, list):
+        return []
 
     rows: list[dict] = []
     seen_symbols: set[str] = set()
-    for item in payload:
+    for item in products:
         if not isinstance(item, dict):
             continue
 
@@ -1281,20 +1314,23 @@ def fetch_coinbase() -> list[dict]:
         seen_symbols.add(base_currency)
         compare_symbol = COINBASE_COMPARE_SYMBOL_MAP.get(base_currency, base_currency)
         symbol_alias_of = compare_symbol if compare_symbol != base_currency else None
+        price_usd = to_float(price_map.get(f"{base_currency}-USD"))
+        price_krw = price_usd * FX_USD_KRW if price_usd is not None else None
+        display_name = "Gensyn" if base_currency == GENSYN_SYMBOL else base_currency
 
         row = {
                 "symbol": base_currency,
                 "pair": f"{base_currency}/USD",
                 "compareSymbol": compare_symbol,
                 "symbolAliasOf": symbol_alias_of,
-                "name": "Gensyn" if base_currency == GENSYN_SYMBOL else base_currency,
-                "englishName": "Gensyn" if base_currency == GENSYN_SYMBOL else base_currency,
+                "name": display_name,
+                "englishName": display_name,
                 "koreanName": "젠신" if base_currency == GENSYN_SYMBOL else base_currency,
                 "marketCapUsd": None,
                 "marketCapKrw": None,
-                "priceUsd": None,
-                "priceKrw": None,
-                "priceSource": "coinbase_exchange_products",
+                "priceUsd": price_usd,
+                "priceKrw": price_krw,
+                "priceSource": "coinbase_market_products" if price_usd is not None else "coinbase_market_products_missing",
                 "circulatingSupply": None,
                 "totalSupply": None,
                 "fdvUsd": None,
@@ -1307,8 +1343,8 @@ def fetch_coinbase() -> list[dict]:
                 "status": "missing",
                 "nameKeys": list(
                     build_name_keys(
-                        "Gensyn" if base_currency == GENSYN_SYMBOL else base_currency,
-                        "Gensyn" if base_currency == GENSYN_SYMBOL else base_currency,
+                        display_name,
+                        display_name,
                         "젠신" if base_currency == GENSYN_SYMBOL else compare_symbol,
                     )
                 ),
@@ -1421,13 +1457,18 @@ def apply_coinbase_reference_fills(
         if market_candidate is None and supply_candidate is None:
             continue
 
+        has_coinbase_price = (
+            to_float(coinbase_row.get("priceUsd")) is not None
+            and str(coinbase_row.get("priceSource") or "").startswith("coinbase_market_products")
+        )
         if market_candidate is not None:
             copy_positive_numbers(
                 coinbase_row,
                 market_candidate,
-                ("marketCapUsd", "marketCapKrw", "priceUsd", "priceKrw"),
+                ("marketCapUsd", "marketCapKrw") if has_coinbase_price else ("marketCapUsd", "marketCapKrw", "priceUsd", "priceKrw"),
             )
-            coinbase_row["priceSource"] = str(market_candidate.get("priceSource") or coinbase_row.get("priceSource") or "")
+            if not has_coinbase_price:
+                coinbase_row["priceSource"] = str(market_candidate.get("priceSource") or coinbase_row.get("priceSource") or "")
 
         if supply_candidate is not None:
             supply_changed = copy_positive_numbers(
@@ -1450,6 +1491,13 @@ def apply_coinbase_reference_fills(
 
         coinbase_row["capSource"] = "coinbase_fill_same_symbol"
         coinbase_row["capSourceDetail"] = f"coinbase_exchange_markets|{market_source_detail or supply_source_detail}"
+        price_usd = to_float(coinbase_row.get("priceUsd"))
+        circulating_supply = to_float(coinbase_row.get("circulatingSupply"))
+        if has_coinbase_price and price_usd is not None and circulating_supply is not None:
+            coinbase_row["marketCapUsd"] = price_usd * circulating_supply
+            coinbase_row["marketCapKrw"] = coinbase_row["marketCapUsd"] * FX_USD_KRW
+            coinbase_row["capSource"] = "coinbase_market_products"
+            coinbase_row["capSourceDetail"] = f"coinbase_price|supply:{supply_source_detail or market_source_detail}"
         if to_float(coinbase_row.get("marketCapUsd")) is not None or to_float(coinbase_row.get("marketCapKrw")) is not None:
             coinbase_row["status"] = "ok"
 
