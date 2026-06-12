@@ -114,3 +114,5 @@ https://coin-board-auth.<your-subdomain>.workers.dev
 ```
 
 Use that URL as `window.SERVER_AUTH_API_BASE`.
+
+Last deployment trigger prepared at 2026-06-12 17:16:37 +09:00.
