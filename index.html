@@ -2309,6 +2309,7 @@
       let freeBoardQuery = "";
       let freeBoardPage = 1;
       let freeBoardSelectedId = "";
+      let isApplyingHistoryState = false;
 
       function showFreeBoardMessage(message, isError = false) {
         freeBoardMessage = String(message || "");
@@ -4317,7 +4318,44 @@
         };
       }
 
-      function setViewMode(mode) {
+      function getCurrentAppHistoryState() {
+        return {
+          app: "exchange-market-cap",
+          viewMode: state.viewMode,
+          freeBoardMode,
+          freeBoardSelectedId,
+          freeBoardPage,
+          freeBoardQuery,
+        };
+      }
+
+      function writeAppHistoryState(replace = false) {
+        if (isApplyingHistoryState || !window.history?.pushState) return;
+        const payload = getCurrentAppHistoryState();
+        if (replace) {
+          window.history.replaceState(payload, "", window.location.href);
+          return;
+        }
+        window.history.pushState(payload, "", window.location.href);
+      }
+
+      function applyAppHistoryState(payload) {
+        if (!payload || payload.app !== "exchange-market-cap") {
+          freeBoardMode = "list";
+          freeBoardSelectedId = "";
+          setViewMode("market", { writeHistory: false });
+          return;
+        }
+        isApplyingHistoryState = true;
+        freeBoardMode = ["list", "read", "write"].includes(payload.freeBoardMode) ? payload.freeBoardMode : "list";
+        freeBoardSelectedId = String(payload.freeBoardSelectedId || "");
+        freeBoardPage = Math.max(1, Math.floor(Number(payload.freeBoardPage) || 1));
+        freeBoardQuery = String(payload.freeBoardQuery || "");
+        setViewMode(payload.viewMode, { writeHistory: false });
+        isApplyingHistoryState = false;
+      }
+
+      function setViewMode(mode, options = {}) {
         state.viewMode = mode === "news" || mode === "board" ? mode : "market";
         const isNewsMode = state.viewMode === "news";
         const isBoardMode = state.viewMode === "board";
@@ -4328,10 +4366,12 @@
         if (isNewsMode || isBoardMode) {
           renderContentPanel();
         }
+        if (options.writeHistory !== false) {
+          writeAppHistoryState(Boolean(options.replaceHistory));
+        }
       }
 
       function goHomeView() {
-        setViewMode("market");
         state.board = "binance";
         state.page = 1;
         state.query = "";
@@ -4339,11 +4379,14 @@
         state.compareBoard2 = "";
         state.compareBoard3 = "";
         state.sortDirection = "desc";
+        freeBoardMode = "list";
+        freeBoardSelectedId = "";
         searchInput.value = "";
         baseBoardSelect.value = "binance";
         compareBoardSelect.value = "";
         compareBoardSelect2.value = "";
         compareBoardSelect3.value = "";
+        setViewMode("market");
         renderCapHeader();
         render();
       }
@@ -4718,6 +4761,7 @@
           freeBoardMode = "list";
           freeBoardPage = 1;
           renderFreeBoard();
+          writeAppHistoryState();
         } catch (_error) {
           showFreeBoardMessage("저장 공간이 부족해서 등록하지 못했습니다.", true);
         }
@@ -4730,6 +4774,7 @@
           freeBoardPage = 1;
           freeBoardMode = "list";
           renderFreeBoard();
+          writeAppHistoryState(true);
           return;
         }
 
@@ -4738,6 +4783,7 @@
           freeBoardPage = Number(pageButton.dataset.freeBoardPage) || 1;
           freeBoardMode = "list";
           renderFreeBoard();
+          writeAppHistoryState(true);
           return;
         }
 
@@ -4747,6 +4793,7 @@
           freeBoardPage = 1;
           freeBoardMode = "list";
           renderFreeBoard();
+          writeAppHistoryState(true);
           return;
         }
 
@@ -4761,6 +4808,7 @@
             freeBoardSelectedId = id;
             freeBoardMode = "read";
             renderFreeBoard();
+            writeAppHistoryState();
           }
           return;
         }
@@ -4769,6 +4817,7 @@
           freeBoardMode = "write";
           showFreeBoardMessage("", false);
           renderFreeBoard();
+          writeAppHistoryState();
           return;
         }
 
@@ -4776,6 +4825,7 @@
           freeBoardMode = "list";
           freeBoardSelectedId = "";
           renderFreeBoard();
+          writeAppHistoryState();
           return;
         }
 
@@ -4795,6 +4845,7 @@
         freeBoardSelectedId = "";
         showFreeBoardMessage("삭제했습니다.", false);
         renderFreeBoard();
+        writeAppHistoryState();
       });
 
       newsPanel.addEventListener("keydown", (event) => {
@@ -4805,6 +4856,7 @@
         freeBoardPage = 1;
         freeBoardMode = "list";
         renderFreeBoard();
+        writeAppHistoryState(true);
       });
 
       newsToggleBtn.addEventListener("click", () => {
@@ -4813,6 +4865,10 @@
 
       boardToggleBtn.addEventListener("click", () => {
         setViewMode("board");
+      });
+
+      window.addEventListener("popstate", (event) => {
+        applyAppHistoryState(event.state);
       });
 
       titleHeading.addEventListener("click", () => {
@@ -4859,7 +4915,7 @@
       renderAutoStatus();
       renderManualRefreshState();
       renderLockTtl();
-      setViewMode("market");
+      setViewMode("market", { replaceHistory: true });
       checkSiteLock();
       updateTopControlsVisibility();
       updateScrollControls();
