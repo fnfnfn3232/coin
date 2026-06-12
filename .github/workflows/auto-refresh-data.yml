@@ -9,8 +9,9 @@ on:
       - "build_data.py"
       - "mapping.json"
   schedule:
-    # Every 10 minutes (UTC), offset from peak :00/:10 queues for better reliability
-    - cron: "3,13,23,33,43,53 * * * *"
+    # GitHub scheduled workflows can be delayed or skipped, so request the
+    # shortest supported cadence and let concurrency keep only one run active.
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 permissions:

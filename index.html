@@ -2365,7 +2365,7 @@
         liveNewsPromise = fetchServerAuth(`/api/news?ts=${Date.now()}`, { method: "GET" })
           .then((payload) => {
             if (!payload || !Array.isArray(payload.items) || !payload.items.length) {
-              throw new Error("live_news_empty");
+              throw new Error(payload?.error || "live_news_empty");
             }
             data.news = payload;
             liveNewsFetchedAtMs = Date.now();
@@ -2375,7 +2375,10 @@
             return data.news;
           })
           .catch((error) => {
-            liveNewsError = "최신 뉴스 갱신에 실패했습니다. 잠시 후 다시 시도합니다.";
+            const message = error instanceof Error ? error.message : String(error || "");
+            liveNewsError = message.includes("403")
+              ? "코인니스가 서버 갱신을 차단해 GitHub 자동 데이터 기준으로 표시 중입니다."
+              : "최신 뉴스 갱신에 실패했습니다. 잠시 후 다시 시도합니다.";
             throw error;
           })
           .finally(() => {
