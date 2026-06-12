@@ -208,9 +208,6 @@ export default {
       return handleLogout(env);
     }
     if (url.pathname === "/api/news" && request.method === "GET") {
-      if (!(await isAuthenticated(request, env))) {
-        return jsonResponse({ error: "unauthorized" }, 401, env);
-      }
       return jsonResponse(await fetchCoinnessNews(env), 200, env);
     }
 

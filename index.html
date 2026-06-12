@@ -2079,6 +2079,7 @@
     const FREE_BOARD_MAX_POSTS = 80;
     const FREE_BOARD_MAX_MEDIA = 4;
     const FREE_BOARD_PAGE_SIZE = 20;
+    const LIVE_NEWS_REFRESH_MS = 60 * 1000;
     const LOCK_TTL_MS = 24 * 60 * 60 * 1000;
     const LOCK_EXTEND_MAX = 3;
     const MANUAL_REFRESH_COOLDOWN_MS = 30 * 1000;
@@ -2338,6 +2339,28 @@
         return Boolean(SITE_PASSWORD) && String(password || "") === SITE_PASSWORD;
       }
 
+      async function refreshLiveNews(force = false) {
+        if (!hasServerAuth()) return null;
+        const now = Date.now();
+        if (!force && liveNewsPromise) return liveNewsPromise;
+        if (!force && now - liveNewsFetchedAtMs < LIVE_NEWS_REFRESH_MS) return data.news || null;
+
+        liveNewsPromise = fetchServerAuth("/api/news", { method: "GET" })
+          .then((payload) => {
+            if (!payload || !Array.isArray(payload.items)) {
+              throw new Error("live_news_empty");
+            }
+            data.news = payload;
+            liveNewsFetchedAtMs = Date.now();
+            saveLastGoodData(data);
+            return data.news;
+          })
+          .finally(() => {
+            liveNewsPromise = null;
+          });
+        return liveNewsPromise;
+      }
+
       let freeBoardMessage = "";
       let freeBoardMessageIsError = false;
       let freeBoardMode = "list";
@@ -2347,6 +2370,8 @@
       let freeBoardSelectedId = "";
       let pendingDeletePostId = "";
       let isApplyingHistoryState = false;
+      let liveNewsPromise = null;
+      let liveNewsFetchedAtMs = 0;
 
       function showFreeBoardMessage(message, isError = false) {
         freeBoardMessage = String(message || "");
@@ -2707,6 +2732,13 @@
       }
 
       function renderNewsPanel() {
+        if (hasServerAuth() && !liveNewsPromise && Date.now() - liveNewsFetchedAtMs >= LIVE_NEWS_REFRESH_MS) {
+          refreshLiveNews()
+            .then(() => {
+              if (state.viewMode === "news") renderNewsPanel();
+            })
+            .catch((error) => console.error(error));
+        }
         const items = Array.isArray(data.news?.items) ? data.news.items : [];
         if (!items.length) {
           newsPanel.innerHTML = `<p class="news-empty">${escapeHtml(TEXT.newsEmpty)}</p>`;
@@ -4345,7 +4377,7 @@
             saveLastGoodData(data);
             renderSummaryStats();
             renderAutoStatus();
-            render();
+            renderCurrentView();
           }
 
           return { changed };
@@ -4398,6 +4430,14 @@
         if (idx < 0) return null;
         const payload = String(scriptText || "").slice(idx + marker.length).trim().replace(/;+\s*$/, "");
         return JSON.parse(payload);
+      }
+
+      function renderCurrentView() {
+        if (state.viewMode === "news" || state.viewMode === "board") {
+          renderContentPanel();
+          return;
+        }
+        render();
       }
 
       function renderSummaryStats() {
@@ -4456,7 +4496,7 @@
         saveLastGoodData(data);
         renderSummaryStats();
         renderAutoStatus();
-        render();
+        renderCurrentView();
         return {
           changed: Number(parsed.generatedAt || 0) !== beforeGeneratedAt,
           generatedAt: Number(parsed.generatedAt || 0),
@@ -5127,6 +5167,16 @@
             const fileResult = await fetchLatestBoardData();
             anySuccess = true;
             changed = changed || Boolean(fileResult && fileResult.changed);
+          } catch (error) {
+            console.error(error);
+          }
+
+          try {
+            const beforeFirstNewsId = data.news?.items?.[0]?.id || "";
+            const newsResult = await refreshLiveNews(true);
+            anySuccess = true;
+            changed = changed || Boolean(newsResult?.items?.[0]?.id && newsResult.items[0].id !== beforeFirstNewsId);
+            if (state.viewMode === "news") renderNewsPanel();
           } catch (error) {
             console.error(error);
           }
