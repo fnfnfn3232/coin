@@ -2474,7 +2474,7 @@
         const year = pick("year");
         const month = String(Number(pick("month")) || pick("month"));
         const day = String(Number(pick("day")) || pick("day"));
-        const hour = String(Number(pick("hour")) || pick("hour"));
+        const hour = String(Number(pick("hour")) || pick("hour")).padStart(2, "0");
         const minute = pick("minute");
         if (!year || !month || !day || !hour) return raw;
         return `${year}년 ${month}월 ${day}일 ${hour}시${minute && minute !== "00" ? ` ${minute}분` : ""}`;
@@ -4252,7 +4252,7 @@
 
       function getDataSourceCandidates() {
         const ts = Date.now();
-        return [`./data.js?ts=${ts}`, `${REMOTE_DATA_URL}?ts=${ts}`];
+        return [`${REMOTE_DATA_URL}?ts=${ts}`, `./data.js?ts=${ts}`];
       }
 
       async function fetchBoardDataScriptText(url) {
