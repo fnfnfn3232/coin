@@ -1701,7 +1701,7 @@
     const BOOT_REFRESH_LAST_KEY = "fdv_boot_refresh_last_v5";
     const LAST_GOOD_DATA_KEY = "fdv_last_good_data_v5";
     const UPBIT_TICKER_BATCH_SIZE = 100;
-    const COINBASE_MARKET_PRODUCTS_URL = "https://api.coinbase.com/api/v3/brokerage/market/products?limit=500";
+    const COINBASE_PRODUCT_STATS_URL = "https://api.exchange.coinbase.com/products/stats";
     const GENSYN_SYMBOL = "AI";
     const GENSYN_BINANCE_SYMBOL = "AIGENSYN";
     const GENSYN_CIRCULATING_SUPPLY = 1_304_675_313;
@@ -3200,20 +3200,15 @@
 
         const coinbasePriceByProduct = new Map();
         try {
-          const payload = await fetchJsonNoCache(COINBASE_MARKET_PRODUCTS_URL);
-          const products = Array.isArray(payload?.products) ? payload.products : [];
-          for (const item of products) {
-            if (!item || typeof item !== "object") continue;
-            const productId = String(item.product_id || "").toUpperCase();
-            const quote = String(item.quote_currency_id || "").toUpperCase();
-            const status = String(item.status || "").toLowerCase();
-            const productType = String(item.product_type || "").toUpperCase();
-            const disabled = Boolean(item.trading_disabled || item.is_disabled || item.view_only);
-            const price = toPositiveNumber(item.price);
-            if (!productId || quote !== "USD" || status !== "online" || disabled) continue;
-            if (productType && productType !== "SPOT") continue;
-            if (price === null) continue;
-            coinbasePriceByProduct.set(productId, price);
+          const payload = await fetchJsonNoCache(COINBASE_PRODUCT_STATS_URL);
+          if (payload && typeof payload === "object") {
+            for (const [productId, stats] of Object.entries(payload)) {
+              const productIdText = String(productId || "").toUpperCase();
+              if (!productIdText.endsWith("-USD") || !stats || typeof stats !== "object") continue;
+              const price = toPositiveNumber(stats?.stats_24hour?.last);
+              if (price === null) continue;
+              coinbasePriceByProduct.set(productIdText, price);
+            }
           }
         } catch (error) {
           console.error(error);
