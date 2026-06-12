@@ -1,0 +1,13 @@
+name = "coin-board-auth"
+main = "cloudflare-worker.js"
+compatibility_date = "2026-06-12"
+
+[vars]
+FRONTEND_ORIGIN = "https://fnfnfn3232.github.io"
+NEWS_LIMIT = "40"
+NEWS_BODY_MODE = "preview"
+
+# Set these as secrets, not plain vars:
+# wrangler secret put SITE_PASSWORD_SHA256
+# wrangler secret put SESSION_SECRET
+

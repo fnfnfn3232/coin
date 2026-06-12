@@ -1887,6 +1887,7 @@
     const LOCK_EXTEND_COUNT_KEY = "fdv_lock_extend_count_v1";
     const MANUAL_REFRESH_LAST_KEY = "fdv_manual_refresh_last_v1";
     const ADMIN_TRAFFIC_KEY = "fdv_admin_traffic_v1";
+    const SERVER_AUTH_API_BASE = String(window.SERVER_AUTH_API_BASE || "").replace(/\/+$/, "");
     const FREE_BOARD_STORAGE_KEY = "fdv_free_board_posts_v1";
     const FREE_BOARD_MAX_POSTS = 80;
     const FREE_BOARD_MAX_MEDIA = 4;
@@ -2102,6 +2103,60 @@
         return escapeHtml(value);
       }
 
+      function hasServerAuth() {
+        return Boolean(SERVER_AUTH_API_BASE);
+      }
+
+      async function fetchServerAuth(path, options = {}) {
+        const response = await fetch(`${SERVER_AUTH_API_BASE}${path}`, {
+          ...options,
+          credentials: "include",
+          headers: {
+            "Content-Type": "application/json",
+            ...(options.headers || {}),
+          },
+        });
+        let payload = null;
+        try {
+          payload = await response.json();
+        } catch (_error) {
+          payload = null;
+        }
+        if (!response.ok) {
+          const message = payload?.error || `server_auth_failed:${response.status}`;
+          throw new Error(message);
+        }
+        return payload;
+      }
+
+      async function loginWithServerPassword(password) {
+        return fetchServerAuth("/api/login", {
+          method: "POST",
+          body: JSON.stringify({ password }),
+        });
+      }
+
+      let serverNewsPromise = null;
+      async function loadServerNews() {
+        if (!hasServerAuth()) return null;
+        if (serverNewsPromise) return serverNewsPromise;
+        serverNewsPromise = fetchServerAuth("/api/news")
+          .then((payload) => {
+            if (payload && Array.isArray(payload.items)) {
+              data.news = {
+                ...payload,
+                items: payload.items,
+              };
+              return data.news;
+            }
+            throw new Error("server_news_empty");
+          })
+          .finally(() => {
+            serverNewsPromise = null;
+          });
+        return serverNewsPromise;
+      }
+
       let freeBoardMessage = "";
       let freeBoardMessageIsError = false;
 
@@ -2297,6 +2352,18 @@
       }
 
       function renderNewsPanel() {
+        if (hasServerAuth() && data.news?.source !== "coinness") {
+          newsPanel.innerHTML = `<p class="news-empty">서버에서 뉴스를 불러오는 중입니다.</p>`;
+          loadServerNews()
+            .then(() => {
+              if (state.viewMode === "news") renderNewsPanel();
+            })
+            .catch((error) => {
+              console.error(error);
+              newsPanel.innerHTML = `<p class="news-empty">뉴스 서버 인증이 필요하거나 불러오기에 실패했습니다. 다시 로그인해 주세요.</p>`;
+            });
+          return;
+        }
         const items = Array.isArray(data.news?.items) ? data.news.items : [];
         if (!items.length) {
           newsPanel.innerHTML = `<p class="news-empty">${escapeHtml(TEXT.newsEmpty)}</p>`;
@@ -2636,9 +2703,29 @@
         showSiteLock();
       }
 
-      lockForm.addEventListener("submit", (event) => {
+      lockForm.addEventListener("submit", async (event) => {
         event.preventDefault();
         const value = String(lockPasswordInput.value || "");
+        if (hasServerAuth()) {
+          try {
+            lockError.textContent = "서버에서 확인 중입니다...";
+            await loginWithServerPassword(value);
+            setLockExtendCount(0);
+            setLockAuthFor24Hours();
+            hideSiteLock();
+            renderLockTtl();
+            lockPasswordInput.value = "";
+            if (state.viewMode === "news") {
+              data.news = { items: [] };
+              renderNewsPanel();
+            }
+          } catch (_error) {
+            lockError.textContent = "비밀번호가 맞지 않거나 인증 서버에 연결할 수 없습니다.";
+            lockPasswordInput.value = "";
+            lockPasswordInput.focus();
+          }
+          return;
+        }
         if (value === SITE_PASSWORD) {
           setLockExtendCount(0);
           setLockAuthFor24Hours();
