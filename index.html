@@ -944,6 +944,7 @@
       }
 
       .free-board-table-wrap {
+        min-height: 260px;
         overflow-x: auto;
         border-top: 1px solid rgba(84, 104, 255, 0.65);
         border-bottom: 1px solid rgba(84, 104, 255, 0.65);
@@ -968,6 +969,12 @@
       .free-board-table th {
         color: #f0f6fa;
         font-weight: 850;
+        text-align: center;
+      }
+
+      .free-board-table .free-board-empty-row td {
+        height: 190px;
+        color: rgba(219, 207, 188, 0.8);
         text-align: center;
       }
 
@@ -2295,27 +2302,6 @@
         return Boolean(SITE_PASSWORD) && String(password || "") === SITE_PASSWORD;
       }
 
-      let serverNewsPromise = null;
-      async function loadServerNews() {
-        if (!hasServerAuth()) return null;
-        if (serverNewsPromise) return serverNewsPromise;
-        serverNewsPromise = fetchServerAuth("/api/news")
-          .then((payload) => {
-            if (payload && Array.isArray(payload.items)) {
-              data.news = {
-                ...payload,
-                items: payload.items,
-              };
-              return data.news;
-            }
-            throw new Error("server_news_empty");
-          })
-          .finally(() => {
-            serverNewsPromise = null;
-          });
-        return serverNewsPromise;
-      }
-
       let freeBoardMessage = "";
       let freeBoardMessageIsError = false;
       let freeBoardMode = "list";
@@ -2475,7 +2461,6 @@
       function getFilteredFreeBoardPosts(posts) {
         const query = freeBoardQuery.trim().toLowerCase();
         return posts.filter((post) => {
-          if (freeBoardFilter !== "all" && post.category !== freeBoardFilter) return false;
           if (!query) return true;
           return [post.title, post.body, post.author, freeBoardCategoryLabel(post.category)]
             .some((value) => String(value || "").toLowerCase().includes(query));
@@ -2483,16 +2468,11 @@
       }
 
       function renderFreeBoardTabs() {
-        const tabs = [
-          ["all", "전체글"],
-          ["general", "일반"],
-          ["info", "정보"],
-          ["notice", "공지"],
-          ["event", "대회"],
-        ];
-        return `<div class="free-board-tabs">${tabs.map(([value, label]) => `
-          <button class="free-board-tab${freeBoardFilter === value ? " active" : ""}" type="button" data-free-board-filter="${escapeAttr(value)}">${escapeHtml(label)}</button>
-        `).join("")}</div>`;
+        return `
+          <div class="free-board-tabs">
+            <button class="free-board-tab active" type="button" data-free-board-filter="all">전체글</button>
+          </div>
+        `;
       }
 
       function renderFreeBoardPagination(totalPages) {
@@ -2504,10 +2484,7 @@
         return `<div class="free-board-pagination">${pages.join("")}</div>`;
       }
 
-      function renderFreeBoardPosts(posts) {
-        if (!posts.length) {
-          return `<div class="free-board-empty">아직 등록된 글이 없습니다.</div>`;
-        }
+      function renderFreeBoardPosts(posts, totalCount, offset) {
         return `
           <div class="free-board-table-wrap">
             <table class="free-board-table">
@@ -2523,9 +2500,9 @@
                 </tr>
               </thead>
               <tbody>
-                ${posts.map((post, index) => `
+                ${posts.length ? posts.map((post, index) => `
                   <tr>
-                    <td>${escapeHtml(String(posts.length - index))}</td>
+                    <td>${escapeHtml(String(totalCount - offset - index))}</td>
                     <td>${escapeHtml(freeBoardCategoryLabel(post.category))}</td>
                     <td><button class="free-board-title-btn" type="button" data-free-board-open="${escapeAttr(post.id)}">${escapeHtml(post.title)}</button></td>
                     <td>${escapeHtml(post.author || "익명")}</td>
@@ -2533,7 +2510,11 @@
                     <td>${formatNumber(post.views, 0)}</td>
                     <td>${formatNumber(post.likes, 0)}</td>
                   </tr>
-                `).join("")}
+                `).join("") : `
+                  <tr class="free-board-empty-row">
+                    <td colspan="7">아직 등록된 글이 없습니다.</td>
+                  </tr>
+                `}
               </tbody>
             </table>
           </div>
@@ -2545,7 +2526,8 @@
         const filteredPosts = getFilteredFreeBoardPosts(posts);
         const totalPages = Math.max(1, Math.ceil(filteredPosts.length / FREE_BOARD_PAGE_SIZE));
         if (freeBoardPage > totalPages) freeBoardPage = 1;
-        const pagePosts = filteredPosts.slice((freeBoardPage - 1) * FREE_BOARD_PAGE_SIZE, freeBoardPage * FREE_BOARD_PAGE_SIZE);
+        const pageOffset = (freeBoardPage - 1) * FREE_BOARD_PAGE_SIZE;
+        const pagePosts = filteredPosts.slice(pageOffset, freeBoardPage * FREE_BOARD_PAGE_SIZE);
         const selectedPost = posts.find((post) => post.id === freeBoardSelectedId);
 
         if (freeBoardMode === "read" && selectedPost) {
@@ -2628,11 +2610,10 @@
               <div class="free-board-list">
                 <div class="free-board-toolbar">
                   ${renderFreeBoardTabs()}
-                  <button class="free-board-write-btn" type="button" data-free-board-write>글쓰기</button>
                 </div>
-                ${renderFreeBoardPosts(pagePosts)}
+                ${renderFreeBoardPosts(pagePosts, filteredPosts.length, pageOffset)}
                 <div class="free-board-bottom">
-                  ${renderFreeBoardTabs()}
+                  <div></div>
                   <button class="free-board-write-btn" type="button" data-free-board-write>글쓰기</button>
                 </div>
                 ${renderFreeBoardPagination(totalPages)}
@@ -2651,18 +2632,6 @@
       }
 
       function renderNewsPanel() {
-        if (hasServerAuth() && data.news?.source !== "coinness") {
-          newsPanel.innerHTML = `<p class="news-empty">서버에서 뉴스를 불러오는 중입니다.</p>`;
-          loadServerNews()
-            .then(() => {
-              if (state.viewMode === "news") renderNewsPanel();
-            })
-            .catch((error) => {
-              console.error(error);
-              newsPanel.innerHTML = `<p class="news-empty">뉴스 서버 인증이 필요하거나 불러오기에 실패했습니다. 다시 로그인해 주세요.</p>`;
-            });
-          return;
-        }
         const items = Array.isArray(data.news?.items) ? data.news.items : [];
         if (!items.length) {
           newsPanel.innerHTML = `<p class="news-empty">${escapeHtml(TEXT.newsEmpty)}</p>`;
@@ -3014,10 +2983,6 @@
             hideSiteLock();
             renderLockTtl();
             lockPasswordInput.value = "";
-            if (state.viewMode === "news") {
-              data.news = { items: [] };
-              renderNewsPanel();
-            }
           } catch (_error) {
             lockError.textContent = "비밀번호가 맞지 않거나 인증 서버에 연결할 수 없습니다.";
             lockPasswordInput.value = "";
