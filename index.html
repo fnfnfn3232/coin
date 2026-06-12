@@ -794,6 +794,23 @@
         overflow: hidden;
       }
 
+      .news-refresh-status {
+        margin: 0 0 10px;
+        padding: 10px 12px;
+        border: 1px solid rgba(117, 221, 255, 0.18);
+        border-radius: 12px;
+        background: rgba(117, 221, 255, 0.06);
+        color: #bfefff;
+        font-size: 14px;
+        font-weight: 800;
+      }
+
+      .news-refresh-status.error {
+        border-color: rgba(255, 107, 107, 0.35);
+        background: rgba(255, 107, 107, 0.08);
+        color: #ffd1d1;
+      }
+
       .news-item {
         padding: 12px;
         border-bottom: 1px solid rgba(151, 183, 198, 0.12);
@@ -2342,23 +2359,43 @@
       async function refreshLiveNews(force = false) {
         if (!hasServerAuth()) return null;
         const now = Date.now();
-        if (!force && liveNewsPromise) return liveNewsPromise;
+        if (liveNewsPromise) return liveNewsPromise;
         if (!force && now - liveNewsFetchedAtMs < LIVE_NEWS_REFRESH_MS) return data.news || null;
 
-        liveNewsPromise = fetchServerAuth("/api/news", { method: "GET" })
+        liveNewsPromise = fetchServerAuth(`/api/news?ts=${Date.now()}`, { method: "GET" })
           .then((payload) => {
             if (!payload || !Array.isArray(payload.items)) {
               throw new Error("live_news_empty");
             }
             data.news = payload;
             liveNewsFetchedAtMs = Date.now();
+            liveNewsLastUpdatedAtMs = liveNewsFetchedAtMs;
+            liveNewsError = "";
             saveLastGoodData(data);
             return data.news;
+          })
+          .catch((error) => {
+            liveNewsError = "최신 뉴스 갱신에 실패했습니다. 잠시 후 다시 시도합니다.";
+            throw error;
           })
           .finally(() => {
             liveNewsPromise = null;
           });
         return liveNewsPromise;
+      }
+
+      function requestLiveNewsRefresh(force = false) {
+        if (!hasServerAuth()) return;
+        if (liveNewsPromise) return;
+        if (!force && Date.now() - liveNewsFetchedAtMs < LIVE_NEWS_REFRESH_MS) return;
+        refreshLiveNews(force)
+          .then(() => {
+            if (state.viewMode === "news") renderNewsPanel();
+          })
+          .catch((error) => {
+            console.error(error);
+            if (state.viewMode === "news") renderNewsPanel();
+          });
       }
 
       let freeBoardMessage = "";
@@ -2372,6 +2409,8 @@
       let isApplyingHistoryState = false;
       let liveNewsPromise = null;
       let liveNewsFetchedAtMs = 0;
+      let liveNewsLastUpdatedAtMs = 0;
+      let liveNewsError = "";
 
       function showFreeBoardMessage(message, isError = false) {
         freeBoardMessage = String(message || "");
@@ -2732,19 +2771,29 @@
       }
 
       function renderNewsPanel() {
-        if (hasServerAuth() && !liveNewsPromise && Date.now() - liveNewsFetchedAtMs >= LIVE_NEWS_REFRESH_MS) {
-          refreshLiveNews()
-            .then(() => {
-              if (state.viewMode === "news") renderNewsPanel();
-            })
-            .catch((error) => console.error(error));
-        }
+        requestLiveNewsRefresh(liveNewsFetchedAtMs === 0);
         const items = Array.isArray(data.news?.items) ? data.news.items : [];
+        const lastUpdatedText = liveNewsLastUpdatedAtMs
+          ? new Date(liveNewsLastUpdatedAtMs).toLocaleTimeString("ko-KR", {
+              hour: "2-digit",
+              minute: "2-digit",
+              hour12: false,
+              timeZone: "Asia/Seoul",
+            })
+          : "";
+        const statusHtml = liveNewsPromise
+          ? `<p class="news-refresh-status">최신 뉴스 확인 중입니다.</p>`
+          : liveNewsError
+            ? `<p class="news-refresh-status error">${escapeHtml(liveNewsError)}</p>`
+            : lastUpdatedText
+              ? `<p class="news-refresh-status">최신 뉴스 확인 완료: ${escapeHtml(lastUpdatedText)}</p>`
+              : "";
         if (!items.length) {
-          newsPanel.innerHTML = `<p class="news-empty">${escapeHtml(TEXT.newsEmpty)}</p>`;
+          newsPanel.innerHTML = `${statusHtml}<p class="news-empty">${escapeHtml(TEXT.newsEmpty)}</p>`;
           return;
         }
         newsPanel.innerHTML = `
+          ${statusHtml}
           <div class="news-text-box">
             ${items.slice(0, 40).map((item) => {
               const title = item.originalTitle || item.title || item.headline || item.name || "뉴스";
@@ -4573,6 +4622,9 @@
         if (isNewsMode || isBoardMode) {
           renderContentPanel();
         }
+        if (isNewsMode) {
+          requestLiveNewsRefresh(true);
+        }
         if (options.writeHistory !== false) {
           writeAppHistoryState(Boolean(options.replaceHistory));
         }
@@ -5179,6 +5231,7 @@
             if (state.viewMode === "news") renderNewsPanel();
           } catch (error) {
             console.error(error);
+            if (state.viewMode === "news") renderNewsPanel();
           }
 
           try {
@@ -5266,6 +5319,11 @@
       window.setInterval(() => {
         runAutoRefreshTick("interval");
       }, autoRefreshMs);
+      window.setInterval(() => {
+        if (state.viewMode === "news") {
+          requestLiveNewsRefresh(true);
+        }
+      }, LIVE_NEWS_REFRESH_MS);
       render();
     </script>
   </body>
