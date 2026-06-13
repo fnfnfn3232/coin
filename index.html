@@ -2408,6 +2408,10 @@
       let freeBoardQuery = "";
       let freeBoardPage = 1;
       let freeBoardSelectedId = "";
+      let freeBoardServerPosts = [];
+      let freeBoardPostsLoaded = false;
+      let freeBoardPostsPromise = null;
+      let freeBoardServerError = "";
       let pendingDeletePostId = "";
       let isApplyingHistoryState = false;
       let liveNewsPromise = null;
@@ -2447,7 +2451,7 @@
         };
       }
 
-      function loadFreeBoardPosts() {
+      function loadLocalFreeBoardPosts() {
         try {
           const raw = localStorage.getItem(FREE_BOARD_STORAGE_KEY);
           const parsed = raw ? JSON.parse(raw) : [];
@@ -2462,11 +2466,94 @@
         }
       }
 
+      function loadFreeBoardPosts() {
+        if (freeBoardPostsLoaded) {
+          return freeBoardServerPosts
+            .map(normalizeFreeBoardPost)
+            .filter(Boolean)
+            .sort((a, b) => b.createdAt - a.createdAt)
+            .slice(0, FREE_BOARD_MAX_POSTS);
+        }
+        return loadLocalFreeBoardPosts();
+      }
+
       function saveFreeBoardPosts(posts) {
         localStorage.setItem(
           FREE_BOARD_STORAGE_KEY,
           JSON.stringify((posts || []).map(normalizeFreeBoardPost).filter(Boolean).slice(0, FREE_BOARD_MAX_POSTS))
         );
+      }
+
+      function applyServerFreeBoardPosts(posts) {
+        freeBoardServerPosts = Array.isArray(posts)
+          ? posts.map(normalizeFreeBoardPost).filter(Boolean).sort((a, b) => b.createdAt - a.createdAt)
+          : [];
+        freeBoardPostsLoaded = true;
+        freeBoardServerError = "";
+      }
+
+      async function fetchFreeBoardPosts(force = false) {
+        if (!hasServerAuth()) return loadFreeBoardPosts();
+        if (!force && freeBoardPostsLoaded) return freeBoardServerPosts;
+        if (freeBoardPostsPromise) return freeBoardPostsPromise;
+        freeBoardPostsPromise = fetchServerAuth("/api/board/posts", { method: "GET" })
+          .then((payload) => {
+            applyServerFreeBoardPosts(payload?.posts || []);
+            return freeBoardServerPosts;
+          })
+          .catch((error) => {
+            freeBoardServerError = "서버 게시글을 불러오지 못했습니다. 임시로 이 브라우저 저장 글을 표시합니다.";
+            throw error;
+          })
+          .finally(() => {
+            freeBoardPostsPromise = null;
+          });
+        return freeBoardPostsPromise;
+      }
+
+      function requestFreeBoardPostsRefresh(force = false) {
+        if (!hasServerAuth() || freeBoardPostsPromise) return;
+        fetchFreeBoardPosts(force)
+          .then(() => {
+            if (state.viewMode === "board") renderFreeBoard();
+          })
+          .catch((error) => {
+            console.error(error);
+            if (state.viewMode === "board") renderFreeBoard();
+          });
+      }
+
+      async function createServerFreeBoardPost(post) {
+        const payload = await fetchServerAuth("/api/board/posts", {
+          method: "POST",
+          body: JSON.stringify(post),
+        });
+        applyServerFreeBoardPosts(payload?.posts || []);
+        return payload?.post || null;
+      }
+
+      async function updateServerFreeBoardPost(postId, post) {
+        const payload = await fetchServerAuth(`/api/board/posts/${encodeURIComponent(postId)}`, {
+          method: "PUT",
+          body: JSON.stringify(post),
+        });
+        applyServerFreeBoardPosts(payload?.posts || []);
+        return payload?.post || null;
+      }
+
+      async function deleteServerFreeBoardPost(postId) {
+        const payload = await fetchServerAuth(`/api/board/posts/${encodeURIComponent(postId)}`, {
+          method: "DELETE",
+        });
+        applyServerFreeBoardPosts(payload?.posts || []);
+      }
+
+      async function incrementServerFreeBoardView(postId) {
+        const payload = await fetchServerAuth(`/api/board/posts/${encodeURIComponent(postId)}/view`, {
+          method: "POST",
+        });
+        applyServerFreeBoardPosts(payload?.posts || []);
+        return payload?.post || null;
       }
 
       function getSafeMediaKind(value) {
@@ -2653,7 +2740,35 @@
         `;
       }
 
+      function renderFreeBoardServerStatus() {
+        if (!hasServerAuth()) return "";
+        const localPosts = loadLocalFreeBoardPosts();
+        const serverIds = new Set(freeBoardServerPosts.map((post) => post.id));
+        const localOnlyCount = freeBoardPostsLoaded
+          ? localPosts.filter((post) => !serverIds.has(post.id)).length
+          : 0;
+        const loadingHtml = freeBoardPostsPromise
+          ? `<div class="news-refresh-status">서버 게시글을 불러오는 중입니다.</div>`
+          : "";
+        const errorHtml = freeBoardServerError
+          ? `<div class="news-refresh-status error">${escapeHtml(freeBoardServerError)}</div>`
+          : "";
+        const migrationHtml = localOnlyCount
+          ? `
+            <div class="news-refresh-status">
+              이 브라우저에만 저장된 글 ${formatNumber(localOnlyCount, 0)}개가 있습니다. 친구도 보게 하려면 서버로 옮겨야 합니다.
+              <div class="free-board-search" style="margin-top:10px;">
+                <input id="freeBoardImportPassword" type="password" autocomplete="current-password" placeholder="서버 비밀번호" />
+                <button class="free-board-submit" type="button" data-free-board-import-local>서버로 옮기기</button>
+              </div>
+            </div>
+          `
+          : "";
+        return `${loadingHtml}${errorHtml}${migrationHtml}`;
+      }
+
       function renderFreeBoard() {
+        requestFreeBoardPostsRefresh(false);
         const posts = loadFreeBoardPosts();
         const filteredPosts = getFilteredFreeBoardPosts(posts);
         const totalPages = Math.max(1, Math.ceil(filteredPosts.length / FREE_BOARD_PAGE_SIZE));
@@ -2753,6 +2868,7 @@
                 <div class="free-board-toolbar">
                   ${renderFreeBoardTabs()}
                 </div>
+                ${renderFreeBoardServerStatus()}
                 ${renderFreeBoardPosts(pagePosts, filteredPosts.length, pageOffset)}
                 <div class="free-board-bottom">
                   <div></div>
@@ -3052,7 +3168,7 @@
         pendingDeletePostId = "";
       }
 
-      function deleteFreeBoardPostById(postId) {
+      async function deleteFreeBoardPostById(postId) {
         const id = String(postId || "");
         const beforePosts = loadFreeBoardPosts();
         const posts = beforePosts.filter((post) => post.id !== id);
@@ -3061,7 +3177,11 @@
           renderFreeBoard();
           return false;
         }
-        saveFreeBoardPosts(posts);
+        if (hasServerAuth()) {
+          await deleteServerFreeBoardPost(id);
+        } else {
+          saveFreeBoardPosts(posts);
+        }
         freeBoardMode = "list";
         freeBoardSelectedId = "";
         showFreeBoardMessage("삭제했습니다.", false);
@@ -3236,7 +3356,7 @@
         try {
           deleteAuthError.textContent = "서버에서 확인 중입니다...";
           await verifySitePassword(password);
-          deleteFreeBoardPostById(postId);
+          await deleteFreeBoardPostById(postId);
           closeDeleteAuthModal();
         } catch (error) {
           const message = String(error?.message || "");
@@ -4628,6 +4748,9 @@
         if (isNewsMode) {
           requestLiveNewsRefresh(true);
         }
+        if (isBoardMode) {
+          requestFreeBoardPostsRefresh(true);
+        }
         if (options.writeHistory !== false) {
           writeAppHistoryState(Boolean(options.replaceHistory));
         }
@@ -5018,7 +5141,12 @@
             target.body = body;
             target.mediaUrls = mediaResult.urls;
             target.updatedAt = Date.now();
-            saveFreeBoardPosts(posts);
+            if (hasServerAuth()) {
+              showFreeBoardMessage("서버에 수정 중입니다...", false);
+              await updateServerFreeBoardPost(target.id, target);
+            } else {
+              saveFreeBoardPosts(posts);
+            }
             form.reset();
             showFreeBoardMessage("수정했습니다.", false);
             freeBoardMode = "read";
@@ -5026,7 +5154,7 @@
             writeAppHistoryState();
             return;
           }
-          posts.unshift({
+          const newPost = {
             id: `post-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             category,
             title,
@@ -5036,16 +5164,23 @@
             createdAt: Date.now(),
             views: 0,
             likes: 0,
-          });
-          saveFreeBoardPosts(posts);
+          };
+          if (hasServerAuth()) {
+            showFreeBoardMessage("서버에 등록 중입니다...", false);
+            await createServerFreeBoardPost(newPost);
+          } else {
+            posts.unshift(newPost);
+            saveFreeBoardPosts(posts);
+          }
           form.reset();
           showFreeBoardMessage("등록했습니다.", false);
           freeBoardMode = "list";
           freeBoardPage = 1;
           renderFreeBoard();
           writeAppHistoryState();
-        } catch (_error) {
-          showFreeBoardMessage("저장 공간이 부족해서 등록하지 못했습니다.", true);
+        } catch (error) {
+          console.error(error);
+          showFreeBoardMessage("서버 저장에 실패했습니다. 잠시 후 다시 시도해 주세요.", true);
         }
       });
 
@@ -5079,14 +5214,51 @@
           return;
         }
 
+        if (event.target.closest("[data-free-board-import-local]")) {
+          const passwordInput = document.getElementById("freeBoardImportPassword");
+          const password = String(passwordInput?.value || "");
+          if (!password) {
+            showFreeBoardMessage("서버 비밀번호를 입력해 주세요.", true);
+            passwordInput?.focus();
+            return;
+          }
+          try {
+            showFreeBoardMessage("서버로 옮기는 중입니다...", false);
+            await verifySitePassword(password);
+            const serverIds = new Set(freeBoardServerPosts.map((post) => post.id));
+            const localOnlyPosts = loadLocalFreeBoardPosts().filter((post) => !serverIds.has(post.id));
+            for (const post of localOnlyPosts) {
+              await createServerFreeBoardPost(post);
+            }
+            await fetchFreeBoardPosts(true);
+            showFreeBoardMessage(`서버로 ${formatNumber(localOnlyPosts.length, 0)}개 글을 옮겼습니다.`, false);
+            freeBoardMode = "list";
+            renderFreeBoard();
+          } catch (error) {
+            console.error(error);
+            showFreeBoardMessage("서버로 옮기지 못했습니다. 비밀번호와 서버 상태를 확인해 주세요.", true);
+          }
+          return;
+        }
+
         const openButton = event.target.closest("[data-free-board-open]");
         if (openButton) {
           const id = String(openButton.dataset.freeBoardOpen || "");
           const posts = loadFreeBoardPosts();
           const target = posts.find((post) => post.id === id);
           if (target) {
-            target.views = Math.max(0, Math.floor(Number(target.views) || 0)) + 1;
-            saveFreeBoardPosts(posts);
+            if (hasServerAuth() && freeBoardPostsLoaded) {
+              incrementServerFreeBoardView(id)
+                .then(() => {
+                  if (state.viewMode === "board" && freeBoardMode === "read" && freeBoardSelectedId === id) {
+                    renderFreeBoard();
+                  }
+                })
+                .catch((error) => console.error(error));
+            } else {
+              target.views = Math.max(0, Math.floor(Number(target.views) || 0)) + 1;
+              saveFreeBoardPosts(posts);
+            }
             freeBoardSelectedId = id;
             freeBoardMode = "read";
             renderFreeBoard();
