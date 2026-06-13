@@ -210,6 +210,15 @@ async function parseJsonBody(request) {
 }
 
 async function handleBoardPosts(request, env, url) {
+  if (env.BOARD_STORE) {
+    if (["POST", "PUT", "DELETE"].includes(request.method) && !url.pathname.endsWith("/view")) {
+      const authResponse = await requireAuth(request, env);
+      if (authResponse) return authResponse;
+    }
+    const id = env.BOARD_STORE.idFromName("free-board");
+    return env.BOARD_STORE.get(id).fetch(request);
+  }
+
   const postId = decodeURIComponent(url.pathname.replace(/^\/api\/board\/posts\/?/, ""));
   if (request.method === "GET" && url.pathname === "/api/board/posts") {
     return jsonResponse({ posts: await readBoardPosts(env) }, 200, env);
@@ -373,6 +382,92 @@ function handleLogout(env) {
   const headers = new Headers(jsonResponse({ ok: true }, 200, env).headers);
   headers.append("Set-Cookie", `${COOKIE_NAME}=; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=0`);
   return new Response(JSON.stringify({ ok: true }), { status: 200, headers });
+}
+
+export class BoardStore {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+  }
+
+  async readPosts() {
+    const stored = await this.state.storage.get(BOARD_POSTS_KEY);
+    if (!Array.isArray(stored)) return [];
+    return stored
+      .map((post) => normalizeBoardPost(post))
+      .filter(Boolean)
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, BOARD_MAX_POSTS);
+  }
+
+  async writePosts(posts) {
+    const normalized = (Array.isArray(posts) ? posts : [])
+      .map((post) => normalizeBoardPost(post))
+      .filter(Boolean)
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, BOARD_MAX_POSTS);
+    await this.state.storage.put(BOARD_POSTS_KEY, normalized);
+    return normalized;
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+    const postId = decodeURIComponent(url.pathname.replace(/^\/api\/board\/posts\/?/, ""));
+
+    if (request.method === "GET" && url.pathname === "/api/board/posts") {
+      return jsonResponse({ posts: await this.readPosts() }, 200, this.env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/board/posts") {
+      const body = await parseJsonBody(request);
+      const post = normalizeBoardPost(body, {
+        id: `post-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
+        createdAt: Date.now(),
+      });
+      if (!post) return jsonResponse({ error: "invalid_post" }, 400, this.env);
+      const posts = (await this.readPosts()).filter((item) => item.id !== post.id);
+      posts.unshift(post);
+      return jsonResponse({ posts: await this.writePosts(posts), post }, 201, this.env);
+    }
+
+    if (request.method === "POST" && postId && url.pathname.endsWith("/view")) {
+      const id = postId.replace(/\/view$/, "");
+      const posts = await this.readPosts();
+      const target = posts.find((post) => post.id === id);
+      if (!target) return jsonResponse({ error: "not_found" }, 404, this.env);
+      target.views = Math.max(0, Math.floor(Number(target.views) || 0)) + 1;
+      await this.writePosts(posts);
+      return jsonResponse({ posts, post: target }, 200, this.env);
+    }
+
+    if (request.method === "PUT" && postId) {
+      const body = await parseJsonBody(request);
+      const posts = await this.readPosts();
+      const index = posts.findIndex((post) => post.id === postId);
+      if (index < 0) return jsonResponse({ error: "not_found" }, 404, this.env);
+      const updated = normalizeBoardPost({
+        ...posts[index],
+        ...body,
+        id: posts[index].id,
+        createdAt: posts[index].createdAt,
+        views: posts[index].views,
+        likes: posts[index].likes,
+        updatedAt: Date.now(),
+      });
+      if (!updated) return jsonResponse({ error: "invalid_post" }, 400, this.env);
+      posts[index] = updated;
+      return jsonResponse({ posts: await this.writePosts(posts), post: updated }, 200, this.env);
+    }
+
+    if (request.method === "DELETE" && postId) {
+      const posts = await this.readPosts();
+      const nextPosts = posts.filter((post) => post.id !== postId);
+      if (nextPosts.length === posts.length) return jsonResponse({ error: "not_found" }, 404, this.env);
+      return jsonResponse({ posts: await this.writePosts(nextPosts), ok: true }, 200, this.env);
+    }
+
+    return jsonResponse({ error: "not_found" }, 404, this.env);
+  }
 }
 
 export default {
