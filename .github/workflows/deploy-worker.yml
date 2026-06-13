@@ -18,56 +18,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare board KV namespace
-        id: board-kv
-        env:
-          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          BOARD_POSTS_KV_ID_SECRET: ${{ secrets.BOARD_POSTS_KV_ID }}
-        run: |
-          set -euo pipefail
-          if [ -n "${BOARD_POSTS_KV_ID_SECRET:-}" ]; then
-            echo "BOARD_POSTS_KV_ID=${BOARD_POSTS_KV_ID_SECRET}" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          title="coin-board-posts"
-          list_json="$(curl -fsS -H "Authorization: Bearer ${CF_API_TOKEN}" \
-            "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces?per_page=100" || true)"
-          if [ -z "$list_json" ]; then
-            echo "Cloudflare API token cannot list KV namespaces. Add Workers KV Storage:Edit permission or set GitHub secret BOARD_POSTS_KV_ID." >&2
-            exit 1
-          fi
-          namespace_id="$(python - "$list_json" "$title" <<'PY'
-          import json, sys
-          payload = json.loads(sys.argv[1])
-          title = sys.argv[2]
-          for item in payload.get("result", []):
-              if item.get("title") == title:
-                  print(item.get("id", ""))
-                  break
-          PY
-          )"
-          if [ -z "$namespace_id" ]; then
-            create_json="$(curl -fsS -X POST -H "Authorization: Bearer ${CF_API_TOKEN}" \
-              -H "Content-Type: application/json" \
-              --data "{\"title\":\"${title}\"}" \
-              "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces")"
-            namespace_id="$(python - "$create_json" <<'PY'
-          import json, sys
-          print(json.loads(sys.argv[1]).get("result", {}).get("id", ""))
-          PY
-          )"
-          fi
-          if [ -z "$namespace_id" ]; then
-            echo "Failed to resolve Cloudflare KV namespace id" >&2
-            exit 1
-          fi
-          echo "BOARD_POSTS_KV_ID=${namespace_id}" >> "$GITHUB_OUTPUT"
-
       - name: Write Worker config
         working-directory: server-auth
-        env:
-          BOARD_POSTS_KV_ID: ${{ steps.board-kv.outputs.BOARD_POSTS_KV_ID }}
         run: |
           cat > wrangler.toml <<'EOF'
           name = "coin-board-auth"
@@ -79,11 +31,14 @@ jobs:
           NEWS_LIMIT = "40"
           NEWS_BODY_MODE = "preview"
 
-          [[kv_namespaces]]
-          binding = "BOARD_POSTS"
-          id = "${BOARD_POSTS_KV_ID}"
+          [[durable_objects.bindings]]
+          name = "BOARD_STORE"
+          class_name = "BoardStore"
+
+          [[migrations]]
+          tag = "v1"
+          new_sqlite_classes = ["BoardStore"]
           EOF
-          sed -i "s/\${BOARD_POSTS_KV_ID}/${BOARD_POSTS_KV_ID}/g" wrangler.toml
 
       - name: Deploy Worker
         uses: cloudflare/wrangler-action@v3
