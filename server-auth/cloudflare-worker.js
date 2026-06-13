@@ -1,6 +1,9 @@
 const COINNESS_NEWS_ENDPOINT = "https://api.coinness.com/feed/v1/breaking-news";
 const COOKIE_NAME = "coin_board_session";
 const SESSION_TTL_SECONDS = 24 * 60 * 60;
+const BOARD_POSTS_KEY = "free-board-posts";
+const BOARD_MAX_POSTS = 200;
+const BOARD_MAX_MEDIA = 4;
 
 function jsonResponse(body, status = 200, env = {}) {
   return new Response(JSON.stringify(body), {
@@ -22,7 +25,7 @@ function optionsResponse(env) {
       "Access-Control-Allow-Origin": env.FRONTEND_ORIGIN || "",
       "Access-Control-Allow-Credentials": "true",
       "Access-Control-Allow-Headers": "Content-Type",
-      "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+      "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
       "Access-Control-Max-Age": "86400",
       "Vary": "Origin",
     },
@@ -113,6 +116,160 @@ function makePreview(value, maxChars = 140) {
   const text = cleanNewsText(value).replace(/\s+/g, " ").trim();
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars - 3).trimEnd()}...`;
+}
+
+function cleanBoardText(value, maxChars) {
+  return String(value || "")
+    .replace(/\0/g, "")
+    .trim()
+    .slice(0, maxChars);
+}
+
+function getSafeMediaKind(value) {
+  try {
+    const url = new URL(String(value || ""));
+    if (url.protocol !== "https:" && url.protocol !== "http:") return "";
+    if (url.username || url.password) return "";
+    const path = url.pathname.toLowerCase();
+    if (/\.(png|jpe?g|gif|webp|avif)$/.test(path)) return "image";
+    if (/\.(mp4|webm|ogv)$/.test(path)) return "video";
+    return "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+function normalizeBoardPost(raw, fallback = {}) {
+  const createdAt = Number(raw?.createdAt || fallback.createdAt || Date.now());
+  const mediaUrls = Array.isArray(raw?.mediaUrls)
+    ? raw.mediaUrls
+        .map((url) => cleanBoardText(url, 1000))
+        .filter((url, index, list) => getSafeMediaKind(url) && list.indexOf(url) === index)
+        .slice(0, BOARD_MAX_MEDIA)
+    : [];
+  const title = cleanBoardText(raw?.title, 120);
+  const body = cleanBoardText(raw?.body, 20000);
+  if (!title || !body) return null;
+  return {
+    id: cleanBoardText(raw?.id || fallback.id || `post-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`, 80),
+    category: ["general", "info", "notice", "event"].includes(raw?.category) ? raw.category : "general",
+    title,
+    author: cleanBoardText(raw?.author || "익명", 40) || "익명",
+    body,
+    mediaUrls,
+    createdAt: Number.isFinite(createdAt) ? createdAt : Date.now(),
+    updatedAt: Number.isFinite(Number(raw?.updatedAt)) ? Number(raw.updatedAt) : undefined,
+    views: Math.max(0, Math.floor(Number(raw?.views) || 0)),
+    likes: Math.max(0, Math.floor(Number(raw?.likes) || 0)),
+  };
+}
+
+async function readBoardPosts(env) {
+  if (!env.BOARD_POSTS) {
+    throw new Error("board_storage_not_configured");
+  }
+  const raw = await env.BOARD_POSTS.get(BOARD_POSTS_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((post) => normalizeBoardPost(post))
+      .filter(Boolean)
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, BOARD_MAX_POSTS);
+  } catch (_error) {
+    return [];
+  }
+}
+
+async function writeBoardPosts(env, posts) {
+  if (!env.BOARD_POSTS) {
+    throw new Error("board_storage_not_configured");
+  }
+  const normalized = (Array.isArray(posts) ? posts : [])
+    .map((post) => normalizeBoardPost(post))
+    .filter(Boolean)
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, BOARD_MAX_POSTS);
+  await env.BOARD_POSTS.put(BOARD_POSTS_KEY, JSON.stringify(normalized));
+  return normalized;
+}
+
+async function requireAuth(request, env) {
+  if (await isAuthenticated(request, env)) return null;
+  return jsonResponse({ error: "auth_required" }, 401, env);
+}
+
+async function parseJsonBody(request) {
+  try {
+    return await request.json();
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function handleBoardPosts(request, env, url) {
+  const postId = decodeURIComponent(url.pathname.replace(/^\/api\/board\/posts\/?/, ""));
+  if (request.method === "GET" && url.pathname === "/api/board/posts") {
+    return jsonResponse({ posts: await readBoardPosts(env) }, 200, env);
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/board/posts") {
+    const authResponse = await requireAuth(request, env);
+    if (authResponse) return authResponse;
+    const body = await parseJsonBody(request);
+    const post = normalizeBoardPost(body, {
+      id: `post-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
+      createdAt: Date.now(),
+    });
+    if (!post) return jsonResponse({ error: "invalid_post" }, 400, env);
+    const posts = (await readBoardPosts(env)).filter((item) => item.id !== post.id);
+    posts.unshift(post);
+    return jsonResponse({ posts: await writeBoardPosts(env, posts), post }, 201, env);
+  }
+
+  if (request.method === "POST" && postId && url.pathname.endsWith("/view")) {
+    const id = postId.replace(/\/view$/, "");
+    const posts = await readBoardPosts(env);
+    const target = posts.find((post) => post.id === id);
+    if (!target) return jsonResponse({ error: "not_found" }, 404, env);
+    target.views = Math.max(0, Math.floor(Number(target.views) || 0)) + 1;
+    await writeBoardPosts(env, posts);
+    return jsonResponse({ posts, post: target }, 200, env);
+  }
+
+  if (request.method === "PUT" && postId) {
+    const authResponse = await requireAuth(request, env);
+    if (authResponse) return authResponse;
+    const body = await parseJsonBody(request);
+    const posts = await readBoardPosts(env);
+    const index = posts.findIndex((post) => post.id === postId);
+    if (index < 0) return jsonResponse({ error: "not_found" }, 404, env);
+    const updated = normalizeBoardPost({
+      ...posts[index],
+      ...body,
+      id: posts[index].id,
+      createdAt: posts[index].createdAt,
+      views: posts[index].views,
+      likes: posts[index].likes,
+      updatedAt: Date.now(),
+    });
+    if (!updated) return jsonResponse({ error: "invalid_post" }, 400, env);
+    posts[index] = updated;
+    return jsonResponse({ posts: await writeBoardPosts(env, posts), post: updated }, 200, env);
+  }
+
+  if (request.method === "DELETE" && postId) {
+    const authResponse = await requireAuth(request, env);
+    if (authResponse) return authResponse;
+    const posts = await readBoardPosts(env);
+    const nextPosts = posts.filter((post) => post.id !== postId);
+    if (nextPosts.length === posts.length) return jsonResponse({ error: "not_found" }, 404, env);
+    return jsonResponse({ posts: await writeBoardPosts(env, nextPosts), ok: true }, 200, env);
+  }
+
+  return jsonResponse({ error: "not_found" }, 404, env);
 }
 
 function parsePublishAt(value) {
@@ -235,6 +392,9 @@ export default {
     }
     if (url.pathname === "/api/news" && request.method === "GET") {
       return jsonResponse(await fetchCoinnessNewsSafely(env), 200, env);
+    }
+    if (url.pathname === "/api/board/posts" || url.pathname.startsWith("/api/board/posts/")) {
+      return handleBoardPosts(request, env, url);
     }
 
     return jsonResponse({ error: "not_found" }, 404, env);
