@@ -2320,14 +2320,25 @@
       }
 
       async function fetchServerAuth(path, options = {}) {
-        const response = await fetch(`${SERVER_AUTH_API_BASE}${path}`, {
-          ...options,
-          credentials: "include",
-          headers: {
-            "Content-Type": "application/json",
-            ...(options.headers || {}),
-          },
-        });
+        const { timeoutMs: requestTimeoutMs, ...fetchOptions } = options;
+        const controller = new AbortController();
+        const timeoutMs = Math.max(1000, Number(requestTimeoutMs) || 8000);
+        const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+        const headers = { ...(fetchOptions.headers || {}) };
+        if (fetchOptions.body && !headers["Content-Type"] && !headers["content-type"]) {
+          headers["Content-Type"] = "application/json";
+        }
+        let response;
+        try {
+          response = await fetch(`${SERVER_AUTH_API_BASE}${path}`, {
+            ...fetchOptions,
+            credentials: "include",
+            headers,
+            signal: controller.signal,
+          });
+        } finally {
+          window.clearTimeout(timeoutId);
+        }
         let payload = null;
         try {
           payload = await response.json();
@@ -2502,7 +2513,9 @@
             return freeBoardServerPosts;
           })
           .catch((error) => {
-            freeBoardServerError = "서버 게시글을 불러오지 못했습니다. 임시로 이 브라우저 저장 글을 표시합니다.";
+            freeBoardServerError = error?.name === "AbortError"
+              ? "서버 게시글 응답이 늦어 이 브라우저 저장 글을 먼저 표시합니다."
+              : "서버 게시글을 불러오지 못했습니다. 임시로 이 브라우저 저장 글을 표시합니다.";
             throw error;
           })
           .finally(() => {
@@ -2748,7 +2761,7 @@
           ? localPosts.filter((post) => !serverIds.has(post.id)).length
           : 0;
         const loadingHtml = freeBoardPostsPromise
-          ? `<div class="news-refresh-status">서버 게시글을 불러오는 중입니다.</div>`
+          ? `<div class="news-refresh-status">${localPosts.length ? "서버 게시글을 확인 중입니다. 그동안 이 브라우저 저장 글을 표시합니다." : "서버 게시글을 불러오는 중입니다."}</div>`
           : "";
         const errorHtml = freeBoardServerError
           ? `<div class="news-refresh-status error">${escapeHtml(freeBoardServerError)}</div>`
