@@ -2096,6 +2096,7 @@
     const FREE_BOARD_MAX_POSTS = 80;
     const FREE_BOARD_MAX_MEDIA = 4;
     const FREE_BOARD_PAGE_SIZE = 20;
+    const FREE_BOARD_SERVER_ENABLED = false;
     const LIVE_NEWS_REFRESH_MS = 60 * 1000;
     const LOCK_TTL_MS = 24 * 60 * 60 * 1000;
     const LOCK_EXTEND_MAX = 3;
@@ -2319,6 +2320,10 @@
         return Boolean(SERVER_AUTH_API_BASE);
       }
 
+      function hasFreeBoardServer() {
+        return FREE_BOARD_SERVER_ENABLED && hasServerAuth();
+      }
+
       async function fetchServerAuth(path, options = {}) {
         const { timeoutMs: requestTimeoutMs, ...fetchOptions } = options;
         const supportsAbortController = typeof AbortController === "function";
@@ -2505,7 +2510,7 @@
       }
 
       async function fetchFreeBoardPosts(force = false) {
-        if (!hasServerAuth()) return loadFreeBoardPosts();
+        if (!hasFreeBoardServer()) return loadFreeBoardPosts();
         if (!force && freeBoardPostsLoaded) return freeBoardServerPosts;
         if (freeBoardPostsPromise) return freeBoardPostsPromise;
         freeBoardPostsPromise = fetchServerAuth("/api/board/posts", { method: "GET" })
@@ -2526,7 +2531,7 @@
       }
 
       function requestFreeBoardPostsRefresh(force = false) {
-        if (!hasServerAuth() || freeBoardPostsPromise) return;
+        if (!hasFreeBoardServer() || freeBoardPostsPromise) return;
         fetchFreeBoardPosts(force)
           .then(() => {
             if (state.viewMode === "board") renderFreeBoard();
@@ -2755,7 +2760,7 @@
       }
 
       function renderFreeBoardServerStatus() {
-        if (!hasServerAuth()) return "";
+        if (!hasFreeBoardServer()) return "";
         const localPosts = loadLocalFreeBoardPosts();
         const serverIds = new Set(freeBoardServerPosts.map((post) => post.id));
         const localOnlyCount = freeBoardPostsLoaded
@@ -3191,7 +3196,7 @@
           renderFreeBoard();
           return false;
         }
-        if (hasServerAuth()) {
+        if (hasFreeBoardServer()) {
           await deleteServerFreeBoardPost(id);
         } else {
           saveFreeBoardPosts(posts);
@@ -5155,7 +5160,7 @@
             target.body = body;
             target.mediaUrls = mediaResult.urls;
             target.updatedAt = Date.now();
-            if (hasServerAuth()) {
+            if (hasFreeBoardServer()) {
               showFreeBoardMessage("서버에 수정 중입니다...", false);
               await updateServerFreeBoardPost(target.id, target);
             } else {
@@ -5179,7 +5184,7 @@
             views: 0,
             likes: 0,
           };
-          if (hasServerAuth()) {
+          if (hasFreeBoardServer()) {
             showFreeBoardMessage("서버에 등록 중입니다...", false);
             await createServerFreeBoardPost(newPost);
           } else {
@@ -5261,7 +5266,7 @@
           const posts = loadFreeBoardPosts();
           const target = posts.find((post) => post.id === id);
           if (target) {
-            if (hasServerAuth() && freeBoardPostsLoaded) {
+            if (hasFreeBoardServer() && freeBoardPostsLoaded) {
               incrementServerFreeBoardView(id)
                 .then(() => {
                   if (state.viewMode === "board" && freeBoardMode === "read" && freeBoardSelectedId === id) {
