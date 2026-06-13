@@ -2321,9 +2321,10 @@
 
       async function fetchServerAuth(path, options = {}) {
         const { timeoutMs: requestTimeoutMs, ...fetchOptions } = options;
-        const controller = new AbortController();
+        const supportsAbortController = typeof AbortController === "function";
+        const controller = supportsAbortController ? new AbortController() : null;
         const timeoutMs = Math.max(1000, Number(requestTimeoutMs) || 8000);
-        const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+        const timeoutId = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : 0;
         const headers = { ...(fetchOptions.headers || {}) };
         if (fetchOptions.body && !headers["Content-Type"] && !headers["content-type"]) {
           headers["Content-Type"] = "application/json";
@@ -2334,10 +2335,10 @@
             ...fetchOptions,
             credentials: "include",
             headers,
-            signal: controller.signal,
+            ...(controller ? { signal: controller.signal } : {}),
           });
         } finally {
-          window.clearTimeout(timeoutId);
+          if (timeoutId) window.clearTimeout(timeoutId);
         }
         let payload = null;
         try {
