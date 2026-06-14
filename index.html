@@ -1267,13 +1267,20 @@
       }
 
       .free-board-media img,
-      .free-board-media video {
+      .free-board-media video,
+      .free-board-youtube {
         width: 100%;
         max-height: 260px;
         object-fit: contain;
         border: 1px solid rgba(151, 183, 198, 0.14);
         border-radius: 12px;
         background: #020b10;
+      }
+
+      .free-board-youtube {
+        display: block;
+        aspect-ratio: 16 / 9;
+        max-height: none;
       }
 
       .free-board-empty {
@@ -2637,10 +2644,35 @@
           const url = new URL(String(value || ""));
           if (url.protocol !== "https:" && url.protocol !== "http:") return "";
           if (url.username || url.password) return "";
+          if (getYouTubeEmbedUrl(url)) return "video";
           const path = url.pathname.toLowerCase();
           if (/\.(png|jpe?g|gif|webp|avif)$/.test(path)) return "image";
           if (/\.(mp4|webm|ogv)$/.test(path)) return "video";
           return "";
+        } catch (_error) {
+          return "";
+        }
+      }
+
+      function getYouTubeEmbedUrl(value) {
+        try {
+          const url = value instanceof URL ? value : new URL(String(value || ""));
+          if (url.protocol !== "https:" && url.protocol !== "http:") return "";
+          if (url.username || url.password) return "";
+          const host = url.hostname.toLowerCase().replace(/^www\./, "").replace(/^m\./, "");
+          let videoId = "";
+          if (host === "youtu.be") {
+            videoId = url.pathname.split("/").filter(Boolean)[0] || "";
+          } else if (host === "youtube.com" || host === "youtube-nocookie.com") {
+            const parts = url.pathname.split("/").filter(Boolean);
+            if (url.pathname === "/watch") {
+              videoId = url.searchParams.get("v") || "";
+            } else if (parts[0] === "shorts" || parts[0] === "embed") {
+              videoId = parts[1] || "";
+            }
+          }
+          if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) return "";
+          return `https://www.youtube-nocookie.com/embed/${videoId}`;
         } catch (_error) {
           return "";
         }
@@ -2707,6 +2739,10 @@
       function renderMediaTag(url, preferredKind = "") {
         const kind = getSafeMediaKind(url);
         if (!kind || (preferredKind && preferredKind !== kind)) return "";
+        const youtubeEmbedUrl = kind === "video" ? getYouTubeEmbedUrl(url) : "";
+        if (youtubeEmbedUrl) {
+          return `<iframe class="free-board-youtube" src="${escapeAttr(youtubeEmbedUrl)}" title="게시글 유튜브 영상" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>`;
+        }
         const safeUrl = escapeAttr(url);
         if (kind === "image") {
           return `<img src="${safeUrl}" alt="게시글 이미지" loading="lazy" referrerpolicy="no-referrer" />`;
@@ -5357,7 +5393,7 @@
 
         const mediaResult = validateEmbeddedMediaTokens(body);
         if (mediaResult.rejected.length || mediaResult.validCount > FREE_BOARD_MAX_MEDIA) {
-          showFreeBoardMessage("이미지/동영상 URL만 등록할 수 있습니다. 허용되지 않은 URL을 확인해 주세요.", true);
+          showFreeBoardMessage("이미지는 파일 링크, 동영상은 YouTube 또는 mp4/webm/ogv 링크만 등록할 수 있습니다. 입력 내용은 유지됩니다.", true);
           return;
         }
 
@@ -5415,7 +5451,7 @@
           writeAppHistoryState();
         } catch (error) {
           console.error(error);
-          showFreeBoardMessage("서버 저장에 실패했습니다. 잠시 후 다시 시도해 주세요.", true);
+          showFreeBoardMessage("서버 저장에 실패했습니다. 입력 내용은 유지되니 잠시 후 다시 시도해 주세요.", true);
         }
       });
 
@@ -5431,7 +5467,10 @@
           if (url === null) return;
           const trimmedUrl = String(url || "").trim();
           if (!trimmedUrl || getSafeMediaKind(trimmedUrl) !== kind) {
-            showFreeBoardMessage(`${label} 파일 링크만 넣을 수 있습니다. http(s) 주소와 확장자를 확인해 주세요.`, true);
+            const guide = kind === "video"
+              ? "동영상은 YouTube 링크 또는 mp4/webm/ogv 파일 링크만 넣을 수 있습니다."
+              : "이미지는 png/jpg/jpeg/gif/webp/avif 파일 링크만 넣을 수 있습니다.";
+            showFreeBoardMessage(`${guide} 입력 내용은 유지됩니다.`, true);
             return;
           }
           const textarea = document.getElementById("freeBoardBody");
