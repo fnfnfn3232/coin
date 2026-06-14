@@ -4,6 +4,7 @@ const SESSION_TTL_SECONDS = 24 * 60 * 60;
 const BOARD_POSTS_KEY = "free-board-posts";
 const BOARD_MAX_POSTS = 200;
 const BOARD_MAX_MEDIA = 4;
+const BOARD_MAX_COMMENTS = 100;
 
 function jsonResponse(body, status = 200, env = {}) {
   return new Response(JSON.stringify(body), {
@@ -130,6 +131,7 @@ function getSafeMediaKind(value) {
     const url = new URL(String(value || ""));
     if (url.protocol !== "https:" && url.protocol !== "http:") return "";
     if (url.username || url.password) return "";
+    if (getYouTubeEmbedUrl(url)) return "video";
     const path = url.pathname.toLowerCase();
     if (/\.(png|jpe?g|gif|webp|avif)$/.test(path)) return "image";
     if (/\.(mp4|webm|ogv)$/.test(path)) return "video";
@@ -137,6 +139,47 @@ function getSafeMediaKind(value) {
   } catch (_error) {
     return "";
   }
+}
+
+function getYouTubeEmbedUrl(value) {
+  try {
+    const url = value instanceof URL ? value : new URL(String(value || ""));
+    if (url.protocol !== "https:" && url.protocol !== "http:") return "";
+    if (url.username || url.password) return "";
+    const host = url.hostname.toLowerCase().replace(/^www\./, "").replace(/^m\./, "");
+    let videoId = "";
+    if (host === "youtu.be") {
+      videoId = url.pathname.split("/").filter(Boolean)[0] || "";
+    } else if (host === "youtube.com" || host === "youtube-nocookie.com") {
+      const parts = url.pathname.split("/").filter(Boolean);
+      if (url.pathname === "/watch") {
+        videoId = url.searchParams.get("v") || "";
+      } else if (parts[0] === "shorts" || parts[0] === "embed") {
+        videoId = parts[1] || "";
+      }
+    }
+    return /^[A-Za-z0-9_-]{11}$/.test(videoId) ? `https://www.youtube-nocookie.com/embed/${videoId}` : "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+function normalizePasswordHash(value) {
+  const hash = cleanBoardText(value, 128);
+  return /^[a-f0-9]{64}$/i.test(hash) ? hash.toLowerCase() : "";
+}
+
+function normalizeBoardComment(raw, fallback = {}) {
+  const createdAt = Number(raw?.createdAt || fallback.createdAt || Date.now());
+  const body = cleanBoardText(raw?.body, 3000);
+  if (!body) return null;
+  return {
+    id: cleanBoardText(raw?.id || fallback.id || `comment-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`, 80),
+    author: cleanBoardText(raw?.author || "익명", 40) || "익명",
+    body,
+    createdAt: Number.isFinite(createdAt) ? createdAt : Date.now(),
+    passwordHash: normalizePasswordHash(raw?.passwordHash),
+  };
 }
 
 function normalizeBoardPost(raw, fallback = {}) {
@@ -150,6 +193,13 @@ function normalizeBoardPost(raw, fallback = {}) {
   const title = cleanBoardText(raw?.title, 120);
   const body = cleanBoardText(raw?.body, 20000);
   if (!title || !body) return null;
+  const comments = Array.isArray(raw?.comments)
+    ? raw.comments
+        .map((comment) => normalizeBoardComment(comment))
+        .filter(Boolean)
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .slice(0, BOARD_MAX_COMMENTS)
+    : [];
   return {
     id: cleanBoardText(raw?.id || fallback.id || `post-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`, 80),
     category: ["general", "info", "notice", "event"].includes(raw?.category) ? raw.category : "general",
@@ -158,6 +208,8 @@ function normalizeBoardPost(raw, fallback = {}) {
     body,
     htmlEnabled: Boolean(raw?.htmlEnabled),
     mediaUrls,
+    comments,
+    passwordHash: normalizePasswordHash(raw?.passwordHash),
     createdAt: Number.isFinite(createdAt) ? createdAt : Date.now(),
     updatedAt: Number.isFinite(Number(raw?.updatedAt)) ? Number(raw.updatedAt) : undefined,
     views: Math.max(0, Math.floor(Number(raw?.views) || 0)),
@@ -207,6 +259,17 @@ async function isValidPassword(password, env) {
   return timingSafeEqual(passwordHash, env.SITE_PASSWORD_SHA256);
 }
 
+async function isAdminPassword(password, env) {
+  return isValidPassword(password, env);
+}
+
+async function isMatchingPassword(password, storedHash) {
+  const hash = normalizePasswordHash(storedHash);
+  if (!hash) return false;
+  const passwordHash = await sha256Hex(password || "");
+  return timingSafeEqual(passwordHash, hash);
+}
+
 async function requireAuthOrPassword(request, env, body = null) {
   if (await isAuthenticated(request, env)) return null;
   if (body && await isValidPassword(body.password, env)) return null;
@@ -215,8 +278,57 @@ async function requireAuthOrPassword(request, env, body = null) {
 
 function withoutPassword(body) {
   if (!body || typeof body !== "object") return {};
-  const { password: _password, ...rest } = body;
+  const {
+    password: _password,
+    adminPassword: _adminPassword,
+    postPassword: _postPassword,
+    newPostPassword: _newPostPassword,
+    commentPassword: _commentPassword,
+    ...rest
+  } = body;
   return rest;
+}
+
+function publicBoardComment(comment) {
+  const normalized = normalizeBoardComment(comment);
+  if (!normalized) return null;
+  const { passwordHash: _passwordHash, ...safeComment } = normalized;
+  return safeComment;
+}
+
+function publicBoardPost(post) {
+  const normalized = normalizeBoardPost(post);
+  if (!normalized) return null;
+  const { passwordHash: _passwordHash, comments, ...safePost } = normalized;
+  safePost.comments = (comments || []).map(publicBoardComment).filter(Boolean);
+  safePost.commentCount = safePost.comments.length;
+  return safePost;
+}
+
+function publicBoardPosts(posts) {
+  return (Array.isArray(posts) ? posts : [])
+    .map(publicBoardPost)
+    .filter(Boolean)
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, BOARD_MAX_POSTS);
+}
+
+function boardJsonResponse(posts, status, env, extra = {}) {
+  const safePosts = publicBoardPosts(posts);
+  const body = { posts: safePosts, ...extra };
+  if (extra.post) body.post = publicBoardPost(extra.post);
+  if (extra.comment) body.comment = publicBoardComment(extra.comment);
+  return jsonResponse(body, status, env);
+}
+
+async function canManagePost(post, body, env) {
+  if (await isAdminPassword(body?.adminPassword || "", env)) return true;
+  return isMatchingPassword(body?.postPassword || body?.password || "", post?.passwordHash || "");
+}
+
+async function canManageComment(comment, body, env) {
+  if (await isAdminPassword(body?.adminPassword || "", env)) return true;
+  return isMatchingPassword(body?.commentPassword || body?.password || "", comment?.passwordHash || "");
 }
 
 function jsonRequestWithoutPassword(request, body) {
@@ -239,12 +351,6 @@ async function parseJsonBody(request) {
 
 async function handleBoardPosts(request, env, url) {
   if (env.BOARD_STORE) {
-    if (["POST", "PUT", "DELETE"].includes(request.method) && !url.pathname.endsWith("/view")) {
-      const body = await parseJsonBody(request.clone());
-      const authResponse = await requireAuthOrPassword(request, env, body);
-      if (authResponse) return authResponse;
-      return env.BOARD_STORE.get(env.BOARD_STORE.idFromName("free-board")).fetch(jsonRequestWithoutPassword(request, body));
-    }
     const id = env.BOARD_STORE.idFromName("free-board");
     return env.BOARD_STORE.get(id).fetch(request);
   }
@@ -446,19 +552,22 @@ export class BoardStore {
     const postId = decodeURIComponent(url.pathname.replace(/^\/api\/board\/posts\/?/, ""));
 
     if (request.method === "GET" && url.pathname === "/api/board/posts") {
-      return jsonResponse({ posts: await this.readPosts() }, 200, this.env);
+      return boardJsonResponse(await this.readPosts(), 200, this.env);
     }
 
     if (request.method === "POST" && url.pathname === "/api/board/posts") {
       const body = await parseJsonBody(request);
+      const postPassword = cleanBoardText(body?.postPassword, 200);
+      if (!postPassword) return jsonResponse({ error: "post_password_required" }, 400, this.env);
       const post = normalizeBoardPost(body, {
         id: `post-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
         createdAt: Date.now(),
       });
       if (!post) return jsonResponse({ error: "invalid_post" }, 400, this.env);
+      post.passwordHash = await sha256Hex(postPassword);
       const posts = (await this.readPosts()).filter((item) => item.id !== post.id);
       posts.unshift(post);
-      return jsonResponse({ posts: await this.writePosts(posts), post }, 201, this.env);
+      return boardJsonResponse(await this.writePosts(posts), 201, this.env, { post });
     }
 
     if (request.method === "POST" && postId && url.pathname.endsWith("/view")) {
@@ -468,7 +577,47 @@ export class BoardStore {
       if (!target) return jsonResponse({ error: "not_found" }, 404, this.env);
       target.views = Math.max(0, Math.floor(Number(target.views) || 0)) + 1;
       await this.writePosts(posts);
-      return jsonResponse({ posts, post: target }, 200, this.env);
+      return boardJsonResponse(posts, 200, this.env, { post: target });
+    }
+
+    if (request.method === "POST" && /^\/api\/board\/posts\/[^/]+\/comments$/.test(url.pathname)) {
+      const id = decodeURIComponent(url.pathname.split("/")[4] || "");
+      const body = await parseJsonBody(request);
+      const commentPassword = cleanBoardText(body?.commentPassword, 200);
+      if (!commentPassword) return jsonResponse({ error: "comment_password_required" }, 400, this.env);
+      const posts = await this.readPosts();
+      const target = posts.find((post) => post.id === id);
+      if (!target) return jsonResponse({ error: "not_found" }, 404, this.env);
+      const comment = normalizeBoardComment(body, {
+        id: `comment-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
+        createdAt: Date.now(),
+      });
+      if (!comment) return jsonResponse({ error: "invalid_comment" }, 400, this.env);
+      comment.passwordHash = await sha256Hex(commentPassword);
+      target.comments = Array.isArray(target.comments) ? target.comments : [];
+      target.comments.push(comment);
+      target.comments = target.comments.slice(-BOARD_MAX_COMMENTS);
+      target.updatedAt = Date.now();
+      return boardJsonResponse(await this.writePosts(posts), 201, this.env, { post: target, comment });
+    }
+
+    if (request.method === "DELETE" && /^\/api\/board\/posts\/[^/]+\/comments\/[^/]+$/.test(url.pathname)) {
+      const parts = url.pathname.split("/");
+      const id = decodeURIComponent(parts[4] || "");
+      const commentId = decodeURIComponent(parts[6] || "");
+      const body = await parseJsonBody(request);
+      const posts = await this.readPosts();
+      const target = posts.find((post) => post.id === id);
+      if (!target) return jsonResponse({ error: "not_found" }, 404, this.env);
+      const comments = Array.isArray(target.comments) ? target.comments : [];
+      const comment = comments.find((item) => item.id === commentId);
+      if (!comment) return jsonResponse({ error: "not_found" }, 404, this.env);
+      if (!await canManageComment(comment, body, this.env)) {
+        return jsonResponse({ error: "invalid_password" }, 401, this.env);
+      }
+      target.comments = comments.filter((item) => item.id !== commentId);
+      target.updatedAt = Date.now();
+      return boardJsonResponse(await this.writePosts(posts), 200, this.env, { post: target, ok: true });
     }
 
     if (request.method === "PUT" && postId) {
@@ -476,25 +625,37 @@ export class BoardStore {
       const posts = await this.readPosts();
       const index = posts.findIndex((post) => post.id === postId);
       if (index < 0) return jsonResponse({ error: "not_found" }, 404, this.env);
+      if (!await canManagePost(posts[index], body, this.env)) {
+        return jsonResponse({ error: "invalid_password" }, 401, this.env);
+      }
       const updated = normalizeBoardPost({
         ...posts[index],
-        ...body,
+        ...withoutPassword(body),
         id: posts[index].id,
         createdAt: posts[index].createdAt,
         views: posts[index].views,
         likes: posts[index].likes,
+        comments: posts[index].comments,
+        passwordHash: cleanBoardText(body?.newPostPassword, 200)
+          ? await sha256Hex(body.newPostPassword)
+          : posts[index].passwordHash,
         updatedAt: Date.now(),
       });
       if (!updated) return jsonResponse({ error: "invalid_post" }, 400, this.env);
       posts[index] = updated;
-      return jsonResponse({ posts: await this.writePosts(posts), post: updated }, 200, this.env);
+      return boardJsonResponse(await this.writePosts(posts), 200, this.env, { post: updated });
     }
 
     if (request.method === "DELETE" && postId) {
+      const body = await parseJsonBody(request);
       const posts = await this.readPosts();
+      const target = posts.find((post) => post.id === postId);
+      if (!target) return jsonResponse({ error: "not_found" }, 404, this.env);
+      if (!await canManagePost(target, body, this.env)) {
+        return jsonResponse({ error: "invalid_password" }, 401, this.env);
+      }
       const nextPosts = posts.filter((post) => post.id !== postId);
-      if (nextPosts.length === posts.length) return jsonResponse({ error: "not_found" }, 404, this.env);
-      return jsonResponse({ posts: await this.writePosts(nextPosts), ok: true }, 200, this.env);
+      return boardJsonResponse(await this.writePosts(nextPosts), 200, this.env, { ok: true });
     }
 
     return jsonResponse({ error: "not_found" }, 404, this.env);
