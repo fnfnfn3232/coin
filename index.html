@@ -2590,11 +2590,11 @@
         if (!hasFreeBoardServer() || freeBoardPostsPromise) return;
         fetchFreeBoardPosts(force)
           .then(() => {
-            if (state.viewMode === "board") renderFreeBoard();
+            if (state.viewMode === "board" && freeBoardMode === "list") renderFreeBoard();
           })
           .catch((error) => {
             console.error(error);
-            if (state.viewMode === "board") renderFreeBoard();
+            if (state.viewMode === "board" && freeBoardMode === "list") renderFreeBoard();
           });
       }
 
@@ -2998,7 +2998,6 @@
       }
 
       function renderFreeBoard() {
-        requestFreeBoardPostsRefresh(false);
         const posts = loadFreeBoardPosts();
         const filteredPosts = getFilteredFreeBoardPosts(posts);
         const totalPages = Math.max(1, Math.ceil(filteredPosts.length / FREE_BOARD_PAGE_SIZE));
@@ -4982,7 +4981,7 @@
         if (isNewsMode) {
           requestLiveNewsRefresh(true);
         }
-        if (isBoardMode) {
+        if (isBoardMode && freeBoardMode === "list") {
           requestFreeBoardPostsRefresh(true);
         }
         if (options.writeHistory !== false) {
