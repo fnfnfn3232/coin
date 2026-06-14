@@ -2479,6 +2479,7 @@
       let freeBoardPostsLoaded = false;
       let freeBoardPostsPromise = null;
       let freeBoardServerError = "";
+      let freeBoardServerRetryAfterMs = 0;
       let pendingDeletePostId = "";
       let isApplyingHistoryState = false;
       let liveNewsPromise = null;
@@ -2558,18 +2559,21 @@
           : [];
         freeBoardPostsLoaded = true;
         freeBoardServerError = "";
+        freeBoardServerRetryAfterMs = 0;
       }
 
       async function fetchFreeBoardPosts(force = false) {
         if (!hasFreeBoardServer()) return loadFreeBoardPosts();
+        if (!force && freeBoardServerRetryAfterMs > Date.now()) return loadFreeBoardPosts();
         if (!force && freeBoardPostsLoaded) return freeBoardServerPosts;
         if (freeBoardPostsPromise) return freeBoardPostsPromise;
-        freeBoardPostsPromise = fetchServerAuth("/api/board/posts", { method: "GET" })
+        freeBoardPostsPromise = fetchServerAuth("/api/board/posts", { method: "GET", timeoutMs: 4000 })
           .then((payload) => {
             applyServerFreeBoardPosts(payload?.posts || []);
             return freeBoardServerPosts;
           })
           .catch((error) => {
+            freeBoardServerRetryAfterMs = Date.now() + 60 * 1000;
             freeBoardServerError = error?.name === "AbortError"
               ? "서버 게시글 응답이 늦어 이 브라우저 저장 글을 먼저 표시합니다."
               : "서버 게시글을 불러오지 못했습니다. 임시로 이 브라우저 저장 글을 표시합니다.";
@@ -2582,6 +2586,7 @@
       }
 
       function requestFreeBoardPostsRefresh(force = false) {
+        if (!force && freeBoardServerRetryAfterMs > Date.now()) return;
         if (!hasFreeBoardServer() || freeBoardPostsPromise) return;
         fetchFreeBoardPosts(force)
           .then(() => {
