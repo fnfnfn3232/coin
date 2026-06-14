@@ -2598,27 +2598,28 @@
           });
       }
 
-      async function createServerFreeBoardPost(post) {
+      async function createServerFreeBoardPost(post, password = "") {
         const payload = await fetchServerAuth("/api/board/posts", {
           method: "POST",
-          body: JSON.stringify(post),
+          body: JSON.stringify({ ...post, password }),
         });
         applyServerFreeBoardPosts(payload?.posts || []);
         return payload?.post || null;
       }
 
-      async function updateServerFreeBoardPost(postId, post) {
+      async function updateServerFreeBoardPost(postId, post, password = "") {
         const payload = await fetchServerAuth(`/api/board/posts/${encodeURIComponent(postId)}`, {
           method: "PUT",
-          body: JSON.stringify(post),
+          body: JSON.stringify({ ...post, password }),
         });
         applyServerFreeBoardPosts(payload?.posts || []);
         return payload?.post || null;
       }
 
-      async function deleteServerFreeBoardPost(postId) {
+      async function deleteServerFreeBoardPost(postId, password = "") {
         const payload = await fetchServerAuth(`/api/board/posts/${encodeURIComponent(postId)}`, {
           method: "DELETE",
+          body: JSON.stringify({ password }),
         });
         applyServerFreeBoardPosts(payload?.posts || []);
       }
@@ -3401,7 +3402,7 @@
         pendingDeletePostId = "";
       }
 
-      async function deleteFreeBoardPostById(postId) {
+      async function deleteFreeBoardPostById(postId, password = "") {
         const id = String(postId || "");
         const beforePosts = loadFreeBoardPosts();
         const posts = beforePosts.filter((post) => post.id !== id);
@@ -3411,7 +3412,7 @@
           return false;
         }
         if (hasFreeBoardServer()) {
-          await deleteServerFreeBoardPost(id);
+          await deleteServerFreeBoardPost(id, password);
         } else {
           saveFreeBoardPosts(posts);
         }
@@ -3589,7 +3590,7 @@
         try {
           deleteAuthError.textContent = "서버에서 확인 중입니다...";
           await verifySitePassword(password);
-          await deleteFreeBoardPostById(postId);
+          await deleteFreeBoardPostById(postId, password);
           closeDeleteAuthModal();
         } catch (error) {
           const message = String(error?.message || "");
@@ -5376,7 +5377,7 @@
             target.updatedAt = Date.now();
             if (hasFreeBoardServer()) {
               showFreeBoardMessage("서버에 수정 중입니다...", false);
-              await updateServerFreeBoardPost(target.id, target);
+              await updateServerFreeBoardPost(target.id, target, password);
             } else {
               saveFreeBoardPosts(posts);
             }
@@ -5401,7 +5402,7 @@
           };
           if (hasFreeBoardServer()) {
             showFreeBoardMessage("서버에 등록 중입니다...", false);
-            await createServerFreeBoardPost(newPost);
+            await createServerFreeBoardPost(newPost, password);
           } else {
             posts.unshift(newPost);
             saveFreeBoardPosts(posts);
@@ -5482,7 +5483,7 @@
             const serverIds = new Set(freeBoardServerPosts.map((post) => post.id));
             const localOnlyPosts = loadLocalFreeBoardPosts().filter((post) => !serverIds.has(post.id));
             for (const post of localOnlyPosts) {
-              await createServerFreeBoardPost(post);
+              await createServerFreeBoardPost(post, password);
             }
             await fetchFreeBoardPosts(true);
             showFreeBoardMessage(`서버로 ${formatNumber(localOnlyPosts.length, 0)}개 글을 옮겼습니다.`, false);
