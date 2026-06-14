@@ -5415,7 +5415,10 @@
       });
 
       newsPanel.addEventListener("click", async (event) => {
-        const mediaButton = event.target.closest("[data-free-board-insert-media]");
+        const clickTarget = event.target instanceof Element ? event.target : event.target?.parentElement;
+        if (!clickTarget) return;
+
+        const mediaButton = clickTarget.closest("[data-free-board-insert-media]");
         if (mediaButton) {
           const kind = String(mediaButton.dataset.freeBoardInsertMedia || "");
           const label = kind === "video" ? "동영상" : "이미지";
@@ -5432,7 +5435,7 @@
           return;
         }
 
-        const filterButton = event.target.closest("[data-free-board-filter]");
+        const filterButton = clickTarget.closest("[data-free-board-filter]");
         if (filterButton) {
           freeBoardFilter = String(filterButton.dataset.freeBoardFilter || "all");
           freeBoardPage = 1;
@@ -5442,7 +5445,7 @@
           return;
         }
 
-        const pageButton = event.target.closest("[data-free-board-page]");
+        const pageButton = clickTarget.closest("[data-free-board-page]");
         if (pageButton) {
           freeBoardPage = Number(pageButton.dataset.freeBoardPage) || 1;
           freeBoardMode = "list";
@@ -5451,7 +5454,7 @@
           return;
         }
 
-        if (event.target.closest("[data-free-board-search]")) {
+        if (clickTarget.closest("[data-free-board-search]")) {
           const input = document.getElementById("freeBoardSearchInput");
           freeBoardQuery = String(input?.value || "");
           freeBoardPage = 1;
@@ -5461,7 +5464,7 @@
           return;
         }
 
-        if (event.target.closest("[data-free-board-import-local]")) {
+        if (clickTarget.closest("[data-free-board-import-local]")) {
           const passwordInput = document.getElementById("freeBoardImportPassword");
           const password = String(passwordInput?.value || "");
           if (!password) {
@@ -5488,7 +5491,7 @@
           return;
         }
 
-        const openButton = event.target.closest("[data-free-board-open]");
+        const openButton = clickTarget.closest("[data-free-board-open]");
         if (openButton) {
           const id = String(openButton.dataset.freeBoardOpen || "");
           const posts = loadFreeBoardPosts();
@@ -5514,7 +5517,7 @@
           return;
         }
 
-        if (event.target.closest("[data-free-board-write]")) {
+        if (clickTarget.closest("[data-free-board-write]")) {
           freeBoardMode = "write";
           showFreeBoardMessage("", false);
           renderFreeBoard();
@@ -5522,7 +5525,7 @@
           return;
         }
 
-        if (event.target.closest("[data-free-board-list]")) {
+        if (clickTarget.closest("[data-free-board-list]")) {
           freeBoardMode = "list";
           freeBoardSelectedId = "";
           renderFreeBoard();
@@ -5530,7 +5533,7 @@
           return;
         }
 
-        const editButton = event.target.closest("[data-free-board-edit]");
+        const editButton = clickTarget.closest("[data-free-board-edit]");
         if (editButton) {
           freeBoardSelectedId = String(editButton.dataset.freeBoardEdit || "");
           freeBoardMode = "edit";
@@ -5540,7 +5543,7 @@
           return;
         }
 
-        const deleteButton = event.target.closest("[data-free-board-delete]");
+        const deleteButton = clickTarget.closest("[data-free-board-delete]");
         if (!deleteButton) return;
         showDeleteAuthModal(deleteButton.dataset.freeBoardDelete || "");
       });
