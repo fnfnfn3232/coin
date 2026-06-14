@@ -202,6 +202,33 @@ async function requireAuth(request, env) {
   return jsonResponse({ error: "auth_required" }, 401, env);
 }
 
+async function isValidPassword(password, env) {
+  const passwordHash = await sha256Hex(password || "");
+  return timingSafeEqual(passwordHash, env.SITE_PASSWORD_SHA256);
+}
+
+async function requireAuthOrPassword(request, env, body = null) {
+  if (await isAuthenticated(request, env)) return null;
+  if (body && await isValidPassword(body.password, env)) return null;
+  return jsonResponse({ error: "auth_required" }, 401, env);
+}
+
+function withoutPassword(body) {
+  if (!body || typeof body !== "object") return {};
+  const { password: _password, ...rest } = body;
+  return rest;
+}
+
+function jsonRequestWithoutPassword(request, body) {
+  const headers = new Headers(request.headers);
+  headers.set("Content-Type", "application/json");
+  return new Request(request.url, {
+    method: request.method,
+    headers,
+    body: JSON.stringify(withoutPassword(body)),
+  });
+}
+
 async function parseJsonBody(request) {
   try {
     return await request.json();
@@ -213,8 +240,10 @@ async function parseJsonBody(request) {
 async function handleBoardPosts(request, env, url) {
   if (env.BOARD_STORE) {
     if (["POST", "PUT", "DELETE"].includes(request.method) && !url.pathname.endsWith("/view")) {
-      const authResponse = await requireAuth(request, env);
+      const body = await parseJsonBody(request.clone());
+      const authResponse = await requireAuthOrPassword(request, env, body);
       if (authResponse) return authResponse;
+      return env.BOARD_STORE.get(env.BOARD_STORE.idFromName("free-board")).fetch(jsonRequestWithoutPassword(request, body));
     }
     const id = env.BOARD_STORE.idFromName("free-board");
     return env.BOARD_STORE.get(id).fetch(request);
@@ -226,10 +255,10 @@ async function handleBoardPosts(request, env, url) {
   }
 
   if (request.method === "POST" && url.pathname === "/api/board/posts") {
-    const authResponse = await requireAuth(request, env);
-    if (authResponse) return authResponse;
     const body = await parseJsonBody(request);
-    const post = normalizeBoardPost(body, {
+    const authResponse = await requireAuthOrPassword(request, env, body);
+    if (authResponse) return authResponse;
+    const post = normalizeBoardPost(withoutPassword(body), {
       id: `post-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
       createdAt: Date.now(),
     });
@@ -250,15 +279,15 @@ async function handleBoardPosts(request, env, url) {
   }
 
   if (request.method === "PUT" && postId) {
-    const authResponse = await requireAuth(request, env);
-    if (authResponse) return authResponse;
     const body = await parseJsonBody(request);
+    const authResponse = await requireAuthOrPassword(request, env, body);
+    if (authResponse) return authResponse;
     const posts = await readBoardPosts(env);
     const index = posts.findIndex((post) => post.id === postId);
     if (index < 0) return jsonResponse({ error: "not_found" }, 404, env);
     const updated = normalizeBoardPost({
       ...posts[index],
-      ...body,
+      ...withoutPassword(body),
       id: posts[index].id,
       createdAt: posts[index].createdAt,
       views: posts[index].views,
@@ -271,7 +300,8 @@ async function handleBoardPosts(request, env, url) {
   }
 
   if (request.method === "DELETE" && postId) {
-    const authResponse = await requireAuth(request, env);
+    const body = await parseJsonBody(request.clone());
+    const authResponse = await requireAuthOrPassword(request, env, body);
     if (authResponse) return authResponse;
     const posts = await readBoardPosts(env);
     const nextPosts = posts.filter((post) => post.id !== postId);
