@@ -156,6 +156,7 @@ function normalizeBoardPost(raw, fallback = {}) {
     title,
     author: cleanBoardText(raw?.author || "익명", 40) || "익명",
     body,
+    htmlEnabled: Boolean(raw?.htmlEnabled),
     mediaUrls,
     createdAt: Number.isFinite(createdAt) ? createdAt : Date.now(),
     updatedAt: Number.isFinite(Number(raw?.updatedAt)) ? Number(raw.updatedAt) : undefined,
