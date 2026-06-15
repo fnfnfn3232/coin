@@ -3,7 +3,7 @@ const COOKIE_NAME = "coin_board_session";
 const SESSION_TTL_SECONDS = 24 * 60 * 60;
 const BOARD_POSTS_KEY = "free-board-posts";
 const BOARD_MAX_POSTS = 200;
-const BOARD_MAX_MEDIA = 4;
+const BOARD_MAX_MEDIA = 10;
 const BOARD_MAX_COMMENTS = 100;
 
 function jsonResponse(body, status = 200, env = {}) {
