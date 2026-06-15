@@ -5229,6 +5229,13 @@
         }
       }
 
+      function resetFreeBoardToList() {
+        freeBoardMode = "list";
+        freeBoardSelectedId = "";
+        freeBoardPage = 1;
+        freeBoardQuery = "";
+      }
+
       function goHomeView() {
         state.board = "binance";
         state.page = 1;
@@ -5237,8 +5244,7 @@
         state.compareBoard2 = "";
         state.compareBoard3 = "";
         state.sortDirection = "desc";
-        freeBoardMode = "list";
-        freeBoardSelectedId = "";
+        resetFreeBoardToList();
         searchInput.value = "";
         baseBoardSelect.value = "binance";
         compareBoardSelect.value = "";
@@ -5920,6 +5926,7 @@
       });
 
       boardToggleBtn.addEventListener("click", () => {
+        resetFreeBoardToList();
         setViewMode("board");
       });
 
