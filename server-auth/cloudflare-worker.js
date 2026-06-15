@@ -2,9 +2,12 @@ const COINNESS_NEWS_ENDPOINT = "https://api.coinness.com/feed/v1/breaking-news";
 const COOKIE_NAME = "coin_board_session";
 const SESSION_TTL_SECONDS = 24 * 60 * 60;
 const BOARD_POSTS_KEY = "free-board-posts";
+const USAGE_STATS_KEY = "usage-stats-v1";
 const BOARD_MAX_POSTS = 200;
 const BOARD_MAX_MEDIA = 10;
 const BOARD_MAX_COMMENTS = 100;
+const GITHUB_PAGES_MONTHLY_SOFT_LIMIT_BYTES = 100 * 1024 * 1024 * 1024;
+const USAGE_BEACON_MAX_BYTES = 25 * 1024 * 1024;
 
 function jsonResponse(body, status = 200, env = {}) {
   return new Response(JSON.stringify(body), {
@@ -214,6 +217,54 @@ function normalizeBoardPost(raw, fallback = {}) {
     updatedAt: Number.isFinite(Number(raw?.updatedAt)) ? Number(raw.updatedAt) : undefined,
     views: Math.max(0, Math.floor(Number(raw?.views) || 0)),
     likes: Math.max(0, Math.floor(Number(raw?.likes) || 0)),
+  };
+}
+
+function getKstDateKey(now = Date.now()) {
+  return new Date(now + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+function getKstMonthKey(now = Date.now()) {
+  return getKstDateKey(now).slice(0, 7);
+}
+
+function normalizeUsageStats(raw) {
+  return {
+    months: raw && typeof raw.months === "object" && raw.months ? raw.months : {},
+    days: raw && typeof raw.days === "object" && raw.days ? raw.days : {},
+    totalViews: Math.max(0, Math.floor(Number(raw?.totalViews) || 0)),
+    totalBytes: Math.max(0, Math.floor(Number(raw?.totalBytes) || 0)),
+    firstSeen: Math.max(0, Math.floor(Number(raw?.firstSeen) || 0)),
+    lastSeen: Math.max(0, Math.floor(Number(raw?.lastSeen) || 0)),
+  };
+}
+
+function normalizeUsageBucket(bucket) {
+  return {
+    views: Math.max(0, Math.floor(Number(bucket?.views) || 0)),
+    bytes: Math.max(0, Math.floor(Number(bucket?.bytes) || 0)),
+    samples: Math.max(0, Math.floor(Number(bucket?.samples) || 0)),
+    lastSeen: Math.max(0, Math.floor(Number(bucket?.lastSeen) || 0)),
+  };
+}
+
+function publicUsageStats(raw) {
+  const stats = normalizeUsageStats(raw);
+  const monthKey = getKstMonthKey();
+  const dayKey = getKstDateKey();
+  const month = normalizeUsageBucket(stats.months[monthKey]);
+  const day = normalizeUsageBucket(stats.days[dayKey]);
+  return {
+    monthKey,
+    dayKey,
+    monthlySoftLimitBytes: GITHUB_PAGES_MONTHLY_SOFT_LIMIT_BYTES,
+    month,
+    today: day,
+    totalViews: stats.totalViews,
+    totalBytes: stats.totalBytes,
+    firstSeen: stats.firstSeen,
+    lastSeen: stats.lastSeen,
+    note: "브라우저 Performance API 기반 추정치입니다. GitHub Pages 공식 청구/집계값은 아닙니다.",
   };
 }
 
@@ -547,9 +598,77 @@ export class BoardStore {
     return normalized;
   }
 
+  async readUsageStats() {
+    return normalizeUsageStats(await this.state.storage.get(USAGE_STATS_KEY));
+  }
+
+  async writeUsageStats(stats) {
+    const normalized = normalizeUsageStats(stats);
+    await this.state.storage.put(USAGE_STATS_KEY, normalized);
+    return normalized;
+  }
+
+  async recordUsageBeacon(body) {
+    const rawBytes = Math.max(0, Math.floor(Number(body?.bytes) || 0));
+    const bytes = Math.min(rawBytes, USAGE_BEACON_MAX_BYTES);
+    const now = Date.now();
+    const monthKey = getKstMonthKey(now);
+    const dayKey = getKstDateKey(now);
+    const stats = await this.readUsageStats();
+    stats.months[monthKey] = normalizeUsageBucket(stats.months[monthKey]);
+    stats.days[dayKey] = normalizeUsageBucket(stats.days[dayKey]);
+    stats.months[monthKey].views += 1;
+    stats.months[monthKey].samples += bytes > 0 ? 1 : 0;
+    stats.months[monthKey].bytes += bytes;
+    stats.months[monthKey].lastSeen = now;
+    stats.days[dayKey].views += 1;
+    stats.days[dayKey].samples += bytes > 0 ? 1 : 0;
+    stats.days[dayKey].bytes += bytes;
+    stats.days[dayKey].lastSeen = now;
+    stats.totalViews += 1;
+    stats.totalBytes += bytes;
+    stats.firstSeen = stats.firstSeen || now;
+    stats.lastSeen = now;
+
+    const monthKeep = new Set();
+    for (let offset = 0; offset < 18; offset += 1) {
+      const date = new Date(now + 9 * 60 * 60 * 1000);
+      date.setUTCMonth(date.getUTCMonth() - offset);
+      monthKeep.add(date.toISOString().slice(0, 7));
+    }
+    Object.keys(stats.months).forEach((key) => {
+      if (!monthKeep.has(key)) delete stats.months[key];
+    });
+    const dayKeep = new Set();
+    for (let offset = 0; offset < 120; offset += 1) {
+      const date = new Date(now + 9 * 60 * 60 * 1000);
+      date.setUTCDate(date.getUTCDate() - offset);
+      dayKeep.add(date.toISOString().slice(0, 10));
+    }
+    Object.keys(stats.days).forEach((key) => {
+      if (!dayKeep.has(key)) delete stats.days[key];
+    });
+
+    return this.writeUsageStats(stats);
+  }
+
   async fetch(request) {
     const url = new URL(request.url);
     const postId = decodeURIComponent(url.pathname.replace(/^\/api\/board\/posts\/?/, ""));
+
+    if (request.method === "POST" && url.pathname === "/api/usage/beacon") {
+      const body = await parseJsonBody(request);
+      const stats = await this.recordUsageBeacon(body);
+      return jsonResponse({ ok: true, usage: publicUsageStats(stats) }, 200, this.env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/usage/stats") {
+      const body = await parseJsonBody(request);
+      if (!await isAdminPassword(body?.adminPassword || body?.password || "", this.env)) {
+        return jsonResponse({ error: "invalid_password" }, 401, this.env);
+      }
+      return jsonResponse({ usage: publicUsageStats(await this.readUsageStats()) }, 200, this.env);
+    }
 
     if (request.method === "GET" && url.pathname === "/api/board/posts") {
       return boardJsonResponse(await this.readPosts(), 200, this.env);
@@ -679,6 +798,11 @@ export default {
     }
     if (url.pathname === "/api/news" && request.method === "GET") {
       return jsonResponse(await fetchCoinnessNewsSafely(env), 200, env);
+    }
+    if (url.pathname === "/api/usage/beacon" || url.pathname === "/api/usage/stats") {
+      if (!env.BOARD_STORE) return jsonResponse({ error: "usage_storage_not_configured" }, 500, env);
+      const id = env.BOARD_STORE.idFromName("free-board");
+      return env.BOARD_STORE.get(id).fetch(request);
     }
     if (url.pathname === "/api/board/posts" || url.pathname.startsWith("/api/board/posts/")) {
       return handleBoardPosts(request, env, url);
