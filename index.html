@@ -2209,7 +2209,7 @@
     const APP_VIEW_STATE_KEY = "fdv_app_view_state_v1";
     const FREE_BOARD_STORAGE_KEY = "fdv_free_board_posts_v1";
     const FREE_BOARD_MAX_POSTS = 80;
-    const FREE_BOARD_MAX_MEDIA = 4;
+    const FREE_BOARD_MAX_MEDIA = 10;
     const FREE_BOARD_PAGE_SIZE = 20;
     const FREE_BOARD_SERVER_ENABLED = true;
     const LIVE_NEWS_REFRESH_MS = 60 * 1000;
@@ -2799,6 +2799,24 @@
 
       function createMediaToken(kind, url) {
         return `[${kind}:${url}]`;
+      }
+
+      function convertPlainMediaUrlsToMediaTokens(value) {
+        const placeholders = [];
+        const protectedText = String(value || "").replace(/\[(image|video):([^\]\r\n]+)\]/gi, (match) => {
+          const token = `__BOARD_EXISTING_MEDIA_${placeholders.length}__`;
+          placeholders.push({ token, value: match });
+          return token;
+        });
+        const converted = protectedText.replace(/https?:\/\/[^\s<>"'`]+/gi, (match) => {
+          const trailingMatch = match.match(/[),.;!?]+$/);
+          const trailing = trailingMatch ? trailingMatch[0] : "";
+          const url = trailing ? match.slice(0, -trailing.length) : match;
+          const kind = getSafeMediaKind(url);
+          if (!kind) return match;
+          return `${createMediaToken(kind, url)}${trailing}`;
+        });
+        return placeholders.reduce((text, item) => text.split(item.token).join(item.value), converted);
       }
 
       function insertTextIntoTextarea(textarea, text) {
@@ -5603,7 +5621,7 @@
         const category = String(formData.get("category") || "general");
         const title = String(formData.get("title") || "").trim();
         const author = String(formData.get("author") || "").trim();
-        const body = String(formData.get("body") || "").trim();
+        const body = convertPlainMediaUrlsToMediaTokens(String(formData.get("body") || "")).trim();
         const htmlEnabled = formData.get("htmlEnabled") === "on";
 
         if (!postPassword && !(freeBoardMode === "edit" && freeBoardAdminMode)) {
@@ -5617,7 +5635,7 @@
 
         const mediaResult = validateEmbeddedMediaTokens(body);
         if (mediaResult.rejected.length || mediaResult.validCount > FREE_BOARD_MAX_MEDIA) {
-          showFreeBoardMessage("이미지는 파일 링크, 동영상은 YouTube 또는 mp4/webm/ogv 링크만 등록할 수 있습니다. 입력 내용은 유지됩니다.", true);
+          showFreeBoardMessage(`이미지는 파일 링크, 동영상은 YouTube 또는 mp4/webm/ogv 링크만 등록할 수 있습니다. 미디어는 최대 ${FREE_BOARD_MAX_MEDIA}개까지 가능합니다. 입력 내용은 유지됩니다.`, true);
           return;
         }
 
@@ -5882,6 +5900,19 @@
         freeBoardMode = "list";
         renderFreeBoard();
         writeAppHistoryState(true);
+      });
+
+      newsPanel.addEventListener("paste", (event) => {
+        const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+        const textarea = target?.closest("#freeBoardBody");
+        if (!textarea) return;
+        const pastedText = event.clipboardData?.getData("text/plain") || "";
+        if (!pastedText) return;
+        const convertedText = convertPlainMediaUrlsToMediaTokens(pastedText);
+        if (convertedText === pastedText) return;
+        event.preventDefault();
+        insertTextIntoTextarea(textarea, convertedText);
+        showFreeBoardMessage("이미지/동영상 주소를 본문 미디어로 변환했습니다.", false);
       });
 
       newsToggleBtn.addEventListener("click", () => {
