@@ -2127,6 +2127,11 @@
             <div class="admin-stat-sub" id="adminFirstSeen">-</div>
           </article>
           <article class="admin-stat">
+            <div class="admin-stat-label">GitHub 월 트래픽</div>
+            <div class="admin-stat-value" id="adminPagesUsage">-</div>
+            <div class="admin-stat-sub" id="adminPagesUsageSub">추정 수집 전</div>
+          </article>
+          <article class="admin-stat">
             <div class="admin-stat-label">데이터 최신성</div>
             <div class="admin-stat-value" id="adminDataAge">-</div>
             <div class="admin-stat-sub" id="adminDataGenerated">-</div>
@@ -2205,6 +2210,7 @@
     const LOCK_EXTEND_COUNT_KEY = "fdv_lock_extend_count_server_v1";
     const MANUAL_REFRESH_LAST_KEY = "fdv_manual_refresh_last_v1";
     const ADMIN_TRAFFIC_KEY = "fdv_admin_traffic_v1";
+    const USAGE_BEACON_SENT_KEY = "fdv_usage_beacon_sent_v1";
     const SERVER_AUTH_API_BASE = String(window.SERVER_AUTH_API_BASE || "").replace(/\/+$/, "");
     const APP_VIEW_STATE_KEY = "fdv_app_view_state_v1";
     const FREE_BOARD_STORAGE_KEY = "fdv_free_board_posts_v1";
@@ -2212,6 +2218,7 @@
     const FREE_BOARD_MAX_MEDIA = 10;
     const FREE_BOARD_PAGE_SIZE = 20;
     const FREE_BOARD_SERVER_ENABLED = true;
+    const GITHUB_PAGES_MONTHLY_SOFT_LIMIT_BYTES = 100 * 1024 * 1024 * 1024;
     const LIVE_NEWS_REFRESH_MS = 60 * 1000;
     const LOCK_TTL_MS = 24 * 60 * 60 * 1000;
     const LOCK_EXTEND_MAX = 3;
@@ -2396,6 +2403,8 @@
       const adminMonthlyTraffic = document.getElementById("adminMonthlyTraffic");
       const adminTotalTraffic = document.getElementById("adminTotalTraffic");
       const adminFirstSeen = document.getElementById("adminFirstSeen");
+      const adminPagesUsage = document.getElementById("adminPagesUsage");
+      const adminPagesUsageSub = document.getElementById("adminPagesUsageSub");
       const adminDataAge = document.getElementById("adminDataAge");
       const adminDataGenerated = document.getElementById("adminDataGenerated");
       const adminDataStats = document.getElementById("adminDataStats");
@@ -2471,6 +2480,54 @@
           throw new Error(message);
         }
         return payload;
+      }
+
+      function getPerformanceTransferBytes() {
+        try {
+          const ownOrigin = location.origin;
+          const entries = [
+            ...performance.getEntriesByType("navigation"),
+            ...performance.getEntriesByType("resource"),
+          ];
+          return entries.reduce((sum, entry) => {
+            const name = String(entry.name || "");
+            if (entry.entryType === "resource" && !name.startsWith(ownOrigin)) return sum;
+            if (SERVER_AUTH_API_BASE && name.startsWith(SERVER_AUTH_API_BASE)) return sum;
+            const transferSize = Math.max(0, Math.floor(Number(entry.transferSize) || 0));
+            return sum + transferSize;
+          }, 0);
+        } catch (_error) {
+          return 0;
+        }
+      }
+
+      function getUsageBeaconKey() {
+        const navigation = performance.getEntriesByType("navigation")[0];
+        const startedAt = navigation?.startTime || performance.timeOrigin || Date.now();
+        return `${location.pathname}|${Math.floor(Number(startedAt) || Date.now())}`;
+      }
+
+      function sendUsageBeacon() {
+        if (!hasServerAuth()) return;
+        const key = getUsageBeaconKey();
+        try {
+          if (sessionStorage.getItem(USAGE_BEACON_SENT_KEY) === key) return;
+          sessionStorage.setItem(USAGE_BEACON_SENT_KEY, key);
+        } catch (_error) {
+          // Ignore storage failures; the beacon can still be sent once for this page run.
+        }
+        window.setTimeout(() => {
+          const bytes = getPerformanceTransferBytes();
+          fetchServerAuth("/api/usage/beacon", {
+            method: "POST",
+            timeoutMs: 3000,
+            body: JSON.stringify({
+              bytes,
+              path: location.pathname,
+              resourceCount: performance.getEntriesByType("resource").length,
+            }),
+          }).catch((error) => console.error(error));
+        }, 1500);
       }
 
       async function loginWithServerPassword(password) {
@@ -2555,6 +2612,9 @@
       let liveNewsFetchedAtMs = 0;
       let liveNewsLastUpdatedAtMs = 0;
       let liveNewsError = "";
+      let adminServerPassword = "";
+      let serverUsageStats = null;
+      let serverUsageError = "";
 
       function showFreeBoardMessage(message, isError = false) {
         freeBoardMessage = String(message || "");
@@ -3508,6 +3568,52 @@
         );
       }
 
+      function formatBytes(bytes) {
+        const value = Math.max(0, Number(bytes) || 0);
+        const units = ["B", "KB", "MB", "GB", "TB"];
+        let size = value;
+        let unitIndex = 0;
+        while (size >= 1024 && unitIndex < units.length - 1) {
+          size /= 1024;
+          unitIndex += 1;
+        }
+        const digits = unitIndex >= 3 ? 2 : unitIndex === 0 ? 0 : 1;
+        return `${formatNumber(size, digits)}${units[unitIndex]}`;
+      }
+
+      function getUsagePercent(bytes, limitBytes) {
+        const used = Math.max(0, Number(bytes) || 0);
+        const limit = Math.max(1, Number(limitBytes) || 1);
+        return Math.min(999, (used / limit) * 100);
+      }
+
+      function updateAdminUsageSummary() {
+        if (!adminPagesUsage || !adminPagesUsageSub) return;
+        const usage = serverUsageStats;
+        if (!usage) {
+          adminPagesUsage.textContent = serverUsageError ? "확인 실패" : "-";
+          adminPagesUsageSub.textContent = serverUsageError || "관리자모드에서 서버 추정치를 불러옵니다";
+          return;
+        }
+        const bytes = Number(usage.month?.bytes) || 0;
+        const limit = Number(usage.monthlySoftLimitBytes) || 100 * 1024 * 1024 * 1024;
+        const percent = getUsagePercent(bytes, limit);
+        adminPagesUsage.textContent = `${formatBytes(bytes)} / ${formatBytes(limit)}`;
+        adminPagesUsageSub.textContent = `${usage.monthKey || "이번 달"} · ${formatNumber(percent, 3)}% · 방문 ${formatNumber(usage.month?.views || 0, 0)}회`;
+      }
+
+      async function fetchServerUsageStats(password = adminServerPassword) {
+        if (!hasServerAuth() || !password) return null;
+        const payload = await fetchServerAuth("/api/usage/stats", {
+          method: "POST",
+          body: JSON.stringify({ adminPassword: password }),
+        });
+        serverUsageStats = payload?.usage || null;
+        serverUsageError = "";
+        updateAdminUsageSummary();
+        return serverUsageStats;
+      }
+
       function renderAdminDashboard() {
         const traffic = loadAdminTraffic();
         const todayTraffic = Math.max(0, Math.floor(Number(traffic.days[getLocalDateKey()]) || 0));
@@ -3516,6 +3622,7 @@
         adminMonthlyTraffic.textContent = formatNumber(monthlyTraffic, 0);
         adminTotalTraffic.textContent = formatNumber(traffic.total, 0);
         adminFirstSeen.textContent = traffic.firstSeen ? `첫 기록 ${formatLocalDateTimeMs(traffic.firstSeen)}` : "첫 기록 없음";
+        updateAdminUsageSummary();
 
         const generatedAtMs = Number(data.generatedAt) ? Number(data.generatedAt) * 1000 : 0;
         adminDataAge.textContent = generatedAtMs ? `${formatAdminDuration(Date.now() - generatedAtMs)} 전` : "-";
@@ -3569,9 +3676,20 @@
           : location.hostname || "로컬 파일";
         const navEntry = performance.getEntriesByType("navigation")[0];
         const loadMs = navEntry ? Math.max(0, Math.round(navEntry.loadEventEnd - navEntry.startTime)) : 0;
+        const usage = serverUsageStats;
+        const usageRows = usage ? [
+          ["월 추정 전송량", `${formatBytes(usage.month?.bytes || 0)} / ${formatBytes(usage.monthlySoftLimitBytes || 100 * 1024 * 1024 * 1024)}`],
+          ["월 사용률", `${formatNumber(getUsagePercent(usage.month?.bytes || 0, usage.monthlySoftLimitBytes), 3)}% (${usage.monthKey || "이번 달"})`],
+          ["월 추정 방문", `${formatNumber(usage.month?.views || 0, 0)}회`],
+          ["오늘 추정 전송량", `${formatBytes(usage.today?.bytes || 0)} · ${formatNumber(usage.today?.views || 0, 0)}회`],
+          ["추정 기준", "방문자 브라우저 전송량 보고 합계"],
+        ] : [
+          ["월 추정 전송량", serverUsageError || "관리자 인증 후 불러오는 중"],
+        ];
         setAdminRows(adminServerStats, [
           ["호스팅", hostLabel],
-          ["서버 로그", "정적 사이트라 브라우저 직접 접근 불가"],
+          ["GitHub 공식 트래픽", "공식 API 미제공 · 아래는 추정치"],
+          ...usageRows,
           ["데이터 원본", REMOTE_DATA_URL],
           ["페이지 로드", loadMs ? `${formatNumber(loadMs, 0)}ms` : "측정 전"],
           ["현재 시간", formatLocalDateTimeMs(Date.now())],
@@ -3593,6 +3711,7 @@
         adminModal.classList.add("hidden");
         adminPasswordInput.value = "";
         adminError.textContent = "";
+        adminServerPassword = "";
         setAdminCapsWarning(false);
       }
 
@@ -3664,6 +3783,15 @@
         renderAdminDashboard();
         adminAuthPanel.hidden = true;
         adminDashboard.hidden = false;
+        if (adminServerPassword) {
+          fetchServerUsageStats(adminServerPassword)
+            .then(() => renderAdminDashboard())
+            .catch((error) => {
+              console.error(error);
+              serverUsageError = "서버 트래픽 추정치를 불러오지 못했습니다.";
+              renderAdminDashboard();
+            });
+        }
       }
 
       recordAdminTraffic();
@@ -3797,7 +3925,18 @@
       adminAuthCloseBtn.addEventListener("click", closeAdminModal);
       adminCancelBtn.addEventListener("click", closeAdminModal);
       adminCloseBtn.addEventListener("click", closeAdminModal);
-      adminRefreshBtn.addEventListener("click", renderAdminDashboard);
+      adminRefreshBtn.addEventListener("click", () => {
+        renderAdminDashboard();
+        if (adminServerPassword) {
+          fetchServerUsageStats(adminServerPassword)
+            .then(() => renderAdminDashboard())
+            .catch((error) => {
+              console.error(error);
+              serverUsageError = "서버 트래픽 추정치를 불러오지 못했습니다.";
+              renderAdminDashboard();
+            });
+        }
+      });
       adminModal.addEventListener("click", (event) => {
         if (event.target === adminModal) {
           closeAdminModal();
@@ -3850,6 +3989,7 @@
           try {
             adminError.textContent = "서버에서 확인 중입니다...";
             await loginWithServerPassword(value);
+            adminServerPassword = value;
             adminError.textContent = "";
             showAdminDashboard();
           } catch (_error) {
@@ -3860,6 +4000,7 @@
           return;
         }
         if (SITE_PASSWORD && value === SITE_PASSWORD) {
+          adminServerPassword = value;
           showAdminDashboard();
           return;
         }
@@ -5988,6 +6129,7 @@
       checkSiteLock();
       updateTopControlsVisibility();
       updateScrollControls();
+      sendUsageBeacon();
 
       manualRefreshBtn.addEventListener("click", async () => {
         const now = Date.now();
