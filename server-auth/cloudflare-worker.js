@@ -522,6 +522,10 @@ async function fetchCoinnessNews(env) {
   const response = await fetch(`${COINNESS_NEWS_ENDPOINT}?${query.toString()}`, {
     headers: {
       "Accept": "application/json",
+      "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.7,en;q=0.6",
+      "Cache-Control": "no-cache",
+      "Referer": "https://coinness.com/",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36",
     },
   });
   if (!response.ok) {
