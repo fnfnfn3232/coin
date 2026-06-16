@@ -1050,6 +1050,37 @@
         justify-content: center;
       }
 
+      .free-board-search-main {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        flex: 1 1 auto;
+      }
+
+      .free-board-admin-compact {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+
+      .free-board-admin-compact input {
+        width: min(180px, 100%);
+        min-height: 38px;
+        font-size: 13px;
+      }
+
+      .free-board-admin-mini {
+        min-width: 62px;
+        padding: 8px 10px;
+        border-radius: 999px;
+        font-size: 13px;
+      }
+
       .free-board-search select,
       .free-board-search input {
         width: auto;
@@ -1058,6 +1089,10 @@
 
       .free-board-search input {
         width: min(420px, 100%);
+      }
+
+      .free-board-search .free-board-admin-compact input {
+        width: min(180px, 100%);
       }
 
       .free-board-read {
@@ -1090,6 +1125,7 @@
       }
 
       .free-board-admin-box,
+      .free-board-board-nav,
       .free-board-comments {
         display: grid;
         gap: 10px;
@@ -1102,6 +1138,10 @@
       .free-board-admin-box.active {
         border-color: rgba(117, 221, 255, 0.34);
         background: rgba(0, 76, 102, 0.18);
+      }
+
+      .free-board-board-nav {
+        background: rgba(4, 14, 22, 0.42);
       }
 
       .free-board-admin-form,
@@ -2610,6 +2650,7 @@
       let freeBoardServerRetryAfterMs = 0;
       let freeBoardAdminMode = false;
       let freeBoardAdminPassword = "";
+      let freeBoardAdminPanelOpen = false;
       let pendingDeletePostId = "";
       let pendingDeleteCommentId = "";
       let pendingDeleteType = "post";
@@ -2650,7 +2691,7 @@
           : [];
         return {
           id: String(post.id || `post-${createdAt || Date.now()}`),
-          category: ["notice", "general", "info", "event"].includes(String(post.category || "")) ? String(post.category) : "general",
+          category: normalizeFreeBoardCategory(post.category),
           title,
           author: String(post.author || "").trim().slice(0, 40),
           body,
@@ -3120,18 +3161,35 @@
       }
 
       function freeBoardCategoryLabel(category) {
+        const normalized = normalizeFreeBoardCategory(category);
         const map = {
-          notice: "공지",
-          general: "일반",
-          info: "정보",
-          event: "대회",
+          free: "자유게시판",
+          image: "이미지",
+          video: "영상",
         };
-        return map[category] || "일반";
+        return map[normalized] || "자유게시판";
+      }
+
+      function normalizeFreeBoardCategory(category) {
+        const value = String(category || "").trim().toLowerCase();
+        if (value === "free" || value === "image" || value === "video") return value;
+        return "free";
+      }
+
+      function getFreeBoardCategories() {
+        return [
+          { value: "all", label: "전체게시글" },
+          { value: "free", label: "자유게시판" },
+          { value: "image", label: "이미지" },
+          { value: "video", label: "영상" },
+        ];
       }
 
       function getFilteredFreeBoardPosts(posts) {
         const query = freeBoardQuery.trim().toLowerCase();
         return posts.filter((post) => {
+          const category = normalizeFreeBoardCategory(post.category);
+          if (freeBoardFilter !== "all" && category !== freeBoardFilter) return false;
           if (!query) return true;
           return [post.title, post.body, post.author, freeBoardCategoryLabel(post.category)]
             .some((value) => String(value || "").toLowerCase().includes(query));
@@ -3141,7 +3199,9 @@
       function renderFreeBoardTabs() {
         return `
           <div class="free-board-tabs">
-            <button class="free-board-tab active" type="button" data-free-board-filter="all">전체글</button>
+            ${getFreeBoardCategories().map((item) => `
+              <button class="free-board-tab${freeBoardFilter === item.value ? " active" : ""}" type="button" data-free-board-filter="${escapeAttr(item.value)}">${escapeHtml(item.label)}</button>
+            `).join("")}
           </div>
         `;
       }
@@ -3162,12 +3222,11 @@
               <thead>
                 <tr>
                   <th>번호</th>
-                  <th>말머리</th>
+                  <th>게시판</th>
                   <th>제목</th>
                   <th>글쓴이</th>
                   <th>작성일</th>
                   <th>조회</th>
-                  <th>추천</th>
                 </tr>
               </thead>
               <tbody>
@@ -3179,11 +3238,10 @@
                     <td>${escapeHtml(post.author || "익명")}</td>
                     <td>${escapeHtml(formatFreeBoardShortTime(post.createdAt))}</td>
                     <td>${formatNumber(post.views, 0)}</td>
-                    <td>${formatNumber(post.likes, 0)}</td>
                   </tr>
                 `).join("") : `
                   <tr class="free-board-empty-row">
-                    <td colspan="7">아직 등록된 글이 없습니다.</td>
+                    <td colspan="6">아직 등록된 글이 없습니다.</td>
                   </tr>
                 `}
               </tbody>
@@ -3223,22 +3281,24 @@
         if (!hasFreeBoardServer()) return "";
         if (freeBoardAdminMode) {
           return `
-            <div class="free-board-admin-box active">
-              <div class="free-board-meta">관리자모드가 켜져 있습니다. 서버 비밀번호 권한으로 글과 댓글을 수정/삭제할 수 있습니다.</div>
-              <div class="free-board-actions">
-                <button class="free-board-delete" type="button" data-free-board-admin-logout>관리자모드 끄기</button>
-              </div>
+            <div class="free-board-admin-compact">
+              <span class="free-board-meta">관리자 ON</span>
+              <button class="free-board-delete free-board-admin-mini" type="button" data-free-board-admin-logout>끄기</button>
+            </div>
+          `;
+        }
+        if (!freeBoardAdminPanelOpen) {
+          return `
+            <div class="free-board-admin-compact">
+              <button class="free-board-list-btn free-board-admin-mini" type="button" data-free-board-admin-toggle>관리자</button>
             </div>
           `;
         }
         return `
-          <div class="free-board-admin-box">
-            <div class="free-board-meta">관리자모드: 서버 비밀번호로 모든 글과 댓글을 관리합니다.</div>
-            <div class="free-board-admin-form">
-              <input id="freeBoardAdminPassword" type="password" autocomplete="current-password" placeholder="서버 비밀번호" />
-              <span class="free-board-message${freeBoardMessageIsError ? " error" : ""}" id="freeBoardMessage">${escapeHtml(freeBoardMessage)}</span>
-              <button class="free-board-submit" type="button" data-free-board-admin-login>관리자모드 켜기</button>
-            </div>
+          <div class="free-board-admin-compact">
+            <input id="freeBoardAdminPassword" type="password" autocomplete="current-password" placeholder="서버 비밀번호" />
+            <button class="free-board-submit free-board-admin-mini" type="button" data-free-board-admin-login>확인</button>
+            <button class="free-board-delete free-board-admin-mini" type="button" data-free-board-admin-cancel>취소</button>
           </div>
         `;
       }
@@ -3282,7 +3342,6 @@
         if (freeBoardMode === "read" && selectedPost) {
           newsPanel.innerHTML = `
             <div class="free-board-shell">
-              ${renderFreeBoardAdminBox()}
               <section class="free-board-card">
                 <article class="free-board-read">
                   <div class="free-board-read-head">
@@ -3314,7 +3373,9 @@
             renderFreeBoard();
             return;
           }
-          const selectedCategory = editingPost?.category || "general";
+          const selectedCategory = editingPost
+            ? normalizeFreeBoardCategory(editingPost.category)
+            : (freeBoardFilter !== "all" ? normalizeFreeBoardCategory(freeBoardFilter) : "free");
           newsPanel.innerHTML = `
             <div class="free-board-shell">
               <section class="free-board-card">
@@ -3324,12 +3385,11 @@
                     <p class="free-board-desc">${freeBoardMode === "edit" ? "작성 시 정한 글 비밀번호로 수정합니다. 관리자모드가 켜져 있으면 비밀번호 없이 수정할 수 있습니다." : "글 등록용 비밀번호를 따로 정합니다. 이 비밀번호로 나중에 수정/삭제할 수 있습니다."}</p>
                   </div>
                   <div class="free-board-field">
-                    <label for="freeBoardCategory">말머리</label>
+                    <label for="freeBoardCategory">게시판</label>
                     <select id="freeBoardCategory" name="category">
-                      <option value="general"${selectedCategory === "general" ? " selected" : ""}>일반</option>
-                      <option value="info"${selectedCategory === "info" ? " selected" : ""}>정보</option>
-                      <option value="notice"${selectedCategory === "notice" ? " selected" : ""}>공지</option>
-                      <option value="event"${selectedCategory === "event" ? " selected" : ""}>대회</option>
+                      <option value="free"${selectedCategory === "free" ? " selected" : ""}>자유게시판</option>
+                      <option value="image"${selectedCategory === "image" ? " selected" : ""}>이미지</option>
+                      <option value="video"${selectedCategory === "video" ? " selected" : ""}>영상</option>
                     </select>
                   </div>
                   <div class="free-board-field">
@@ -3371,12 +3431,11 @@
 
         newsPanel.innerHTML = `
           <div class="free-board-shell">
-            ${renderFreeBoardAdminBox()}
+            <div class="free-board-board-nav">
+              ${renderFreeBoardTabs()}
+            </div>
             <section class="free-board-card">
               <div class="free-board-list">
-                <div class="free-board-toolbar">
-                  ${renderFreeBoardTabs()}
-                </div>
                 ${renderFreeBoardServerStatus()}
                 ${renderFreeBoardPosts(pagePosts, filteredPosts.length, pageOffset)}
                 <div class="free-board-bottom">
@@ -3385,12 +3444,15 @@
                 </div>
                 ${renderFreeBoardPagination(totalPages)}
                 <div class="free-board-search">
-                  <select id="freeBoardSearchType" aria-label="검색 범위">
-                    <option value="titleBody">제목+내용</option>
-                  </select>
-                  <input id="freeBoardSearchInput" type="search" value="${escapeAttr(freeBoardQuery)}" placeholder="검색어" />
-                  <button class="free-board-submit" type="button" data-free-board-search>검색</button>
-                  <span class="free-board-message${freeBoardMessageIsError ? " error" : ""}" id="freeBoardMessage">${escapeHtml(freeBoardMessage)}</span>
+                  <div class="free-board-search-main">
+                    <select id="freeBoardSearchType" aria-label="검색 범위">
+                      <option value="titleBody">제목+내용</option>
+                    </select>
+                    <input id="freeBoardSearchInput" type="search" value="${escapeAttr(freeBoardQuery)}" placeholder="검색어" />
+                    <button class="free-board-submit" type="button" data-free-board-search>검색</button>
+                    <span class="free-board-message${freeBoardMessageIsError ? " error" : ""}" id="freeBoardMessage">${escapeHtml(freeBoardMessage)}</span>
+                  </div>
+                  ${renderFreeBoardAdminBox()}
                 </div>
               </div>
             </section>
@@ -5317,6 +5379,7 @@
           freeBoardSelectedId,
           freeBoardPage,
           freeBoardQuery,
+          freeBoardFilter,
         };
       }
 
@@ -5363,6 +5426,9 @@
         freeBoardSelectedId = String(payload.freeBoardSelectedId || "");
         freeBoardPage = Math.max(1, Math.floor(Number(payload.freeBoardPage) || 1));
         freeBoardQuery = String(payload.freeBoardQuery || "");
+        freeBoardFilter = getFreeBoardCategories().some((item) => item.value === payload.freeBoardFilter)
+          ? String(payload.freeBoardFilter)
+          : "all";
         setViewMode(payload.viewMode, { writeHistory: false });
         isApplyingHistoryState = false;
         saveAppViewState();
@@ -5395,6 +5461,8 @@
         freeBoardSelectedId = "";
         freeBoardPage = 1;
         freeBoardQuery = "";
+        freeBoardFilter = "all";
+        freeBoardAdminPanelOpen = false;
       }
 
       function goHomeView() {
@@ -5785,7 +5853,7 @@
 
         const formData = new FormData(form);
         const postPassword = String(formData.get("postPassword") || "");
-        const category = String(formData.get("category") || "general");
+        const category = normalizeFreeBoardCategory(formData.get("category"));
         const title = String(formData.get("title") || "").trim();
         const author = String(formData.get("author") || "").trim();
         const body = convertPlainMediaUrlsToMediaTokens(String(formData.get("body") || "")).trim();
@@ -5890,7 +5958,8 @@
 
         const filterButton = clickTarget.closest("[data-free-board-filter]");
         if (filterButton) {
-          freeBoardFilter = String(filterButton.dataset.freeBoardFilter || "all");
+          const nextFilter = String(filterButton.dataset.freeBoardFilter || "all");
+          freeBoardFilter = getFreeBoardCategories().some((item) => item.value === nextFilter) ? nextFilter : "all";
           freeBoardPage = 1;
           freeBoardMode = "list";
           renderFreeBoard();
@@ -5917,6 +5986,20 @@
           return;
         }
 
+        if (clickTarget.closest("[data-free-board-admin-toggle]")) {
+          freeBoardAdminPanelOpen = true;
+          renderFreeBoard();
+          window.setTimeout(() => document.getElementById("freeBoardAdminPassword")?.focus(), 0);
+          return;
+        }
+
+        if (clickTarget.closest("[data-free-board-admin-cancel]")) {
+          freeBoardAdminPanelOpen = false;
+          showFreeBoardMessage("", false);
+          renderFreeBoard();
+          return;
+        }
+
         if (clickTarget.closest("[data-free-board-admin-login]")) {
           const passwordInput = document.getElementById("freeBoardAdminPassword");
           const password = String(passwordInput?.value || "");
@@ -5930,6 +6013,7 @@
             await verifySitePassword(password);
             freeBoardAdminMode = true;
             freeBoardAdminPassword = password;
+            freeBoardAdminPanelOpen = false;
             showFreeBoardMessage("관리자모드가 켜졌습니다.", false);
             renderFreeBoard();
           } catch (error) {
@@ -5945,6 +6029,7 @@
         if (clickTarget.closest("[data-free-board-admin-logout]")) {
           freeBoardAdminMode = false;
           freeBoardAdminPassword = "";
+          freeBoardAdminPanelOpen = false;
           showFreeBoardMessage("관리자모드를 껐습니다.", false);
           renderFreeBoard();
           return;

@@ -205,7 +205,7 @@ function normalizeBoardPost(raw, fallback = {}) {
     : [];
   return {
     id: cleanBoardText(raw?.id || fallback.id || `post-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`, 80),
-    category: ["general", "info", "notice", "event"].includes(raw?.category) ? raw.category : "general",
+    category: normalizeBoardCategory(raw?.category),
     title,
     author: cleanBoardText(raw?.author || "익명", 40) || "익명",
     body,
@@ -218,6 +218,12 @@ function normalizeBoardPost(raw, fallback = {}) {
     views: Math.max(0, Math.floor(Number(raw?.views) || 0)),
     likes: Math.max(0, Math.floor(Number(raw?.likes) || 0)),
   };
+}
+
+function normalizeBoardCategory(category) {
+  const value = cleanBoardText(category, 40).toLowerCase();
+  if (value === "free" || value === "image" || value === "video") return value;
+  return "free";
 }
 
 function getKstDateKey(now = Date.now()) {
