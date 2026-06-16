@@ -8,6 +8,7 @@ const BOARD_MAX_MEDIA = 10;
 const BOARD_MAX_COMMENTS = 100;
 const GITHUB_PAGES_MONTHLY_SOFT_LIMIT_BYTES = 100 * 1024 * 1024 * 1024;
 const USAGE_BEACON_MAX_BYTES = 25 * 1024 * 1024;
+const DEFAULT_NEWS_CACHE_SECONDS = 10 * 60;
 
 function jsonResponse(body, status = 200, env = {}) {
   return new Response(JSON.stringify(body), {
@@ -506,6 +507,13 @@ function normalizeNewsItem(entry, includeFullText) {
 }
 
 let lastGoodNews = null;
+let cachedNews = null;
+let cachedNewsAtMs = 0;
+
+function getNewsCacheMs(env) {
+  const seconds = Math.max(60, Math.floor(Number(env.NEWS_CACHE_SECONDS) || DEFAULT_NEWS_CACHE_SECONDS));
+  return seconds * 1000;
+}
 
 async function fetchCoinnessNews(env) {
   const limit = Math.min(Math.max(Number(env.NEWS_LIMIT || 40), 1), 100);
@@ -532,10 +540,21 @@ async function fetchCoinnessNews(env) {
 }
 
 async function fetchCoinnessNewsSafely(env) {
+  const now = Date.now();
+  const cacheMs = getNewsCacheMs(env);
+  if (cachedNews && now - cachedNewsAtMs < cacheMs) {
+    return {
+      ...cachedNews,
+      cached: true,
+      cacheSeconds: Math.floor(cacheMs / 1000),
+    };
+  }
   try {
     const news = await fetchCoinnessNews(env);
     if (news.items.length) {
       lastGoodNews = news;
+      cachedNews = news;
+      cachedNewsAtMs = now;
     }
     return news;
   } catch (error) {

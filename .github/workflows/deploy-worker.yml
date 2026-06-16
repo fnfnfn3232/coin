@@ -30,6 +30,7 @@ jobs:
           FRONTEND_ORIGIN = "https://fnfnfn3232.github.io"
           NEWS_LIMIT = "40"
           NEWS_BODY_MODE = "preview"
+          NEWS_CACHE_SECONDS = "600"
 
           [[durable_objects.bindings]]
           name = "BOARD_STORE"
