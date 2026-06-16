@@ -2359,6 +2359,7 @@
         board: "binance",
         page: 1,
         query: "",
+        sortKey: "cap",
         sortDirection: "desc",
         compareBoard: "",
         compareBoard2: "",
@@ -4161,15 +4162,21 @@
       document.getElementById("thRank").textContent = TEXT.thRank;
       document.getElementById("thCoin").textContent = TEXT.thCoin;
       document.getElementById("thSymbol").textContent = TEXT.thSymbol;
-      thPrice.textContent = TEXT.thPrice;
       thFdv.textContent = TEXT.thFdv;
       function renderCapHeader() {
+        thPrice.classList.add("sortable-th");
+        thPrice.innerHTML = `<span class="sort-label">${TEXT.thPrice}${state.sortKey === "price" ? (state.sortDirection === "asc" ? " ↑" : " ↓") : ""}</span>`;
+        thPrice.title =
+          state.sortKey === "price" && state.sortDirection === "desc"
+            ? "클릭하면 싼 가격순으로 정렬"
+            : "클릭하면 비싼 가격순으로 정렬";
+
         thCap.classList.add("sortable-th");
-        thCap.innerHTML = `<span class="sort-label">${TEXT.thCap}</span>`;
+        thCap.innerHTML = `<span class="sort-label">${TEXT.thCap}${state.sortKey === "cap" ? (state.sortDirection === "asc" ? " ↑" : " ↓") : ""}</span>`;
         thCap.title =
-          state.sortDirection === "asc"
-            ? "?대┃?섎㈃ ?쒖킑 ?믪??쒖쑝濡??뺣젹"
-            : "?대┃?섎㈃ ?쒖킑 ????쒖쑝濡??뺣젹";
+          state.sortKey === "cap" && state.sortDirection === "desc"
+            ? "클릭하면 낮은 시총순으로 정렬"
+            : "클릭하면 높은 시총순으로 정렬";
       }
 
       renderCapHeader();
@@ -5462,6 +5469,7 @@
         state.compareBoard = "";
         state.compareBoard2 = "";
         state.compareBoard3 = "";
+        state.sortKey = "cap";
         state.sortDirection = "desc";
         resetFreeBoardToList();
         searchInput.value = "";
@@ -5563,6 +5571,15 @@
         return 5;
       }
 
+      function getRowPriceSortUsd(row) {
+        const priceUsd = toPositiveNumber(row?.priceUsd);
+        if (priceUsd !== null) return priceUsd;
+        const priceKrw = toPositiveNumber(row?.priceKrw);
+        const fx = toPositiveNumber(data.fxUsdKrw);
+        if (priceKrw !== null && fx !== null) return priceKrw / fx;
+        return null;
+      }
+
         function getRows() {
           const rows = getBoardRows(state.board);
           const activeCompareBoards = getActiveCompareBoards();
@@ -5599,8 +5616,10 @@
             if (aPriority !== bPriority) return aPriority - bPriority;
           }
 
-          const aMissing = !Number.isFinite(a.sortCapUsd);
-          const bMissing = !Number.isFinite(b.sortCapUsd);
+          const aValue = state.sortKey === "price" ? getRowPriceSortUsd(a) : toPositiveNumber(a.sortCapUsd);
+          const bValue = state.sortKey === "price" ? getRowPriceSortUsd(b) : toPositiveNumber(b.sortCapUsd);
+          const aMissing = aValue === null;
+          const bMissing = bValue === null;
 
           if (aMissing && bMissing) {
             return String(a.symbol || "").localeCompare(String(b.symbol || ""));
@@ -5609,10 +5628,10 @@
           if (bMissing) return -1;
 
           if (state.sortDirection === "asc") {
-            return a.sortCapUsd - b.sortCapUsd || String(a.symbol || "").localeCompare(String(b.symbol || ""));
+            return aValue - bValue || String(a.symbol || "").localeCompare(String(b.symbol || ""));
           }
 
-          return b.sortCapUsd - a.sortCapUsd || String(a.symbol || "").localeCompare(String(b.symbol || ""));
+          return bValue - aValue || String(a.symbol || "").localeCompare(String(b.symbol || ""));
         });
       }
 
@@ -5788,7 +5807,17 @@
 
       thCap.addEventListener("click", () => {
         setViewMode("market");
-        state.sortDirection = state.sortDirection === "desc" ? "asc" : "desc";
+        state.sortDirection = state.sortKey === "cap" && state.sortDirection === "desc" ? "asc" : "desc";
+        state.sortKey = "cap";
+        state.page = 1;
+        renderCapHeader();
+        render();
+      });
+
+      thPrice.addEventListener("click", () => {
+        setViewMode("market");
+        state.sortDirection = state.sortKey === "price" && state.sortDirection === "desc" ? "asc" : "desc";
+        state.sortKey = "price";
         state.page = 1;
         renderCapHeader();
         render();
