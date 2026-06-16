@@ -28,6 +28,8 @@ The current frontend is wired to use this API when `window.SERVER_AUTH_API_BASE`
 - `NEWS_BODY_MODE`
   - Optional. Use `preview` by default.
   - `full` returns full Coinness text only after login, but this can still carry content-license risk.
+- `NEWS_CACHE_SECONDS`
+  - Optional. Default/recommended value is `600` seconds, so Coinness is fetched at most about once every 10 minutes per active Worker isolate.
 
 ## Generate password hash
 

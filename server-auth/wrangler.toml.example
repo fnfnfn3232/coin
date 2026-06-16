@@ -6,8 +6,8 @@ compatibility_date = "2026-06-12"
 FRONTEND_ORIGIN = "https://fnfnfn3232.github.io"
 NEWS_LIMIT = "40"
 NEWS_BODY_MODE = "preview"
+NEWS_CACHE_SECONDS = "600"
 
 # Set these as secrets, not plain vars:
 # wrangler secret put SITE_PASSWORD_SHA256
 # wrangler secret put SESSION_SECRET
-
