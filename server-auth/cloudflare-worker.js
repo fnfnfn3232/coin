@@ -932,7 +932,7 @@ export default {
     if (url.pathname === "/api/news" && request.method === "GET") {
       return jsonResponse(await fetchCoinnessNewsSafely(env), 200, env);
     }
-    if (url.pathname === "/api/usage/beacon" || url.pathname === "/api/usage/stats") {
+    if (url.pathname === "/api/usage/beacon" || url.pathname === "/api/usage/stats" || url.pathname === "/api/board/logs") {
       if (!env.BOARD_STORE) return jsonResponse({ error: "usage_storage_not_configured" }, 500, env);
       const id = env.BOARD_STORE.idFromName("free-board");
       return env.BOARD_STORE.get(id).fetch(request);
