@@ -1131,6 +1131,7 @@
 
       .free-board-admin-box,
       .free-board-board-nav,
+      .free-board-admin-log,
       .free-board-comments {
         display: grid;
         gap: 10px;
@@ -1147,6 +1148,40 @@
 
       .free-board-board-nav {
         background: rgba(4, 14, 22, 0.42);
+      }
+
+      .free-board-admin-log {
+        background: rgba(4, 14, 22, 0.48);
+      }
+
+      .free-board-admin-log-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .free-board-admin-log-list {
+        display: grid;
+        gap: 6px;
+      }
+
+      .free-board-admin-log-item {
+        display: grid;
+        grid-template-columns: minmax(110px, 150px) minmax(0, 1fr) minmax(120px, 180px);
+        gap: 10px;
+        align-items: start;
+        padding: 8px 0;
+        border-top: 1px solid rgba(151, 183, 198, 0.12);
+        color: #dfeef5;
+        font-size: 13px;
+      }
+
+      @media (max-width: 760px) {
+        .free-board-admin-log-item {
+          grid-template-columns: 1fr;
+        }
       }
 
       .free-board-admin-form,
@@ -2657,6 +2692,9 @@
       let freeBoardAdminMode = false;
       let freeBoardAdminPassword = "";
       let freeBoardAdminPanelOpen = false;
+      let freeBoardAdminLogs = [];
+      let freeBoardAdminLogsLoaded = false;
+      let freeBoardAdminLogsError = "";
       let pendingDeletePostId = "";
       let pendingDeleteCommentId = "";
       let pendingDeleteType = "post";
@@ -2818,6 +2856,7 @@
           body: JSON.stringify({ ...post, postPassword, adminPassword }),
         });
         applyServerFreeBoardPosts(payload?.posts || []);
+        if (adminPassword) await refreshFreeBoardAdminLogsSilently(adminPassword);
         return payload?.post || null;
       }
 
@@ -2827,6 +2866,7 @@
           body: JSON.stringify({ postPassword, adminPassword }),
         });
         applyServerFreeBoardPosts(payload?.posts || []);
+        if (adminPassword) await refreshFreeBoardAdminLogsSilently(adminPassword);
       }
 
       async function createServerFreeBoardComment(postId, comment, commentPassword = "") {
@@ -2844,6 +2884,28 @@
           body: JSON.stringify({ commentPassword, adminPassword }),
         });
         applyServerFreeBoardPosts(payload?.posts || []);
+        if (adminPassword) await refreshFreeBoardAdminLogsSilently(adminPassword);
+      }
+
+      async function fetchServerFreeBoardAdminLogs(adminPassword = freeBoardAdminPassword) {
+        if (!hasFreeBoardServer() || !adminPassword) return [];
+        const payload = await fetchServerAuth("/api/board/logs", {
+          method: "POST",
+          body: JSON.stringify({ adminPassword }),
+        });
+        freeBoardAdminLogs = Array.isArray(payload?.logs) ? payload.logs : [];
+        freeBoardAdminLogsLoaded = true;
+        freeBoardAdminLogsError = "";
+        return freeBoardAdminLogs;
+      }
+
+      async function refreshFreeBoardAdminLogsSilently(adminPassword = freeBoardAdminPassword) {
+        if (!freeBoardAdminMode || !adminPassword) return;
+        try {
+          await fetchServerFreeBoardAdminLogs(adminPassword);
+        } catch (error) {
+          console.warn("free board admin log refresh failed", error);
+        }
       }
 
       async function incrementServerFreeBoardView(postId) {
@@ -3294,6 +3356,56 @@
         `;
       }
 
+      function freeBoardAdminLogActionLabel(action) {
+        const map = {
+          post_update: "글 수정",
+          post_delete: "글 삭제",
+          comment_delete: "댓글 삭제",
+        };
+        return map[action] || "관리 작업";
+      }
+
+      function freeBoardAdminLogActorLabel(actor) {
+        const map = {
+          admin: "관리자",
+          post_password: "글 비밀번호",
+          comment_password: "댓글 비밀번호",
+        };
+        return map[actor] || "사용자";
+      }
+
+      function renderFreeBoardAdminLogs() {
+        if (!freeBoardAdminMode) return "";
+        const body = freeBoardAdminLogsError
+          ? `<div class="free-board-empty">${escapeHtml(freeBoardAdminLogsError)}</div>`
+          : !freeBoardAdminLogsLoaded
+            ? `<div class="free-board-empty">관리 기록을 불러오는 중입니다.</div>`
+            : freeBoardAdminLogs.length
+              ? `<div class="free-board-admin-log-list">${freeBoardAdminLogs.slice(0, 100).map((log) => {
+                  const title = log.title || "(제목 없음)";
+                  const beforeTitle = log.beforeTitle ? ` · 이전 제목: ${log.beforeTitle}` : "";
+                  const changes = Array.isArray(log.changes) && log.changes.length ? ` · 변경: ${log.changes.join(", ")}` : "";
+                  const commentText = log.commentPreview ? ` · 댓글: ${log.commentPreview}` : "";
+                  return `
+                    <div class="free-board-admin-log-item">
+                      <strong>${escapeHtml(freeBoardAdminLogActionLabel(log.action))}</strong>
+                      <span>${escapeHtml(title)}${escapeHtml(beforeTitle)}${escapeHtml(changes)}${escapeHtml(commentText)}</span>
+                      <span>${escapeHtml(freeBoardAdminLogActorLabel(log.actor))} · ${escapeHtml(formatFreeBoardTime(log.createdAt))}</span>
+                    </div>
+                  `;
+                }).join("")}</div>`
+              : `<div class="free-board-empty">아직 관리 기록이 없습니다.</div>`;
+        return `
+          <section class="free-board-admin-log">
+            <div class="free-board-admin-log-head">
+              <h3 class="free-board-title">관리 기록</h3>
+              <span class="free-board-meta">최근 최대 100개</span>
+            </div>
+            ${body}
+          </section>
+        `;
+      }
+
       function renderFreeBoardComments(post) {
         const comments = Array.isArray(post.comments) ? post.comments : [];
         const commentItems = comments.length
@@ -3425,6 +3537,7 @@
             <div class="free-board-board-nav">
               ${renderFreeBoardTabs()}
             </div>
+            ${renderFreeBoardAdminLogs()}
             <section class="free-board-card">
               <div class="free-board-list">
                 ${renderFreeBoardServerStatus()}
@@ -6032,12 +6145,21 @@
             freeBoardAdminMode = true;
             freeBoardAdminPassword = password;
             freeBoardAdminPanelOpen = false;
+            try {
+              await fetchServerFreeBoardAdminLogs(password);
+            } catch (logError) {
+              console.error(logError);
+              freeBoardAdminLogsError = "관리 기록을 불러오지 못했습니다.";
+              freeBoardAdminLogsLoaded = true;
+            }
             showFreeBoardMessage("관리자모드가 켜졌습니다.", false);
             renderFreeBoard();
           } catch (error) {
             console.error(error);
             freeBoardAdminMode = false;
             freeBoardAdminPassword = "";
+            freeBoardAdminLogs = [];
+            freeBoardAdminLogsLoaded = false;
             showFreeBoardMessage("서버 비밀번호가 맞지 않습니다.", true);
             passwordInput?.focus();
           }
@@ -6048,6 +6170,9 @@
           freeBoardAdminMode = false;
           freeBoardAdminPassword = "";
           freeBoardAdminPanelOpen = false;
+          freeBoardAdminLogs = [];
+          freeBoardAdminLogsLoaded = false;
+          freeBoardAdminLogsError = "";
           showFreeBoardMessage("관리자모드를 껐습니다.", false);
           renderFreeBoard();
           return;

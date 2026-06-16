@@ -2,10 +2,12 @@ const COINNESS_NEWS_ENDPOINT = "https://api.coinness.com/feed/v1/breaking-news";
 const COOKIE_NAME = "coin_board_session";
 const SESSION_TTL_SECONDS = 24 * 60 * 60;
 const BOARD_POSTS_KEY = "free-board-posts";
+const BOARD_ADMIN_LOGS_KEY = "free-board-admin-logs";
 const USAGE_STATS_KEY = "usage-stats-v1";
 const BOARD_MAX_POSTS = 200;
 const BOARD_MAX_MEDIA = 10;
 const BOARD_MAX_COMMENTS = 100;
+const BOARD_ADMIN_LOG_LIMIT = 100;
 const GITHUB_PAGES_MONTHLY_SOFT_LIMIT_BYTES = 100 * 1024 * 1024 * 1024;
 const USAGE_BEACON_MAX_BYTES = 25 * 1024 * 1024;
 const DEFAULT_NEWS_CACHE_SECONDS = 10 * 60;
@@ -379,6 +381,38 @@ function boardJsonResponse(posts, status, env, extra = {}) {
   return jsonResponse(body, status, env);
 }
 
+function normalizeBoardAdminLog(raw, fallback = {}) {
+  if (!raw || typeof raw !== "object") return null;
+  const action = cleanBoardText(raw.action || fallback.action, 40);
+  if (!["post_update", "post_delete", "comment_delete"].includes(action)) return null;
+  const createdAt = Number(raw.createdAt || fallback.createdAt || Date.now());
+  const changes = Array.isArray(raw.changes)
+    ? raw.changes.map((item) => cleanBoardText(item, 40)).filter(Boolean).slice(0, 8)
+    : [];
+  return {
+    id: cleanBoardText(raw.id || fallback.id || `log-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`, 80),
+    action,
+    actor: cleanBoardText(raw.actor || fallback.actor || "user", 40),
+    postId: cleanBoardText(raw.postId || "", 100),
+    title: cleanBoardText(raw.title || "", 160),
+    beforeTitle: cleanBoardText(raw.beforeTitle || "", 160),
+    changes,
+    category: normalizeBoardCategory(raw.category),
+    commentId: cleanBoardText(raw.commentId || "", 100),
+    commentAuthor: cleanBoardText(raw.commentAuthor || "", 40),
+    commentPreview: cleanBoardText(raw.commentPreview || "", 120),
+    createdAt: Number.isFinite(createdAt) ? createdAt : Date.now(),
+  };
+}
+
+function publicBoardAdminLogs(logs) {
+  return (Array.isArray(logs) ? logs : [])
+    .map((log) => normalizeBoardAdminLog(log))
+    .filter(Boolean)
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, BOARD_ADMIN_LOG_LIMIT);
+}
+
 async function canManagePost(post, body, env) {
   if (await isAdminPassword(body?.adminPassword || "", env)) return true;
   return isMatchingPassword(body?.postPassword || body?.password || "", post?.passwordHash || "");
@@ -627,6 +661,28 @@ export class BoardStore {
     return normalized;
   }
 
+  async readAdminLogs() {
+    const stored = await this.state.storage.get(BOARD_ADMIN_LOGS_KEY);
+    return publicBoardAdminLogs(stored);
+  }
+
+  async writeAdminLogs(logs) {
+    const normalized = publicBoardAdminLogs(logs);
+    await this.state.storage.put(BOARD_ADMIN_LOGS_KEY, normalized);
+    return normalized;
+  }
+
+  async addAdminLog(log) {
+    const normalized = normalizeBoardAdminLog(log, {
+      id: `log-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
+      createdAt: Date.now(),
+    });
+    if (!normalized) return this.readAdminLogs();
+    const logs = await this.readAdminLogs();
+    logs.unshift(normalized);
+    return this.writeAdminLogs(logs);
+  }
+
   async readUsageStats() {
     return normalizeUsageStats(await this.state.storage.get(USAGE_STATS_KEY));
   }
@@ -699,6 +755,14 @@ export class BoardStore {
       return jsonResponse({ usage: publicUsageStats(await this.readUsageStats()) }, 200, this.env);
     }
 
+    if (request.method === "POST" && url.pathname === "/api/board/logs") {
+      const body = await parseJsonBody(request);
+      if (!await isAdminPassword(body?.adminPassword || body?.password || "", this.env)) {
+        return jsonResponse({ error: "invalid_password" }, 401, this.env);
+      }
+      return jsonResponse({ logs: await this.readAdminLogs() }, 200, this.env);
+    }
+
     if (request.method === "GET" && url.pathname === "/api/board/posts") {
       return boardJsonResponse(await this.readPosts(), 200, this.env);
     }
@@ -763,9 +827,21 @@ export class BoardStore {
       if (!await canManageComment(comment, body, this.env)) {
         return jsonResponse({ error: "invalid_password" }, 401, this.env);
       }
+      const adminMode = await isAdminPassword(body?.adminPassword || "", this.env);
       target.comments = comments.filter((item) => item.id !== commentId);
       target.updatedAt = Date.now();
-      return boardJsonResponse(await this.writePosts(posts), 200, this.env, { post: target, ok: true });
+      const savedPosts = await this.writePosts(posts);
+      await this.addAdminLog({
+        action: "comment_delete",
+        actor: adminMode ? "admin" : "comment_password",
+        postId: target.id,
+        title: target.title,
+        category: target.category,
+        commentId: comment.id,
+        commentAuthor: comment.author,
+        commentPreview: comment.body,
+      });
+      return boardJsonResponse(savedPosts, 200, this.env, { post: target, ok: true });
     }
 
     if (request.method === "PUT" && postId) {
@@ -776,22 +852,41 @@ export class BoardStore {
       if (!await canManagePost(posts[index], body, this.env)) {
         return jsonResponse({ error: "invalid_password" }, 401, this.env);
       }
+      const beforePost = posts[index];
+      const adminMode = await isAdminPassword(body?.adminPassword || "", this.env);
       const updated = normalizeBoardPost({
-        ...posts[index],
+        ...beforePost,
         ...withoutPassword(body),
-        id: posts[index].id,
-        createdAt: posts[index].createdAt,
-        views: posts[index].views,
-        likes: posts[index].likes,
-        comments: posts[index].comments,
+        id: beforePost.id,
+        createdAt: beforePost.createdAt,
+        views: beforePost.views,
+        likes: beforePost.likes,
+        comments: beforePost.comments,
         passwordHash: cleanBoardText(body?.newPostPassword, 200)
           ? await sha256Hex(body.newPostPassword)
-          : posts[index].passwordHash,
+          : beforePost.passwordHash,
         updatedAt: Date.now(),
       });
       if (!updated) return jsonResponse({ error: "invalid_post" }, 400, this.env);
+      const changes = [];
+      if (beforePost.title !== updated.title) changes.push("제목");
+      if (beforePost.body !== updated.body) changes.push("내용");
+      if (beforePost.category !== updated.category) changes.push("게시판");
+      if (beforePost.htmlEnabled !== updated.htmlEnabled) changes.push("HTML");
+      if (cleanBoardText(body?.newPostPassword, 200)) changes.push("비밀번호");
+      if (!changes.length) changes.push("기타");
       posts[index] = updated;
-      return boardJsonResponse(await this.writePosts(posts), 200, this.env, { post: updated });
+      const savedPosts = await this.writePosts(posts);
+      await this.addAdminLog({
+        action: "post_update",
+        actor: adminMode ? "admin" : "post_password",
+        postId: updated.id,
+        title: updated.title,
+        beforeTitle: beforePost.title !== updated.title ? beforePost.title : "",
+        changes,
+        category: updated.category,
+      });
+      return boardJsonResponse(savedPosts, 200, this.env, { post: updated });
     }
 
     if (request.method === "DELETE" && postId) {
@@ -802,8 +897,17 @@ export class BoardStore {
       if (!await canManagePost(target, body, this.env)) {
         return jsonResponse({ error: "invalid_password" }, 401, this.env);
       }
+      const adminMode = await isAdminPassword(body?.adminPassword || "", this.env);
       const nextPosts = posts.filter((post) => post.id !== postId);
-      return boardJsonResponse(await this.writePosts(nextPosts), 200, this.env, { ok: true });
+      const savedPosts = await this.writePosts(nextPosts);
+      await this.addAdminLog({
+        action: "post_delete",
+        actor: adminMode ? "admin" : "post_password",
+        postId: target.id,
+        title: target.title,
+        category: target.category,
+      });
+      return boardJsonResponse(savedPosts, 200, this.env, { ok: true });
     }
 
     return jsonResponse({ error: "not_found" }, 404, this.env);
