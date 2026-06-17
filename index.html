@@ -1426,11 +1426,6 @@
         gap: 8px;
       }
 
-      .free-board-media-item {
-        display: grid;
-        gap: 6px;
-      }
-
       .free-board-media img,
       .free-board-media video,
       .free-board-youtube {
@@ -1448,7 +1443,32 @@
         max-height: none;
       }
 
-      .free-board-media-meta {
+      .free-board-media-sizes {
+        display: grid;
+        gap: 8px;
+        padding: 12px;
+        border: 1px solid rgba(117, 221, 255, 0.14);
+        border-radius: 12px;
+        background: rgba(2, 11, 16, 0.62);
+      }
+
+      .free-board-media-size-title {
+        color: #8eefff;
+        font-size: 12px;
+        font-weight: 900;
+      }
+
+      .free-board-media-size-list {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .free-board-media-size-item {
+        padding: 6px 9px;
+        border: 1px solid rgba(151, 183, 198, 0.14);
+        border-radius: 999px;
+        background: rgba(117, 221, 255, 0.06);
         color: #8fa8b3;
         font-size: 12px;
         font-weight: 800;
@@ -3131,23 +3151,43 @@
         preview.innerHTML = `
           <div class="free-board-compose-preview-title">본문 미리보기</div>
           <div class="free-board-media">${items.join("")}</div>
+          ${renderFreeBoardMediaSizes(tokens)}
         `;
       }
 
-      function renderMediaTag(url, preferredKind = "", meta = {}) {
+      function renderMediaTag(url, preferredKind = "") {
         const kind = getSafeMediaKind(url);
         if (!kind || (preferredKind && preferredKind !== kind)) return "";
         const youtubeEmbedUrl = kind === "video" ? getYouTubeEmbedUrl(url) : "";
-        const size = Math.max(0, Math.floor(Number(meta?.size) || 0));
-        const sizeMeta = size ? `<div class="free-board-media-meta">${kind === "image" ? "이미지" : "동영상"} · ${escapeHtml(formatBytes(size))}</div>` : "";
         if (youtubeEmbedUrl) {
-          return `<div class="free-board-media-item"><iframe class="free-board-youtube" src="${escapeAttr(youtubeEmbedUrl)}" title="게시글 유튜브 영상" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>${sizeMeta}</div>`;
+          return `<iframe class="free-board-youtube" src="${escapeAttr(youtubeEmbedUrl)}" title="게시글 유튜브 영상" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>`;
         }
         const safeUrl = escapeAttr(url);
         if (kind === "image") {
-          return `<div class="free-board-media-item"><img src="${safeUrl}" alt="게시글 이미지" loading="lazy" referrerpolicy="no-referrer" />${sizeMeta}</div>`;
+          return `<img src="${safeUrl}" alt="게시글 이미지" loading="lazy" referrerpolicy="no-referrer" />`;
         }
-        return `<div class="free-board-media-item"><video src="${safeUrl}" controls preload="metadata" playsinline referrerpolicy="no-referrer"></video>${sizeMeta}</div>`;
+        return `<video src="${safeUrl}" controls preload="metadata" playsinline referrerpolicy="no-referrer"></video>`;
+      }
+
+      function renderFreeBoardMediaSizes(tokens) {
+        let visibleIndex = 0;
+        const items = (tokens || [])
+          .filter((token) => token.actualKind && token.actualKind === token.requestedKind)
+          .map((token) => {
+            const size = Math.max(0, Math.floor(Number(token.meta?.size) || 0));
+            if (!size) return "";
+            visibleIndex += 1;
+            const label = token.actualKind === "image" ? "이미지" : "동영상";
+            return `<span class="free-board-media-size-item">${escapeHtml(label)} ${visibleIndex} · ${escapeHtml(formatBytes(size))}</span>`;
+          })
+          .filter(Boolean);
+        if (!items.length) return "";
+        return `
+          <div class="free-board-media-sizes">
+            <div class="free-board-media-size-title">첨부 이미지 용량</div>
+            <div class="free-board-media-size-list">${items.join("")}</div>
+          </div>
+        `;
       }
 
       function renderTextWithMediaTokens(value) {
@@ -3160,8 +3200,8 @@
           const before = text.slice(lastIndex, match.index);
           if (before) parts.push(escapeHtml(before));
           const kind = String(match[1] || "").toLowerCase();
-          const { url, meta } = parseMediaTokenPayload(match[2]);
-          const media = renderMediaTag(url, kind, meta);
+          const { url } = parseMediaTokenPayload(match[2]);
+          const media = renderMediaTag(url, kind);
           parts.push(media || escapeHtml(match[0]));
           lastIndex = pattern.lastIndex;
         }
@@ -3247,8 +3287,8 @@
         const pattern = /\[(image|video):([^\]\r\n]+)\]/gi;
         const placeholders = [];
         const withPlaceholders = text.replace(pattern, (full, kind, payload) => {
-          const { url, meta } = parseMediaTokenPayload(payload);
-          const media = renderMediaTag(url, String(kind || "").toLowerCase(), meta);
+          const { url } = parseMediaTokenPayload(payload);
+          const media = renderMediaTag(url, String(kind || "").toLowerCase());
           if (!media) return full;
           const token = `__BOARD_MEDIA_${placeholders.length}__`;
           placeholders.push({ token, media });
@@ -3561,6 +3601,7 @@
                     <div class="free-board-body">${renderSafePostBody(selectedPost.body, selectedPost.htmlEnabled)}</div>
                     ${renderFreeBoardMedia(selectedPost.mediaUrls)}
                   </div>
+                  ${renderFreeBoardMediaSizes(validateEmbeddedMediaTokens(selectedPost.body).tokens)}
                   <div class="free-board-actions">
                     <button class="free-board-list-btn" type="button" data-free-board-list>목록</button>
                     <button class="free-board-list-btn" type="button" data-free-board-edit="${escapeAttr(selectedPost.id)}">수정</button>
