@@ -1426,6 +1426,11 @@
         gap: 8px;
       }
 
+      .free-board-media-item {
+        display: grid;
+        gap: 6px;
+      }
+
       .free-board-media img,
       .free-board-media video,
       .free-board-youtube {
@@ -1441,6 +1446,13 @@
         display: block;
         aspect-ratio: 16 / 9;
         max-height: none;
+      }
+
+      .free-board-media-meta {
+        color: #8fa8b3;
+        font-size: 12px;
+        font-weight: 800;
+        line-height: 1.35;
       }
 
       .free-board-empty {
@@ -2666,7 +2678,7 @@
           throw new Error("media_too_large");
         }
         if (isLocalPreview()) {
-          return URL.createObjectURL(file);
+          return { url: URL.createObjectURL(file), size: file.size };
         }
         if (!hasFreeBoardServer()) {
           throw new Error("board_server_required");
@@ -2681,7 +2693,7 @@
         if (!url || getSafeMediaKind(url) !== "image") {
           throw new Error("invalid_uploaded_media");
         }
-        return url;
+        return { url, size: Math.max(0, Math.floor(Number(payload?.size) || Number(file.size) || 0)) };
       }
 
       async function refreshLiveNews(force = false) {
@@ -3029,8 +3041,24 @@
         return { urls, rejected };
       }
 
-      function createMediaToken(kind, url) {
-        return `[${kind}:${url}]`;
+      function createMediaToken(kind, url, meta = {}) {
+        const size = Math.max(0, Math.floor(Number(meta.size) || 0));
+        const suffix = size ? `|bytes=${size}` : "";
+        return `[${kind}:${url}${suffix}]`;
+      }
+
+      function parseMediaTokenPayload(value) {
+        const raw = String(value || "").trim();
+        const parts = raw.split("|");
+        const url = String(parts.shift() || "").trim();
+        const meta = {};
+        parts.forEach((part) => {
+          const [key, rawValue] = String(part || "").split("=");
+          if (key === "bytes") {
+            meta.size = Math.max(0, Math.floor(Number(rawValue) || 0));
+          }
+        });
+        return { url, meta };
       }
 
       function convertPlainMediaUrlsToMediaTokens(value) {
@@ -3073,9 +3101,9 @@
         let match;
         while ((match = pattern.exec(String(value || "")))) {
           const requestedKind = String(match[1] || "").toLowerCase();
-          const url = String(match[2] || "").trim();
+          const { url, meta } = parseMediaTokenPayload(match[2]);
           const actualKind = getSafeMediaKind(url);
-          tokens.push({ requestedKind, actualKind, url });
+          tokens.push({ requestedKind, actualKind, url, meta });
         }
         return tokens;
       }
@@ -3092,7 +3120,7 @@
         if (!preview) return;
         const tokens = validateEmbeddedMediaTokens(textarea?.value || "").tokens;
         const items = tokens
-          .map((token) => renderMediaTag(token.url, token.requestedKind))
+          .map((token) => renderMediaTag(token.url, token.requestedKind, token.meta))
           .filter(Boolean);
         if (!items.length) {
           preview.hidden = true;
@@ -3106,18 +3134,20 @@
         `;
       }
 
-      function renderMediaTag(url, preferredKind = "") {
+      function renderMediaTag(url, preferredKind = "", meta = {}) {
         const kind = getSafeMediaKind(url);
         if (!kind || (preferredKind && preferredKind !== kind)) return "";
         const youtubeEmbedUrl = kind === "video" ? getYouTubeEmbedUrl(url) : "";
+        const size = Math.max(0, Math.floor(Number(meta?.size) || 0));
+        const sizeMeta = size ? `<div class="free-board-media-meta">${kind === "image" ? "이미지" : "동영상"} · ${escapeHtml(formatBytes(size))}</div>` : "";
         if (youtubeEmbedUrl) {
-          return `<iframe class="free-board-youtube" src="${escapeAttr(youtubeEmbedUrl)}" title="게시글 유튜브 영상" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>`;
+          return `<div class="free-board-media-item"><iframe class="free-board-youtube" src="${escapeAttr(youtubeEmbedUrl)}" title="게시글 유튜브 영상" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>${sizeMeta}</div>`;
         }
         const safeUrl = escapeAttr(url);
         if (kind === "image") {
-          return `<img src="${safeUrl}" alt="게시글 이미지" loading="lazy" referrerpolicy="no-referrer" />`;
+          return `<div class="free-board-media-item"><img src="${safeUrl}" alt="게시글 이미지" loading="lazy" referrerpolicy="no-referrer" />${sizeMeta}</div>`;
         }
-        return `<video src="${safeUrl}" controls preload="metadata" playsinline referrerpolicy="no-referrer"></video>`;
+        return `<div class="free-board-media-item"><video src="${safeUrl}" controls preload="metadata" playsinline referrerpolicy="no-referrer"></video>${sizeMeta}</div>`;
       }
 
       function renderTextWithMediaTokens(value) {
@@ -3130,8 +3160,8 @@
           const before = text.slice(lastIndex, match.index);
           if (before) parts.push(escapeHtml(before));
           const kind = String(match[1] || "").toLowerCase();
-          const url = String(match[2] || "").trim();
-          const media = renderMediaTag(url, kind);
+          const { url, meta } = parseMediaTokenPayload(match[2]);
+          const media = renderMediaTag(url, kind, meta);
           parts.push(media || escapeHtml(match[0]));
           lastIndex = pattern.lastIndex;
         }
@@ -3216,8 +3246,9 @@
         const text = String(value || "");
         const pattern = /\[(image|video):([^\]\r\n]+)\]/gi;
         const placeholders = [];
-        const withPlaceholders = text.replace(pattern, (full, kind, url) => {
-          const media = renderMediaTag(String(url || "").trim(), String(kind || "").toLowerCase());
+        const withPlaceholders = text.replace(pattern, (full, kind, payload) => {
+          const { url, meta } = parseMediaTokenPayload(payload);
+          const media = renderMediaTag(url, String(kind || "").toLowerCase(), meta);
           if (!media) return full;
           const token = `__BOARD_MEDIA_${placeholders.length}__`;
           placeholders.push({ token, media });
@@ -6380,8 +6411,8 @@
             showFreeBoardMessage("클립보드 이미지를 업로드 중입니다...", false);
             const tokens = [];
             for (const file of imageFiles) {
-              const url = await uploadFreeBoardClipboardImage(file);
-              tokens.push(createMediaToken("image", url));
+              const upload = await uploadFreeBoardClipboardImage(file);
+              tokens.push(createMediaToken("image", upload.url, { size: upload.size }));
             }
             insertTextIntoTextarea(textarea, tokens.join("\n"));
             renderFreeBoardComposePreview(textarea);
