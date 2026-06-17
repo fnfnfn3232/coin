@@ -2300,8 +2300,10 @@
     const FREE_BOARD_STORAGE_KEY = "fdv_free_board_posts_v1";
     const FREE_BOARD_MAX_POSTS = 80;
     const FREE_BOARD_MAX_MEDIA = 10;
+    const FREE_BOARD_MAX_CLIPBOARD_IMAGE_BYTES = 4 * 1024 * 1024;
     const FREE_BOARD_PAGE_SIZE = 20;
     const FREE_BOARD_SERVER_ENABLED = true;
+    const FREE_BOARD_CLIPBOARD_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"]);
     const GITHUB_PAGES_MONTHLY_SOFT_LIMIT_BYTES = 100 * 1024 * 1024 * 1024;
     const LIVE_NEWS_REFRESH_MS = 10 * 60 * 1000;
     const LOCK_TTL_MS = 24 * 60 * 60 * 1000;
@@ -2532,7 +2534,11 @@
       }
 
       function hasFreeBoardServer() {
-        return FREE_BOARD_SERVER_ENABLED && hasServerAuth();
+        return FREE_BOARD_SERVER_ENABLED && hasServerAuth() && !isLocalPreview();
+      }
+
+      function isLocalPreview() {
+        return ["localhost", "127.0.0.1", "::1"].includes(location.hostname);
       }
 
       async function fetchServerAuth(path, options = {}) {
@@ -2630,6 +2636,33 @@
           return true;
         }
         return Boolean(SITE_PASSWORD) && String(password || "") === SITE_PASSWORD;
+      }
+
+      async function uploadFreeBoardClipboardImage(file) {
+        const imageType = String(file?.type || "").toLowerCase();
+        if (!FREE_BOARD_CLIPBOARD_IMAGE_TYPES.has(imageType)) {
+          throw new Error("unsupported_media_type");
+        }
+        if (!file?.size || file.size > FREE_BOARD_MAX_CLIPBOARD_IMAGE_BYTES) {
+          throw new Error("media_too_large");
+        }
+        if (isLocalPreview()) {
+          return URL.createObjectURL(file);
+        }
+        if (!hasFreeBoardServer()) {
+          throw new Error("board_server_required");
+        }
+        const payload = await fetchServerAuth("/api/board/media", {
+          method: "POST",
+          timeoutMs: 30000,
+          headers: { "Content-Type": imageType },
+          body: file,
+        });
+        const url = String(payload?.url || "").trim();
+        if (!url || getSafeMediaKind(url) !== "image") {
+          throw new Error("invalid_uploaded_media");
+        }
+        return url;
       }
 
       async function refreshLiveNews(force = false) {
@@ -2918,11 +2951,15 @@
 
       function getSafeMediaKind(value) {
         try {
+          if (isLocalPreview() && /^blob:https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])[:/]/i.test(String(value || ""))) {
+            return "image";
+          }
           const url = new URL(String(value || ""));
           if (url.protocol !== "https:" && url.protocol !== "http:") return "";
           if (url.username || url.password) return "";
           if (getYouTubeEmbedUrl(url)) return "video";
           const path = url.pathname.toLowerCase();
+          if (/\/api\/board\/media\/[a-z0-9-]+$/i.test(path)) return "image";
           if (/\.(png|jpe?g|gif|webp|avif)$/.test(path)) return "image";
           if (/\.(mp4|webm|ogv)$/.test(path)) return "video";
           return "";
@@ -3513,8 +3550,8 @@
                         HTML 사용
                       </label>
                     </div>
-                    <textarea class="free-board-compose-body" id="freeBoardBody" name="body" maxlength="12000" placeholder="내용을 입력하세요. 이미지/동영상 버튼을 누르면 링크가 본문에 삽입됩니다. 코드는 \`\`\` 코드 \`\`\` 형태로 넣으면 코드 박스로 표시됩니다." required>${escapeHtml(editingPost?.body || "")}</textarea>
-                    <div class="free-board-help">HTML 사용을 체크해도 script, iframe, 이벤트 속성은 제거됩니다. 이미지/동영상은 버튼으로 넣는 링크만 안전하게 표시됩니다.</div>
+                    <textarea class="free-board-compose-body" id="freeBoardBody" name="body" maxlength="12000" placeholder="내용을 입력하세요. 이미지는 Ctrl+V로 붙여넣거나 버튼으로 링크를 넣을 수 있습니다. 코드는 \`\`\` 코드 \`\`\` 형태로 넣으면 코드 박스로 표시됩니다." required>${escapeHtml(editingPost?.body || "")}</textarea>
+                    <div class="free-board-help">HTML 사용을 체크해도 script, iframe, 이벤트 속성은 제거됩니다. 이미지/동영상은 붙여넣기 또는 버튼으로 넣는 링크만 안전하게 표시됩니다.</div>
                   </div>
                   <div class="free-board-field">
                     <label for="freeBoardPassword">${freeBoardMode === "edit" ? "글 비밀번호" : "글 등록 비밀번호"}</label>
@@ -4054,6 +4091,13 @@
       }
 
       function checkSiteLock() {
+        if (isLocalPreview()) {
+          setLockExtendCount(0);
+          setLockAuthFor24Hours();
+          hideSiteLock();
+          renderLockTtl();
+          return;
+        }
         const until = getLockAuthUntil();
         if (until > Date.now()) {
           hideSiteLock();
@@ -6270,10 +6314,48 @@
         writeAppHistoryState(true);
       });
 
-      newsPanel.addEventListener("paste", (event) => {
+      newsPanel.addEventListener("paste", async (event) => {
         const target = event.target instanceof Element ? event.target : event.target?.parentElement;
         const textarea = target?.closest("#freeBoardBody");
         if (!textarea) return;
+
+        const clipboardItems = Array.from(event.clipboardData?.items || []);
+        const imageFiles = clipboardItems
+          .filter((item) => String(item.type || "").toLowerCase().startsWith("image/"))
+          .map((item) => item.getAsFile())
+          .filter(Boolean);
+        if (imageFiles.length) {
+          event.preventDefault();
+          if (!hasFreeBoardServer() && !isLocalPreview()) {
+            showFreeBoardMessage("이미지 붙여넣기는 서버 게시판이 켜져 있을 때 사용할 수 있습니다. 이미지 링크는 버튼으로 넣을 수 있습니다.", true);
+            return;
+          }
+          const currentMediaCount = validateEmbeddedMediaTokens(textarea.value).validCount;
+          if (currentMediaCount + imageFiles.length > FREE_BOARD_MAX_MEDIA) {
+            showFreeBoardMessage(`미디어는 최대 ${FREE_BOARD_MAX_MEDIA}개까지 가능합니다. 입력 내용은 유지됩니다.`, true);
+            return;
+          }
+          try {
+            showFreeBoardMessage("클립보드 이미지를 업로드 중입니다...", false);
+            const tokens = [];
+            for (const file of imageFiles) {
+              const url = await uploadFreeBoardClipboardImage(file);
+              tokens.push(createMediaToken("image", url));
+            }
+            insertTextIntoTextarea(textarea, tokens.join("\n"));
+            showFreeBoardMessage("붙여넣은 이미지를 본문에 넣었습니다.", false);
+          } catch (error) {
+            console.error(error);
+            const message = error?.message === "media_too_large"
+              ? "이미지 파일은 4MB 이하만 붙여넣을 수 있습니다. 입력 내용은 유지됩니다."
+              : error?.message === "unsupported_media_type"
+                ? "png/jpg/jpeg/gif/webp/avif 이미지만 붙여넣을 수 있습니다. 입력 내용은 유지됩니다."
+                : "이미지 업로드에 실패했습니다. 로그인 상태를 확인한 뒤 다시 붙여넣어 주세요. 입력 내용은 유지됩니다.";
+            showFreeBoardMessage(message, true);
+          }
+          return;
+        }
+
         const pastedText = event.clipboardData?.getData("text/plain") || "";
         if (!pastedText) return;
         const convertedText = convertPlainMediaUrlsToMediaTokens(pastedText);

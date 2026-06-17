@@ -8,6 +8,9 @@ const BOARD_MAX_POSTS = 200;
 const BOARD_MAX_MEDIA = 10;
 const BOARD_MAX_COMMENTS = 100;
 const BOARD_ADMIN_LOG_LIMIT = 100;
+const BOARD_MEDIA_KEY_PREFIX = "free-board-media:";
+const BOARD_MEDIA_MAX_BYTES = 4 * 1024 * 1024;
+const BOARD_MEDIA_ALLOWED_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"]);
 const GITHUB_PAGES_MONTHLY_SOFT_LIMIT_BYTES = 100 * 1024 * 1024 * 1024;
 const USAGE_BEACON_MAX_BYTES = 25 * 1024 * 1024;
 const DEFAULT_NEWS_CACHE_SECONDS = 10 * 60;
@@ -20,6 +23,18 @@ function jsonResponse(body, status = 200, env = {}) {
       "Cache-Control": "no-store",
       "Access-Control-Allow-Origin": env.FRONTEND_ORIGIN || "",
       "Access-Control-Allow-Credentials": "true",
+      "Vary": "Origin",
+    },
+  });
+}
+
+function mediaResponse(media, status = 200, env = {}) {
+  return new Response(media.bytes, {
+    status,
+    headers: {
+      "Content-Type": media.contentType,
+      "Cache-Control": "public, max-age=31536000, immutable",
+      "Access-Control-Allow-Origin": env.FRONTEND_ORIGIN || "*",
       "Vary": "Origin",
     },
   });
@@ -139,6 +154,7 @@ function getSafeMediaKind(value) {
     if (url.username || url.password) return "";
     if (getYouTubeEmbedUrl(url)) return "video";
     const path = url.pathname.toLowerCase();
+    if (/\/api\/board\/media\/[a-z0-9-]+$/i.test(path)) return "image";
     if (/\.(png|jpe?g|gif|webp|avif)$/.test(path)) return "image";
     if (/\.(mp4|webm|ogv)$/.test(path)) return "video";
     return "";
@@ -441,6 +457,65 @@ async function parseJsonBody(request) {
   }
 }
 
+function getBoardMediaKey(id) {
+  return `${BOARD_MEDIA_KEY_PREFIX}${id}`;
+}
+
+function getBoardMediaContentType(request) {
+  const contentType = String(request.headers.get("Content-Type") || "").split(";")[0].trim().toLowerCase();
+  return BOARD_MEDIA_ALLOWED_TYPES.has(contentType) ? contentType : "";
+}
+
+async function readBoardMediaFromKv(env, id) {
+  if (!env.BOARD_POSTS) throw new Error("board_storage_not_configured");
+  const metadata = await env.BOARD_POSTS.get(`${getBoardMediaKey(id)}:meta`, { type: "json" });
+  const bytes = await env.BOARD_POSTS.get(getBoardMediaKey(id), { type: "arrayBuffer" });
+  if (!metadata || !bytes) return null;
+  const contentType = BOARD_MEDIA_ALLOWED_TYPES.has(metadata.contentType) ? metadata.contentType : "";
+  if (!contentType) return null;
+  return { bytes, contentType };
+}
+
+async function writeBoardMediaToKv(request, env) {
+  if (!env.BOARD_POSTS) throw new Error("board_storage_not_configured");
+  const contentType = getBoardMediaContentType(request);
+  if (!contentType) return jsonResponse({ error: "unsupported_media_type" }, 415, env);
+  const bytes = await request.arrayBuffer();
+  if (!bytes.byteLength || bytes.byteLength > BOARD_MEDIA_MAX_BYTES) {
+    return jsonResponse({ error: "media_too_large" }, 413, env);
+  }
+  const id = `media-${Date.now()}-${crypto.randomUUID().slice(0, 12)}`;
+  await env.BOARD_POSTS.put(getBoardMediaKey(id), bytes);
+  await env.BOARD_POSTS.put(`${getBoardMediaKey(id)}:meta`, JSON.stringify({
+    contentType,
+    createdAt: Date.now(),
+    size: bytes.byteLength,
+  }));
+  const url = new URL(request.url);
+  url.pathname = `/api/board/media/${id}`;
+  url.search = "";
+  return jsonResponse({ id, url: url.toString(), contentType, size: bytes.byteLength }, 201, env);
+}
+
+async function handleBoardMedia(request, env, url) {
+  if (env.BOARD_STORE) {
+    const id = env.BOARD_STORE.idFromName("free-board");
+    return env.BOARD_STORE.get(id).fetch(request);
+  }
+  if (request.method === "POST" && url.pathname === "/api/board/media") {
+    const authResponse = await requireAuth(request, env);
+    if (authResponse) return authResponse;
+    return writeBoardMediaToKv(request, env);
+  }
+  if (request.method === "GET" && url.pathname.startsWith("/api/board/media/")) {
+    const id = decodeURIComponent(url.pathname.split("/").pop() || "");
+    const media = await readBoardMediaFromKv(env, id);
+    if (!media) return jsonResponse({ error: "not_found" }, 404, env);
+    return mediaResponse(media, 200, env);
+  }
+  return jsonResponse({ error: "not_found" }, 404, env);
+}
+
 async function handleBoardPosts(request, env, url) {
   if (env.BOARD_STORE) {
     const id = env.BOARD_STORE.idFromName("free-board");
@@ -737,6 +812,34 @@ export class BoardStore {
     return this.writeUsageStats(stats);
   }
 
+  async readMedia(id) {
+    const media = await this.state.storage.get(getBoardMediaKey(id));
+    if (!media || !media.bytes || !media.contentType) return null;
+    const contentType = BOARD_MEDIA_ALLOWED_TYPES.has(media.contentType) ? media.contentType : "";
+    if (!contentType) return null;
+    return { bytes: media.bytes, contentType };
+  }
+
+  async writeMedia(request) {
+    const contentType = getBoardMediaContentType(request);
+    if (!contentType) return jsonResponse({ error: "unsupported_media_type" }, 415, this.env);
+    const bytes = await request.arrayBuffer();
+    if (!bytes.byteLength || bytes.byteLength > BOARD_MEDIA_MAX_BYTES) {
+      return jsonResponse({ error: "media_too_large" }, 413, this.env);
+    }
+    const id = `media-${Date.now()}-${crypto.randomUUID().slice(0, 12)}`;
+    await this.state.storage.put(getBoardMediaKey(id), {
+      bytes,
+      contentType,
+      createdAt: Date.now(),
+      size: bytes.byteLength,
+    });
+    const url = new URL(request.url);
+    url.pathname = `/api/board/media/${id}`;
+    url.search = "";
+    return jsonResponse({ id, url: url.toString(), contentType, size: bytes.byteLength }, 201, this.env);
+  }
+
   async fetch(request) {
     const url = new URL(request.url);
     const postId = decodeURIComponent(url.pathname.replace(/^\/api\/board\/posts\/?/, ""));
@@ -761,6 +864,20 @@ export class BoardStore {
         return jsonResponse({ error: "invalid_password" }, 401, this.env);
       }
       return jsonResponse({ logs: await this.readAdminLogs() }, 200, this.env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/board/media") {
+      if (!await isAuthenticated(request, this.env)) {
+        return jsonResponse({ error: "auth_required" }, 401, this.env);
+      }
+      return this.writeMedia(request);
+    }
+
+    if (request.method === "GET" && url.pathname.startsWith("/api/board/media/")) {
+      const id = decodeURIComponent(url.pathname.split("/").pop() || "");
+      const media = await this.readMedia(id);
+      if (!media) return jsonResponse({ error: "not_found" }, 404, this.env);
+      return mediaResponse(media, 200, this.env);
     }
 
     if (request.method === "GET" && url.pathname === "/api/board/posts") {
@@ -919,6 +1036,10 @@ export default {
     if (request.method === "OPTIONS") return optionsResponse(env);
 
     const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname.startsWith("/api/board/media/")) {
+      return handleBoardMedia(request, env, url);
+    }
+
     if (!env.FRONTEND_ORIGIN || request.headers.get("Origin") !== env.FRONTEND_ORIGIN) {
       return jsonResponse({ error: "origin_not_allowed" }, 403, env);
     }
@@ -936,6 +1057,9 @@ export default {
       if (!env.BOARD_STORE) return jsonResponse({ error: "usage_storage_not_configured" }, 500, env);
       const id = env.BOARD_STORE.idFromName("free-board");
       return env.BOARD_STORE.get(id).fetch(request);
+    }
+    if (url.pathname === "/api/board/media") {
+      return handleBoardMedia(request, env, url);
     }
     if (url.pathname === "/api/board/posts" || url.pathname.startsWith("/api/board/posts/")) {
       return handleBoardPosts(request, env, url);
