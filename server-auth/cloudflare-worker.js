@@ -503,8 +503,6 @@ async function handleBoardMedia(request, env, url) {
     return env.BOARD_STORE.get(id).fetch(request);
   }
   if (request.method === "POST" && url.pathname === "/api/board/media") {
-    const authResponse = await requireAuth(request, env);
-    if (authResponse) return authResponse;
     return writeBoardMediaToKv(request, env);
   }
   if (request.method === "GET" && url.pathname.startsWith("/api/board/media/")) {
@@ -867,9 +865,6 @@ export class BoardStore {
     }
 
     if (request.method === "POST" && url.pathname === "/api/board/media") {
-      if (!await isAuthenticated(request, this.env)) {
-        return jsonResponse({ error: "auth_required" }, 401, this.env);
-      }
       return this.writeMedia(request);
     }
 
