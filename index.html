@@ -1306,6 +1306,25 @@
         resize: vertical;
       }
 
+      .free-board-compose-preview {
+        display: grid;
+        gap: 8px;
+        padding: 12px;
+        border: 1px solid rgba(117, 221, 255, 0.16);
+        border-radius: 12px;
+        background: rgba(2, 11, 16, 0.68);
+      }
+
+      .free-board-compose-preview[hidden] {
+        display: none;
+      }
+
+      .free-board-compose-preview-title {
+        color: #8eefff;
+        font-size: 12px;
+        font-weight: 900;
+      }
+
       .free-board-actions {
         display: flex;
         gap: 8px;
@@ -3068,6 +3087,25 @@
         return { tokens, rejected, validCount };
       }
 
+      function renderFreeBoardComposePreview(textarea) {
+        const preview = document.getElementById("freeBoardComposePreview");
+        if (!preview) return;
+        const tokens = validateEmbeddedMediaTokens(textarea?.value || "").tokens;
+        const items = tokens
+          .map((token) => renderMediaTag(token.url, token.requestedKind))
+          .filter(Boolean);
+        if (!items.length) {
+          preview.hidden = true;
+          preview.innerHTML = "";
+          return;
+        }
+        preview.hidden = false;
+        preview.innerHTML = `
+          <div class="free-board-compose-preview-title">본문 미리보기</div>
+          <div class="free-board-media">${items.join("")}</div>
+        `;
+      }
+
       function renderMediaTag(url, preferredKind = "") {
         const kind = getSafeMediaKind(url);
         if (!kind || (preferredKind && preferredKind !== kind)) return "";
@@ -3551,6 +3589,7 @@
                       </label>
                     </div>
                     <textarea class="free-board-compose-body" id="freeBoardBody" name="body" maxlength="12000" placeholder="내용을 입력하세요. 이미지는 Ctrl+V로 붙여넣거나 버튼으로 링크를 넣을 수 있습니다. 코드는 \`\`\` 코드 \`\`\` 형태로 넣으면 코드 박스로 표시됩니다." required>${escapeHtml(editingPost?.body || "")}</textarea>
+                    <div class="free-board-compose-preview" id="freeBoardComposePreview" hidden></div>
                     <div class="free-board-help">HTML 사용을 체크해도 script, iframe, 이벤트 속성은 제거됩니다. 이미지/동영상은 붙여넣기 또는 버튼으로 넣는 링크만 안전하게 표시됩니다.</div>
                   </div>
                   <div class="free-board-field">
@@ -3566,6 +3605,7 @@
               </section>
             </div>
           `;
+          window.setTimeout(() => renderFreeBoardComposePreview(document.getElementById("freeBoardBody")), 0);
           return;
         }
 
@@ -6127,6 +6167,7 @@
           }
           const textarea = document.getElementById("freeBoardBody");
           insertTextIntoTextarea(textarea, createMediaToken(kind, trimmedUrl));
+          renderFreeBoardComposePreview(textarea);
           showFreeBoardMessage(`${label} 링크를 본문에 넣었습니다.`, false);
           return;
         }
@@ -6343,7 +6384,8 @@
               tokens.push(createMediaToken("image", url));
             }
             insertTextIntoTextarea(textarea, tokens.join("\n"));
-            showFreeBoardMessage("붙여넣은 이미지를 본문에 넣었습니다.", false);
+            renderFreeBoardComposePreview(textarea);
+            showFreeBoardMessage("붙여넣은 이미지를 본문에 넣었습니다. 아래 미리보기에서 확인할 수 있습니다.", false);
           } catch (error) {
             console.error(error);
             const message = error?.message === "media_too_large"
@@ -6362,7 +6404,15 @@
         if (convertedText === pastedText) return;
         event.preventDefault();
         insertTextIntoTextarea(textarea, convertedText);
-        showFreeBoardMessage("이미지/동영상 주소를 본문 미디어로 변환했습니다.", false);
+        renderFreeBoardComposePreview(textarea);
+        showFreeBoardMessage("이미지/동영상 주소를 본문 미디어로 변환했습니다. 아래 미리보기에서 확인할 수 있습니다.", false);
+      });
+
+      newsPanel.addEventListener("input", (event) => {
+        const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+        const textarea = target?.closest("#freeBoardBody");
+        if (!textarea) return;
+        renderFreeBoardComposePreview(textarea);
       });
 
       newsToggleBtn.addEventListener("click", () => {
