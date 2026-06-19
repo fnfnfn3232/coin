@@ -3381,13 +3381,15 @@
           free: "자유게시판",
           image: "이미지",
           video: "영상",
+          game: "게임",
+          info: "정보",
         };
         return map[normalized] || "자유게시판";
       }
 
       function normalizeFreeBoardCategory(category) {
         const value = String(category || "").trim().toLowerCase();
-        if (value === "free" || value === "image" || value === "video") return value;
+        if (["free", "image", "video", "game", "info"].includes(value)) return value;
         return "free";
       }
 
@@ -3397,6 +3399,8 @@
           { value: "free", label: "자유게시판" },
           { value: "image", label: "이미지" },
           { value: "video", label: "영상" },
+          { value: "game", label: "게임" },
+          { value: "info", label: "정보" },
         ];
       }
 
@@ -3637,9 +3641,10 @@
                   <div class="free-board-field">
                     <label for="freeBoardCategory">게시판</label>
                     <select id="freeBoardCategory" name="category">
-                      <option value="free"${selectedCategory === "free" ? " selected" : ""}>자유게시판</option>
-                      <option value="image"${selectedCategory === "image" ? " selected" : ""}>이미지</option>
-                      <option value="video"${selectedCategory === "video" ? " selected" : ""}>영상</option>
+                      ${getFreeBoardCategories()
+                        .filter((item) => item.value !== "all")
+                        .map((item) => `<option value="${escapeAttr(item.value)}"${selectedCategory === item.value ? " selected" : ""}>${escapeHtml(item.label)}</option>`)
+                        .join("")}
                     </select>
                   </div>
                   <div class="free-board-field">
