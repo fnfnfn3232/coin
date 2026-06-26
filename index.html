@@ -2727,7 +2727,7 @@
         }
         const payload = await fetchServerAuth("/api/board/media", {
           method: "POST",
-          timeoutMs: 30000,
+          timeoutMs: 300000,
           headers: {
             "Content-Type": contentType,
             "X-File-Name": encodeURIComponent(String(file?.name || "attachment")),
