@@ -273,7 +273,7 @@ function normalizeBoardPost(raw, fallback = {}) {
 
 function normalizeBoardCategory(category) {
   const value = cleanBoardText(category, 40).toLowerCase();
-  if (value === "free" || value === "image" || value === "video") return value;
+  if (value === "free" || value === "image" || value === "video" || value === "game" || value === "info") return value;
   return "free";
 }
 
