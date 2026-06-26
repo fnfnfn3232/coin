@@ -1443,6 +1443,31 @@
         max-height: none;
       }
 
+      .free-board-file-link {
+        display: grid;
+        gap: 5px;
+        min-height: 82px;
+        padding: 12px;
+        border: 1px solid rgba(151, 183, 198, 0.18);
+        border-radius: 12px;
+        background: rgba(2, 11, 16, 0.78);
+        color: #dff7ff;
+        text-decoration: none;
+      }
+
+      .free-board-file-name {
+        overflow-wrap: anywhere;
+        font-size: 13px;
+        font-weight: 900;
+        line-height: 1.35;
+      }
+
+      .free-board-file-meta {
+        color: #8fa8b3;
+        font-size: 12px;
+        font-weight: 800;
+      }
+
       .free-board-media-sizes {
         display: grid;
         gap: 8px;
@@ -2351,10 +2376,10 @@
     const FREE_BOARD_STORAGE_KEY = "fdv_free_board_posts_v1";
     const FREE_BOARD_MAX_POSTS = 80;
     const FREE_BOARD_MAX_MEDIA = 10;
-    const FREE_BOARD_MAX_CLIPBOARD_IMAGE_BYTES = 4 * 1024 * 1024;
+    const FREE_BOARD_MAX_UPLOAD_FILE_BYTES = 200 * 1024 * 1024;
     const FREE_BOARD_PAGE_SIZE = 20;
     const FREE_BOARD_SERVER_ENABLED = true;
-    const FREE_BOARD_CLIPBOARD_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"]);
+    const FREE_BOARD_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"]);
     const GITHUB_PAGES_MONTHLY_SOFT_LIMIT_BYTES = 100 * 1024 * 1024 * 1024;
     const LIVE_NEWS_REFRESH_MS = 10 * 60 * 1000;
     const LOCK_TTL_MS = 24 * 60 * 60 * 1000;
@@ -2689,16 +2714,13 @@
         return Boolean(SITE_PASSWORD) && String(password || "") === SITE_PASSWORD;
       }
 
-      async function uploadFreeBoardClipboardImage(file) {
-        const imageType = String(file?.type || "").toLowerCase();
-        if (!FREE_BOARD_CLIPBOARD_IMAGE_TYPES.has(imageType)) {
-          throw new Error("unsupported_media_type");
-        }
-        if (!file?.size || file.size > FREE_BOARD_MAX_CLIPBOARD_IMAGE_BYTES) {
+      async function uploadFreeBoardAttachment(file) {
+        const contentType = String(file?.type || "application/octet-stream").toLowerCase() || "application/octet-stream";
+        if (!file?.size || file.size > FREE_BOARD_MAX_UPLOAD_FILE_BYTES) {
           throw new Error("media_too_large");
         }
         if (isLocalPreview()) {
-          return { url: URL.createObjectURL(file), size: file.size };
+          return { url: URL.createObjectURL(file), size: file.size, fileName: String(file?.name || "attachment") };
         }
         if (!hasFreeBoardServer()) {
           throw new Error("board_server_required");
@@ -2706,14 +2728,22 @@
         const payload = await fetchServerAuth("/api/board/media", {
           method: "POST",
           timeoutMs: 30000,
-          headers: { "Content-Type": imageType },
+          headers: {
+            "Content-Type": contentType,
+            "X-File-Name": encodeURIComponent(String(file?.name || "attachment")),
+          },
           body: file,
         });
         const url = String(payload?.url || "").trim();
-        if (!url || getSafeMediaKind(url) !== "image") {
+        if (!url || !isSafeAttachmentUrl(url)) {
           throw new Error("invalid_uploaded_media");
         }
-        return { url, size: Math.max(0, Math.floor(Number(payload?.size) || Number(file.size) || 0)) };
+        return {
+          url,
+          size: Math.max(0, Math.floor(Number(payload?.size) || Number(file.size) || 0)),
+          fileName: String(payload?.fileName || file?.name || "attachment"),
+          contentType,
+        };
       }
 
       async function refreshLiveNews(force = false) {
@@ -3019,6 +3049,18 @@
         }
       }
 
+      function isSafeAttachmentUrl(value) {
+        try {
+          if (isLocalPreview() && /^blob:/i.test(String(value || ""))) return true;
+          const url = new URL(String(value || ""));
+          if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+          if (url.username || url.password) return false;
+          return true;
+        } catch (_error) {
+          return false;
+        }
+      }
+
       function getYouTubeEmbedUrl(value) {
         try {
           const url = value instanceof URL ? value : new URL(String(value || ""));
@@ -3063,7 +3105,8 @@
 
       function createMediaToken(kind, url, meta = {}) {
         const size = Math.max(0, Math.floor(Number(meta.size) || 0));
-        const suffix = size ? `|bytes=${size}` : "";
+        const name = String(meta.name || meta.fileName || "").trim();
+        const suffix = `${size ? `|bytes=${size}` : ""}${name ? `|name=${encodeURIComponent(name)}` : ""}`;
         return `[${kind}:${url}${suffix}]`;
       }
 
@@ -3076,6 +3119,12 @@
           const [key, rawValue] = String(part || "").split("=");
           if (key === "bytes") {
             meta.size = Math.max(0, Math.floor(Number(rawValue) || 0));
+          } else if (key === "name") {
+            try {
+              meta.name = decodeURIComponent(String(rawValue || ""));
+            } catch (_error) {
+              meta.name = String(rawValue || "");
+            }
           }
         });
         return { url, meta };
@@ -3117,12 +3166,14 @@
 
       function getEmbeddedMediaTokens(value) {
         const tokens = [];
-        const pattern = /\[(image|video):([^\]\r\n]+)\]/gi;
+        const pattern = /\[(image|video|file):([^\]\r\n]+)\]/gi;
         let match;
         while ((match = pattern.exec(String(value || "")))) {
           const requestedKind = String(match[1] || "").toLowerCase();
           const { url, meta } = parseMediaTokenPayload(match[2]);
-          const actualKind = getSafeMediaKind(url);
+          const actualKind = requestedKind === "file"
+            ? (isSafeAttachmentUrl(url) ? "file" : "")
+            : getSafeMediaKind(url);
           tokens.push({ requestedKind, actualKind, url, meta });
         }
         return tokens;
@@ -3155,7 +3206,14 @@
         `;
       }
 
-      function renderMediaTag(url, preferredKind = "") {
+      function renderMediaTag(url, preferredKind = "", meta = {}) {
+        if (preferredKind === "file") {
+          if (!isSafeAttachmentUrl(url)) return "";
+          const fileName = String(meta?.name || "첨부파일").trim() || "첨부파일";
+          const size = Math.max(0, Math.floor(Number(meta?.size) || 0));
+          const sizeText = size ? ` · ${formatBytes(size)}` : "";
+          return `<a class="free-board-file-link" href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer" download><span class="free-board-file-name">${escapeHtml(fileName)}</span><span class="free-board-file-meta">첨부파일${escapeHtml(sizeText)}</span></a>`;
+        }
         const kind = getSafeMediaKind(url);
         if (!kind || (preferredKind && preferredKind !== kind)) return "";
         const youtubeEmbedUrl = kind === "video" ? getYouTubeEmbedUrl(url) : "";
@@ -3177,21 +3235,21 @@
             const size = Math.max(0, Math.floor(Number(token.meta?.size) || 0));
             if (!size) return "";
             visibleIndex += 1;
-            const label = token.actualKind === "image" ? "이미지" : "동영상";
+            const label = token.actualKind === "image" ? "이미지" : token.actualKind === "video" ? "동영상" : "첨부파일";
             return `<span class="free-board-media-size-item">${escapeHtml(label)} ${visibleIndex} · ${escapeHtml(formatBytes(size))}</span>`;
           })
           .filter(Boolean);
         if (!items.length) return "";
         return `
           <div class="free-board-media-sizes">
-            <div class="free-board-media-size-title">첨부 이미지 용량</div>
+            <div class="free-board-media-size-title">첨부파일 용량</div>
             <div class="free-board-media-size-list">${items.join("")}</div>
           </div>
         `;
       }
 
       function renderTextWithMediaTokens(value) {
-        const pattern = /\[(image|video):([^\]\r\n]+)\]/gi;
+        const pattern = /\[(image|video|file):([^\]\r\n]+)\]/gi;
         const text = String(value || "");
         const parts = [];
         let lastIndex = 0;
@@ -3200,8 +3258,8 @@
           const before = text.slice(lastIndex, match.index);
           if (before) parts.push(escapeHtml(before));
           const kind = String(match[1] || "").toLowerCase();
-          const { url } = parseMediaTokenPayload(match[2]);
-          const media = renderMediaTag(url, kind);
+          const { url, meta } = parseMediaTokenPayload(match[2]);
+          const media = renderMediaTag(url, kind, meta);
           parts.push(media || escapeHtml(match[0]));
           lastIndex = pattern.lastIndex;
         }
@@ -3284,11 +3342,11 @@
 
       function renderHtmlPostBody(value) {
         const text = String(value || "");
-        const pattern = /\[(image|video):([^\]\r\n]+)\]/gi;
+        const pattern = /\[(image|video|file):([^\]\r\n]+)\]/gi;
         const placeholders = [];
         const withPlaceholders = text.replace(pattern, (full, kind, payload) => {
-          const { url } = parseMediaTokenPayload(payload);
-          const media = renderMediaTag(url, String(kind || "").toLowerCase());
+          const { url, meta } = parseMediaTokenPayload(payload);
+          const media = renderMediaTag(url, String(kind || "").toLowerCase(), meta);
           if (!media) return full;
           const token = `__BOARD_MEDIA_${placeholders.length}__`;
           placeholders.push({ token, media });
@@ -3660,14 +3718,16 @@
                     <div class="free-board-compose-tools">
                       <button class="free-board-tool-btn" type="button" data-free-board-insert-media="image">이미지</button>
                       <button class="free-board-tool-btn" type="button" data-free-board-insert-media="video">동영상</button>
+                      <button class="free-board-tool-btn" type="button" data-free-board-upload-media>파일 첨부</button>
+                      <input id="freeBoardFileInput" type="file" multiple hidden />
                       <label class="free-board-html-option" for="freeBoardHtmlEnabled">
                         <input id="freeBoardHtmlEnabled" name="htmlEnabled" type="checkbox"${editingPost?.htmlEnabled ? " checked" : ""} />
                         HTML 사용
                       </label>
                     </div>
-                    <textarea class="free-board-compose-body" id="freeBoardBody" name="body" maxlength="12000" placeholder="내용을 입력하세요. 이미지는 Ctrl+V로 붙여넣거나 버튼으로 링크를 넣을 수 있습니다. 코드는 \`\`\` 코드 \`\`\` 형태로 넣으면 코드 박스로 표시됩니다." required>${escapeHtml(editingPost?.body || "")}</textarea>
+                    <textarea class="free-board-compose-body" id="freeBoardBody" name="body" maxlength="12000" placeholder="내용을 입력하세요. 모든 파일은 파일 첨부로 올리고, 이미지는 Ctrl+V 붙여넣기나 링크 버튼으로도 넣을 수 있습니다. 코드는 \`\`\` 코드 \`\`\` 형태로 넣으면 코드 박스로 표시됩니다." required>${escapeHtml(editingPost?.body || "")}</textarea>
                     <div class="free-board-compose-preview" id="freeBoardComposePreview" hidden></div>
-                    <div class="free-board-help">HTML 사용을 체크해도 script, iframe, 이벤트 속성은 제거됩니다. 이미지/동영상은 붙여넣기 또는 버튼으로 넣는 링크만 안전하게 표시됩니다.</div>
+                    <div class="free-board-help">첨부파일은 종류와 관계없이 파일 1개당 최대 200MB까지 가능합니다. HTML 사용을 체크해도 script, iframe, 이벤트 속성은 제거됩니다.</div>
                   </div>
                   <div class="free-board-field">
                     <label for="freeBoardPassword">${freeBoardMode === "edit" ? "글 비밀번호" : "글 등록 비밀번호"}</label>
@@ -4787,7 +4847,6 @@
           listings: info.listings || {},
         };
       }
-
       function renderCoinInfo(info) {
         const upbit = info.sources.upbit || {};
         const bithumb = info.sources.bithumb || {};
@@ -6162,7 +6221,7 @@
 
         const mediaResult = validateEmbeddedMediaTokens(body);
         if (mediaResult.rejected.length || mediaResult.validCount > FREE_BOARD_MAX_MEDIA) {
-          showFreeBoardMessage(`이미지는 파일 링크, 동영상은 YouTube 또는 mp4/webm/ogv 링크만 등록할 수 있습니다. 미디어는 최대 ${FREE_BOARD_MAX_MEDIA}개까지 가능합니다. 입력 내용은 유지됩니다.`, true);
+          showFreeBoardMessage(`이미지는 첨부파일 또는 파일 링크, 동영상은 YouTube 또는 mp4/webm/ogv 링크만 등록할 수 있습니다. 미디어는 최대 ${FREE_BOARD_MAX_MEDIA}개까지 가능합니다. 입력 내용은 유지됩니다.`, true);
           return;
         }
 
@@ -6227,6 +6286,13 @@
       newsPanel.addEventListener("click", async (event) => {
         const clickTarget = event.target instanceof Element ? event.target : event.target?.parentElement;
         if (!clickTarget) return;
+
+        const uploadButton = clickTarget.closest("[data-free-board-upload-media]");
+        if (uploadButton) {
+          const fileInput = document.getElementById("freeBoardFileInput");
+          if (fileInput) fileInput.click();
+          return;
+        }
 
         const mediaButton = clickTarget.closest("[data-free-board-insert-media]");
         if (mediaButton) {
@@ -6432,6 +6498,44 @@
         writeAppHistoryState(true);
       });
 
+      newsPanel.addEventListener("change", async (event) => {
+        const input = event.target instanceof HTMLInputElement ? event.target : null;
+        if (!input || input.id !== "freeBoardFileInput") return;
+        const files = Array.from(input.files || []);
+        input.value = "";
+        if (!files.length) return;
+        if (!hasFreeBoardServer() && !isLocalPreview()) {
+          showFreeBoardMessage("파일 첨부는 서버 게시판이 켜져 있을 때 사용할 수 있습니다. 이미지 링크는 버튼으로 넣을 수 있습니다.", true);
+          return;
+        }
+        const textarea = document.getElementById("freeBoardBody");
+        const currentMediaCount = validateEmbeddedMediaTokens(textarea?.value || "").validCount;
+        if (currentMediaCount + files.length > FREE_BOARD_MAX_MEDIA) {
+          showFreeBoardMessage(`미디어는 최대 ${FREE_BOARD_MAX_MEDIA}개까지 가능합니다. 입력 내용은 유지됩니다.`, true);
+          return;
+        }
+        try {
+          showFreeBoardMessage("첨부파일을 업로드 중입니다...", false);
+          const tokens = [];
+          for (const file of files) {
+            const upload = await uploadFreeBoardAttachment(file);
+            const kind = FREE_BOARD_IMAGE_TYPES.has(String(file.type || "").toLowerCase()) ? "image" : "file";
+            tokens.push(createMediaToken(kind, upload.url, { size: upload.size, name: upload.fileName || file.name }));
+          }
+          insertTextIntoTextarea(textarea, tokens.join("\n"));
+          renderFreeBoardComposePreview(textarea);
+          showFreeBoardMessage("첨부파일을 본문에 넣었습니다. 아래 미리보기에서 확인할 수 있습니다.", false);
+        } catch (error) {
+          console.error(error);
+          const message = error?.message === "media_too_large"
+            ? "첨부파일은 1개당 200MB 이하만 올릴 수 있습니다. 입력 내용은 유지됩니다."
+            : error?.message === "unsupported_media_type"
+              ? "이 파일은 첨부할 수 없습니다. 입력 내용은 유지됩니다."
+              : "파일 업로드에 실패했습니다. 잠시 후 다시 시도해 주세요. 입력 내용은 유지됩니다.";
+          showFreeBoardMessage(message, true);
+        }
+      });
+
       newsPanel.addEventListener("paste", async (event) => {
         const target = event.target instanceof Element ? event.target : event.target?.parentElement;
         const textarea = target?.closest("#freeBoardBody");
@@ -6457,8 +6561,8 @@
             showFreeBoardMessage("클립보드 이미지를 업로드 중입니다...", false);
             const tokens = [];
             for (const file of imageFiles) {
-              const upload = await uploadFreeBoardClipboardImage(file);
-              tokens.push(createMediaToken("image", upload.url, { size: upload.size }));
+              const upload = await uploadFreeBoardAttachment(file);
+              tokens.push(createMediaToken("image", upload.url, { size: upload.size, name: upload.fileName || file.name }));
             }
             insertTextIntoTextarea(textarea, tokens.join("\n"));
             renderFreeBoardComposePreview(textarea);
@@ -6466,7 +6570,7 @@
           } catch (error) {
             console.error(error);
             const message = error?.message === "media_too_large"
-              ? "이미지 파일은 4MB 이하만 붙여넣을 수 있습니다. 입력 내용은 유지됩니다."
+              ? "이미지 파일은 1개당 200MB 이하만 붙여넣을 수 있습니다. 입력 내용은 유지됩니다."
               : error?.message === "unsupported_media_type"
                 ? "png/jpg/jpeg/gif/webp/avif 이미지만 붙여넣을 수 있습니다. 입력 내용은 유지됩니다."
                 : "이미지 업로드에 실패했습니다. 잠시 후 다시 붙여넣어 주세요. 입력 내용은 유지됩니다.";
