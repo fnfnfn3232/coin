@@ -10,6 +10,7 @@ const BOARD_MAX_COMMENTS = 100;
 const BOARD_ADMIN_LOG_LIMIT = 100;
 const BOARD_MEDIA_KEY_PREFIX = "free-board-media:";
 const BOARD_MEDIA_MAX_BYTES = 200 * 1024 * 1024;
+const BOARD_MEDIA_CHUNK_BYTES = 1024 * 1024;
 const GITHUB_PAGES_MONTHLY_SOFT_LIMIT_BYTES = 100 * 1024 * 1024 * 1024;
 const USAGE_BEACON_MAX_BYTES = 25 * 1024 * 1024;
 const DEFAULT_NEWS_CACHE_SECONDS = 10 * 60;
@@ -32,20 +33,43 @@ function encodeContentDispositionFilename(fileName) {
   return `attachment; filename*=UTF-8''${encodeURIComponent(safeName)}`;
 }
 
-function mediaResponse(media, status = 200, env = {}) {
+function mediaHeaders(media, env = {}) {
   const disposition = /^image\/|^video\//i.test(String(media.contentType || ""))
     ? "inline"
     : encodeContentDispositionFilename(media.fileName);
-  return new Response(media.bytes, {
-    status,
-    headers: {
-      "Content-Type": media.contentType,
-      "Content-Disposition": disposition,
-      "Cache-Control": "public, max-age=31536000, immutable",
-      "Access-Control-Allow-Origin": env.FRONTEND_ORIGIN || "*",
-      "Vary": "Origin",
-    },
-  });
+  const headers = {
+    "Content-Type": media.contentType,
+    "Content-Disposition": disposition,
+    "Cache-Control": "public, max-age=31536000, immutable",
+    "Access-Control-Allow-Origin": env.FRONTEND_ORIGIN || "*",
+    "Vary": "Origin",
+  };
+  const size = Math.max(0, Math.floor(Number(media.size) || 0));
+  if (size) headers["Content-Length"] = String(size);
+  return headers;
+}
+
+function mediaResponse(media, status = 200, env = {}) {
+  if (typeof media.readChunk === "function" && Number(media.chunkCount) > 0) {
+    let index = 0;
+    const stream = new ReadableStream({
+      async pull(controller) {
+        if (index >= media.chunkCount) {
+          controller.close();
+          return;
+        }
+        const chunk = await media.readChunk(index);
+        if (!chunk) {
+          controller.error(new Error("missing_media_chunk"));
+          return;
+        }
+        controller.enqueue(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk));
+        index += 1;
+      },
+    });
+    return new Response(stream, { status, headers: mediaHeaders(media, env) });
+  }
+  return new Response(media.bytes, { status, headers: mediaHeaders(media, env) });
 }
 
 function optionsResponse(env) {
@@ -469,6 +493,10 @@ function getBoardMediaKey(id) {
   return `${BOARD_MEDIA_KEY_PREFIX}${id}`;
 }
 
+function getBoardMediaChunkKey(id, index) {
+  return `${getBoardMediaKey(id)}:chunk:${index}`;
+}
+
 function getBoardMediaContentType(request) {
   const contentType = String(request.headers.get("Content-Type") || "").split(";")[0].trim().toLowerCase();
   return /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i.test(contentType)
@@ -488,10 +516,30 @@ function getBoardMediaFileName(request) {
 async function readBoardMediaFromKv(env, id) {
   if (!env.BOARD_POSTS) throw new Error("board_storage_not_configured");
   const metadata = await env.BOARD_POSTS.get(`${getBoardMediaKey(id)}:meta`, { type: "json" });
+  if (!metadata) return null;
+  const contentType = String(metadata.contentType || "application/octet-stream");
+  if (metadata?.chunkCount) {
+    return {
+      contentType,
+      fileName: metadata.fileName,
+      size: metadata.size,
+      chunkCount: Math.max(0, Math.floor(Number(metadata.chunkCount) || 0)),
+      readChunk: (index) => env.BOARD_POSTS.get(getBoardMediaChunkKey(id, index), { type: "arrayBuffer" }),
+    };
+  }
   const bytes = await env.BOARD_POSTS.get(getBoardMediaKey(id), { type: "arrayBuffer" });
   if (!metadata || !bytes) return null;
-  const contentType = String(metadata.contentType || "application/octet-stream");
   return { bytes, contentType, fileName: metadata.fileName };
+}
+
+async function writeBoardMediaChunks(bytes, writeChunk) {
+  const chunkCount = Math.ceil(bytes.byteLength / BOARD_MEDIA_CHUNK_BYTES);
+  for (let index = 0; index < chunkCount; index += 1) {
+    const start = index * BOARD_MEDIA_CHUNK_BYTES;
+    const end = Math.min(start + BOARD_MEDIA_CHUNK_BYTES, bytes.byteLength);
+    await writeChunk(index, bytes.slice(start, end));
+  }
+  return chunkCount;
 }
 
 async function writeBoardMediaToKv(request, env) {
@@ -503,12 +551,15 @@ async function writeBoardMediaToKv(request, env) {
     return jsonResponse({ error: "media_too_large" }, 413, env);
   }
   const id = `media-${Date.now()}-${crypto.randomUUID().slice(0, 12)}`;
-  await env.BOARD_POSTS.put(getBoardMediaKey(id), bytes);
+  const chunkCount = await writeBoardMediaChunks(bytes, (index, chunk) => (
+    env.BOARD_POSTS.put(getBoardMediaChunkKey(id, index), chunk)
+  ));
   await env.BOARD_POSTS.put(`${getBoardMediaKey(id)}:meta`, JSON.stringify({
     contentType,
     fileName: getBoardMediaFileName(request),
     createdAt: Date.now(),
     size: bytes.byteLength,
+    chunkCount,
   }));
   const url = new URL(request.url);
   url.pathname = `/api/board/media/${id}`;
@@ -831,7 +882,17 @@ export class BoardStore {
 
   async readMedia(id) {
     const media = await this.state.storage.get(getBoardMediaKey(id));
-    if (!media || !media.bytes || !media.contentType) return null;
+    if (!media || !media.contentType) return null;
+    if (media.chunkCount) {
+      return {
+        contentType: String(media.contentType || "application/octet-stream"),
+        fileName: media.fileName,
+        size: media.size,
+        chunkCount: Math.max(0, Math.floor(Number(media.chunkCount) || 0)),
+        readChunk: (index) => this.state.storage.get(getBoardMediaChunkKey(id, index)),
+      };
+    }
+    if (!media.bytes) return null;
     return { bytes: media.bytes, contentType: String(media.contentType || "application/octet-stream"), fileName: media.fileName };
   }
 
@@ -843,12 +904,15 @@ export class BoardStore {
       return jsonResponse({ error: "media_too_large" }, 413, this.env);
     }
     const id = `media-${Date.now()}-${crypto.randomUUID().slice(0, 12)}`;
+    const chunkCount = await writeBoardMediaChunks(bytes, (index, chunk) => (
+      this.state.storage.put(getBoardMediaChunkKey(id, index), chunk)
+    ));
     await this.state.storage.put(getBoardMediaKey(id), {
-      bytes,
       contentType,
       fileName: getBoardMediaFileName(request),
       createdAt: Date.now(),
       size: bytes.byteLength,
+      chunkCount,
     });
     const url = new URL(request.url);
     url.pathname = `/api/board/media/${id}`;
