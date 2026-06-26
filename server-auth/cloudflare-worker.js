@@ -9,8 +9,7 @@ const BOARD_MAX_MEDIA = 10;
 const BOARD_MAX_COMMENTS = 100;
 const BOARD_ADMIN_LOG_LIMIT = 100;
 const BOARD_MEDIA_KEY_PREFIX = "free-board-media:";
-const BOARD_MEDIA_MAX_BYTES = 4 * 1024 * 1024;
-const BOARD_MEDIA_ALLOWED_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"]);
+const BOARD_MEDIA_MAX_BYTES = 200 * 1024 * 1024;
 const GITHUB_PAGES_MONTHLY_SOFT_LIMIT_BYTES = 100 * 1024 * 1024 * 1024;
 const USAGE_BEACON_MAX_BYTES = 25 * 1024 * 1024;
 const DEFAULT_NEWS_CACHE_SECONDS = 10 * 60;
@@ -28,11 +27,20 @@ function jsonResponse(body, status = 200, env = {}) {
   });
 }
 
+function encodeContentDispositionFilename(fileName) {
+  const safeName = cleanBoardText(fileName, 180).replace(/[\\/:*?"<>|]/g, "_") || "attachment";
+  return `attachment; filename*=UTF-8''${encodeURIComponent(safeName)}`;
+}
+
 function mediaResponse(media, status = 200, env = {}) {
+  const disposition = /^image\/|^video\//i.test(String(media.contentType || ""))
+    ? "inline"
+    : encodeContentDispositionFilename(media.fileName);
   return new Response(media.bytes, {
     status,
     headers: {
       "Content-Type": media.contentType,
+      "Content-Disposition": disposition,
       "Cache-Control": "public, max-age=31536000, immutable",
       "Access-Control-Allow-Origin": env.FRONTEND_ORIGIN || "*",
       "Vary": "Origin",
@@ -463,7 +471,18 @@ function getBoardMediaKey(id) {
 
 function getBoardMediaContentType(request) {
   const contentType = String(request.headers.get("Content-Type") || "").split(";")[0].trim().toLowerCase();
-  return BOARD_MEDIA_ALLOWED_TYPES.has(contentType) ? contentType : "";
+  return /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i.test(contentType)
+    ? contentType
+    : "application/octet-stream";
+}
+
+function getBoardMediaFileName(request) {
+  try {
+    const value = decodeURIComponent(String(request.headers.get("X-File-Name") || "").trim());
+    return cleanBoardText(value, 180).replace(/[\\/:*?"<>|]/g, "_") || "attachment";
+  } catch (_error) {
+    return "attachment";
+  }
 }
 
 async function readBoardMediaFromKv(env, id) {
@@ -471,9 +490,8 @@ async function readBoardMediaFromKv(env, id) {
   const metadata = await env.BOARD_POSTS.get(`${getBoardMediaKey(id)}:meta`, { type: "json" });
   const bytes = await env.BOARD_POSTS.get(getBoardMediaKey(id), { type: "arrayBuffer" });
   if (!metadata || !bytes) return null;
-  const contentType = BOARD_MEDIA_ALLOWED_TYPES.has(metadata.contentType) ? metadata.contentType : "";
-  if (!contentType) return null;
-  return { bytes, contentType };
+  const contentType = String(metadata.contentType || "application/octet-stream");
+  return { bytes, contentType, fileName: metadata.fileName };
 }
 
 async function writeBoardMediaToKv(request, env) {
@@ -488,13 +506,14 @@ async function writeBoardMediaToKv(request, env) {
   await env.BOARD_POSTS.put(getBoardMediaKey(id), bytes);
   await env.BOARD_POSTS.put(`${getBoardMediaKey(id)}:meta`, JSON.stringify({
     contentType,
+    fileName: getBoardMediaFileName(request),
     createdAt: Date.now(),
     size: bytes.byteLength,
   }));
   const url = new URL(request.url);
   url.pathname = `/api/board/media/${id}`;
   url.search = "";
-  return jsonResponse({ id, url: url.toString(), contentType, size: bytes.byteLength }, 201, env);
+  return jsonResponse({ id, url: url.toString(), contentType, fileName: getBoardMediaFileName(request), size: bytes.byteLength }, 201, env);
 }
 
 async function handleBoardMedia(request, env, url) {
@@ -813,9 +832,7 @@ export class BoardStore {
   async readMedia(id) {
     const media = await this.state.storage.get(getBoardMediaKey(id));
     if (!media || !media.bytes || !media.contentType) return null;
-    const contentType = BOARD_MEDIA_ALLOWED_TYPES.has(media.contentType) ? media.contentType : "";
-    if (!contentType) return null;
-    return { bytes: media.bytes, contentType };
+    return { bytes: media.bytes, contentType: String(media.contentType || "application/octet-stream"), fileName: media.fileName };
   }
 
   async writeMedia(request) {
@@ -829,13 +846,14 @@ export class BoardStore {
     await this.state.storage.put(getBoardMediaKey(id), {
       bytes,
       contentType,
+      fileName: getBoardMediaFileName(request),
       createdAt: Date.now(),
       size: bytes.byteLength,
     });
     const url = new URL(request.url);
     url.pathname = `/api/board/media/${id}`;
     url.search = "";
-    return jsonResponse({ id, url: url.toString(), contentType, size: bytes.byteLength }, 201, this.env);
+    return jsonResponse({ id, url: url.toString(), contentType, fileName: getBoardMediaFileName(request), size: bytes.byteLength }, 201, this.env);
   }
 
   async fetch(request) {
