@@ -1015,6 +1015,78 @@
         white-space: normal;
       }
 
+      .free-board-mobile-posts {
+        display: none;
+      }
+
+      .free-board-mobile-post {
+        width: 100%;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 7px 12px;
+        padding: 14px 14px 13px;
+        border: 0;
+        border-bottom: 1px solid rgba(151, 183, 198, 0.16);
+        border-radius: 0;
+        background: rgba(12, 22, 31, 0.88);
+        color: #e9f5fb;
+        text-align: left;
+      }
+
+      .free-board-mobile-post:active {
+        background: rgba(32, 44, 68, 0.95);
+      }
+
+      .free-board-mobile-category {
+        grid-column: 1 / 3;
+        width: fit-content;
+        max-width: 100%;
+        padding: 4px 8px;
+        border: 1px solid rgba(117, 221, 255, 0.24);
+        border-radius: 999px;
+        background: rgba(117, 221, 255, 0.08);
+        color: #9feeff;
+        font-size: 11px;
+        font-weight: 900;
+        line-height: 1.2;
+      }
+
+      .free-board-mobile-title {
+        min-width: 0;
+        color: #f6fbff;
+        font-size: 16px;
+        font-weight: 850;
+        line-height: 1.35;
+        overflow-wrap: anywhere;
+      }
+
+      .free-board-mobile-comments {
+        align-self: center;
+        color: #ff8aa5;
+        font-size: 16px;
+        font-weight: 900;
+      }
+
+      .free-board-mobile-meta {
+        grid-column: 1 / 3;
+        display: flex;
+        gap: 7px;
+        flex-wrap: wrap;
+        color: #8fa0aa;
+        font-size: 12px;
+        font-weight: 750;
+        line-height: 1.35;
+      }
+
+      .free-board-mobile-empty {
+        display: grid;
+        min-height: 170px;
+        place-items: center;
+        padding: 24px 14px;
+        color: rgba(219, 207, 188, 0.8);
+        text-align: center;
+      }
+
       .free-board-title-btn {
         width: 100%;
         padding: 0;
@@ -1905,6 +1977,53 @@
 
         input, select {
           width: 100%;
+        }
+
+        .free-board-board-nav {
+          padding: 12px;
+        }
+
+        .free-board-tabs {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 8px;
+        }
+
+        .free-board-tab {
+          min-width: 0;
+          min-height: 48px;
+          padding: 10px 8px;
+          border-radius: 7px;
+          font-size: 16px;
+          line-height: 1.2;
+        }
+
+        .free-board-table-wrap {
+          min-height: 0;
+          overflow: visible;
+          border-top-color: rgba(84, 104, 255, 0.5);
+          border-bottom-color: rgba(84, 104, 255, 0.5);
+        }
+
+        .free-board-table {
+          display: none;
+        }
+
+        .free-board-mobile-posts {
+          display: grid;
+        }
+
+        .free-board-list {
+          padding: 12px;
+        }
+
+        .free-board-bottom {
+          justify-content: flex-end;
+        }
+
+        .free-board-write-btn {
+          width: 100%;
+          min-height: 46px;
         }
 
         .admin-form,
@@ -3501,6 +3620,21 @@
       }
 
       function renderFreeBoardPosts(posts, totalCount, offset) {
+        const mobilePosts = posts.length ? posts.map((post, index) => {
+          const commentCount = Math.max(0, Math.floor(Number(post.commentCount) || 0));
+          return `
+            <button class="free-board-mobile-post" type="button" data-free-board-open="${escapeAttr(post.id)}">
+              <span class="free-board-mobile-category">${escapeHtml(freeBoardCategoryLabel(post.category))}</span>
+              <span class="free-board-mobile-title">${escapeHtml(post.title)}</span>
+              <span class="free-board-mobile-comments">${formatNumber(commentCount, 0)}</span>
+              <span class="free-board-mobile-meta">
+                <span>${escapeHtml(post.author || "익명")}</span>
+                <span>${escapeHtml(formatFreeBoardShortTime(post.createdAt))}</span>
+                <span>조회 ${formatNumber(post.views, 0)}</span>
+              </span>
+            </button>
+          `;
+        }).join("") : `<div class="free-board-mobile-empty">아직 등록된 글이 없습니다.</div>`;
         return `
           <div class="free-board-table-wrap">
             <table class="free-board-table">
@@ -3531,6 +3665,7 @@
                 `}
               </tbody>
             </table>
+            <div class="free-board-mobile-posts">${mobilePosts}</div>
           </div>
         `;
       }
