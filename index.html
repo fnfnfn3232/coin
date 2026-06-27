@@ -4588,8 +4588,27 @@
         });
       }
 
-      function renderFreeBoardCommentsSection() {
+      function getFreeBoardCommentsScrollAnchor() {
+        const anchor = newsPanel.querySelector("[data-free-board-comments-section] .free-board-comments-head")
+          || newsPanel.querySelector("[data-free-board-comments-section]");
+        if (!anchor) return null;
+        return { top: anchor.getBoundingClientRect().top };
+      }
+
+      function restoreFreeBoardCommentsScrollAnchor(anchor) {
+        if (!anchor) return;
+        window.requestAnimationFrame(() => {
+          const nextAnchor = newsPanel.querySelector("[data-free-board-comments-section] .free-board-comments-head")
+            || newsPanel.querySelector("[data-free-board-comments-section]");
+          if (!nextAnchor) return;
+          const delta = nextAnchor.getBoundingClientRect().top - anchor.top;
+          if (Math.abs(delta) > 1) window.scrollBy(0, delta);
+        });
+      }
+
+      function renderFreeBoardCommentsSection(options = {}) {
         if (state.viewMode !== "board" || freeBoardMode !== "read") return;
+        const scrollAnchor = options?.preserveScroll ? getFreeBoardCommentsScrollAnchor() : null;
         const post = getSelectedFreeBoardPost();
         const currentSection = newsPanel.querySelector("[data-free-board-comments-section]");
         if (!post || !currentSection) {
@@ -4605,6 +4624,7 @@
         }
         currentSection.replaceWith(nextSection);
         updateFreeBoardReadCommentCount(post);
+        restoreFreeBoardCommentsScrollAnchor(scrollAnchor);
       }
 
       function renderFreeBoard() {
@@ -5199,7 +5219,7 @@
           saveFreeBoardPosts(posts);
         }
         showFreeBoardMessage("댓글을 삭제했습니다.", false);
-        renderFreeBoardCommentsSection();
+        renderFreeBoardCommentsSection({ preserveScroll: true });
         return true;
       }
 
@@ -7293,7 +7313,7 @@
             }
             commentForm.reset();
             showFreeBoardMessage("댓글을 등록했습니다.", false);
-            renderFreeBoardCommentsSection();
+            renderFreeBoardCommentsSection({ preserveScroll: true });
           } catch (error) {
             console.error(error);
             showFreeBoardMessage("댓글 등록에 실패했습니다. 입력 내용은 유지됩니다.", true);
@@ -7458,13 +7478,13 @@
 
         if (clickTarget.closest("[data-free-board-comments-toggle]")) {
           freeBoardCommentsCollapsed = !freeBoardCommentsCollapsed;
-          renderFreeBoardCommentsSection();
+          renderFreeBoardCommentsSection({ preserveScroll: true });
           return;
         }
 
         if (clickTarget.closest("[data-free-board-comments-refresh]")) {
           if (!hasFreeBoardServer()) {
-            renderFreeBoardCommentsSection();
+            renderFreeBoardCommentsSection({ preserveScroll: true });
             return;
           }
           showFreeBoardMessage("댓글을 새로고침 중입니다.", false);
@@ -7475,7 +7495,7 @@
             console.error(error);
             showFreeBoardMessage("댓글을 새로고침하지 못했습니다. 잠시 후 다시 시도해 주세요.", true);
           }
-          renderFreeBoardCommentsSection();
+          renderFreeBoardCommentsSection({ preserveScroll: true });
           return;
         }
 
