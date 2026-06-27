@@ -1318,8 +1318,7 @@
       }
 
       .free-board-comments-left,
-      .free-board-comments-tools,
-      .free-board-comments-sort {
+      .free-board-comments-tools {
         display: inline-flex;
         align-items: center;
         gap: 9px;
@@ -1328,14 +1327,6 @@
 
       .free-board-comments-count strong {
         color: #ffb79f;
-      }
-
-      .free-board-sort-item {
-        color: #dfeaf0;
-      }
-
-      .free-board-sort-item.active {
-        color: #9db8ff;
       }
 
       .free-board-comment-tool {
@@ -1704,6 +1695,14 @@
         margin-bottom: 0;
       }
 
+      .free-board-body img,
+      .free-board-body video {
+        display: block;
+        max-width: 100%;
+        height: auto;
+        object-fit: contain;
+      }
+
       .free-board-code {
         margin: 0;
         padding: 12px;
@@ -1731,6 +1730,11 @@
         border: 1px solid rgba(151, 183, 198, 0.14);
         border-radius: 12px;
         background: #020b10;
+      }
+
+      .free-board-media img {
+        height: auto;
+        max-height: none;
       }
 
       .free-board-youtube {
@@ -2382,6 +2386,16 @@
         .free-board-compose-top,
         .free-board-media {
           grid-template-columns: 1fr;
+        }
+
+        .free-board-body img,
+        .free-board-body video,
+        .free-board-media img,
+        .free-board-media video {
+          width: 100%;
+          max-width: 100%;
+          height: auto;
+          max-height: none;
         }
 
         .admin-row {
@@ -4167,11 +4181,6 @@
             <div class="free-board-comments-head">
               <div class="free-board-comments-left">
                 <span class="free-board-comments-count">전체 댓글 <strong>${formatNumber(comments.length, 0)}개</strong></span>
-                <span class="free-board-comments-sort" aria-label="댓글 정렬">
-                  <span class="free-board-sort-item active">등록순</span>
-                  <span class="free-board-sort-item">최신순</span>
-                  <span class="free-board-sort-item">답글순</span>
-                </span>
               </div>
               <div class="free-board-comments-tools">
                 <button class="free-board-comment-tool" type="button" data-free-board-body-top>본문 보기</button>
