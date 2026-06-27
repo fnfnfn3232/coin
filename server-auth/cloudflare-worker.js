@@ -510,6 +510,9 @@ async function requireGithubOidc(request, env) {
 function isProtectedContentPath(url) {
   return url.pathname === "/api/market-data"
     || url.pathname === "/api/news"
+    || url.pathname === "/api/usage/beacon"
+    || url.pathname === "/api/usage/stats"
+    || url.pathname === "/api/board/logs"
     || url.pathname === "/api/board/media"
     || url.pathname.startsWith("/api/board/media/")
     || url.pathname === "/api/board/posts"
