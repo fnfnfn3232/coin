@@ -27,8 +27,6 @@ The current frontend is wired to use this API when `window.SERVER_AUTH_API_BASE`
   - Optional. Coinness currently accepts up to 40 per fetch; keep this at `40`.
 - `NEWS_STORE_LIMIT`
   - Optional. The Worker keeps up to 1000 merged Coinness items for paging and search.
-- `NEWS_SEED_URL`
-  - Optional. Initial archive seed, usually the GitHub Pages `data.js` URL.
 - `NEWS_BODY_MODE`
   - Optional. Use `preview` by default.
   - `full` returns full Coinness text only after login, but this can still carry content-license risk.
@@ -72,7 +70,7 @@ POST /api/logout
 
 ## Important limitation
 
-This protects data served by the Worker. It does not protect any data that is still committed into public `data.js`, `board_snapshot.json`, or the GitHub repository. If full text should be private, do not write it to those files.
+This protects data served by the Worker. It does not protect any data that is still committed into public `data.js`, `board_snapshot.json`, or the GitHub repository. News lists should stay in the Worker store instead of the GitHub Pages data files.
 
 Also, do not reuse the old client-side password as the Worker password after deployment. The old password has already existed in public frontend code. Use a new password when setting `SITE_PASSWORD_SHA256`.
 
