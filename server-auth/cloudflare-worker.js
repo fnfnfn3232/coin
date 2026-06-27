@@ -5,6 +5,8 @@ const BOARD_POSTS_KEY = "free-board-posts";
 const BOARD_ADMIN_LOGS_KEY = "free-board-admin-logs";
 const USAGE_STATS_KEY = "usage-stats-v1";
 const NEWS_STORE_KEY = "coinness-news-store-v1";
+const MARKET_DATA_KEY = "market-data-v1";
+const MARKET_DATA_CHUNK_PREFIX = "market-data-v1:chunk:";
 const BOARD_MAX_POSTS = 200;
 const BOARD_MAX_MEDIA = 10;
 const BOARD_MAX_COMMENTS = 100;
@@ -14,9 +16,15 @@ const NEWS_PAGE_MAX_ITEMS = 40;
 const BOARD_MEDIA_KEY_PREFIX = "free-board-media:";
 const BOARD_MEDIA_MAX_BYTES = 200 * 1024 * 1024;
 const BOARD_MEDIA_CHUNK_BYTES = 1024 * 1024;
+const MARKET_DATA_MAX_BYTES = 8 * 1024 * 1024;
+const MARKET_DATA_CHUNK_CHARS = 256 * 1024;
 const GITHUB_PAGES_MONTHLY_SOFT_LIMIT_BYTES = 100 * 1024 * 1024 * 1024;
 const USAGE_BEACON_MAX_BYTES = 25 * 1024 * 1024;
 const DEFAULT_NEWS_CACHE_SECONDS = 10 * 60;
+const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
+const GITHUB_OIDC_JWKS_URL = `${GITHUB_OIDC_ISSUER}/.well-known/jwks`;
+const GITHUB_OIDC_REPOSITORY = "fnfnfn3232/2026-04-22-spot-usdt";
+const GITHUB_OIDC_AUDIENCE = "coin-board-auth-market-data";
 
 function jsonResponse(body, status = 200, env = {}) {
   return new Response(JSON.stringify(body), {
@@ -379,8 +387,87 @@ async function requireAuth(request, env) {
   return jsonResponse({ error: "auth_required" }, 401, env);
 }
 
+function base64UrlToBytes(value) {
+  const normalized = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function parseJwtPart(value) {
+  return JSON.parse(new TextDecoder().decode(base64UrlToBytes(value)));
+}
+
+function getExpectedGithubOidcAudience(env) {
+  return String(env.GITHUB_OIDC_AUDIENCE || GITHUB_OIDC_AUDIENCE);
+}
+
+function getExpectedGithubOidcRepository(env) {
+  return String(env.GITHUB_OIDC_REPOSITORY || GITHUB_OIDC_REPOSITORY);
+}
+
+async function verifyGithubOidcToken(token, env) {
+  const parts = String(token || "").split(".");
+  if (parts.length !== 3) throw new Error("invalid_oidc_token");
+
+  const [headerPart, payloadPart, signaturePart] = parts;
+  const header = parseJwtPart(headerPart);
+  const claims = parseJwtPart(payloadPart);
+  if (header.alg !== "RS256" || !header.kid) throw new Error("unsupported_oidc_token");
+
+  const now = Math.floor(Date.now() / 1000);
+  if (claims.iss !== GITHUB_OIDC_ISSUER) throw new Error("invalid_oidc_issuer");
+  if (claims.aud !== getExpectedGithubOidcAudience(env)) throw new Error("invalid_oidc_audience");
+  if (claims.repository !== getExpectedGithubOidcRepository(env)) throw new Error("invalid_oidc_repository");
+  if (claims.ref !== "refs/heads/main") throw new Error("invalid_oidc_ref");
+  if (Number(claims.nbf || 0) > now + 30 || Number(claims.exp || 0) < now - 30) {
+    throw new Error("expired_oidc_token");
+  }
+
+  const jwksResponse = await fetch(GITHUB_OIDC_JWKS_URL, {
+    headers: { "Accept": "application/json" },
+    cf: { cacheTtl: 3600, cacheEverything: true },
+  });
+  if (!jwksResponse.ok) throw new Error("github_oidc_jwks_failed");
+  const jwks = await jwksResponse.json();
+  const jwk = (jwks.keys || []).find((key) => key.kid === header.kid);
+  if (!jwk) throw new Error("github_oidc_key_not_found");
+
+  const key = await crypto.subtle.importKey(
+    "jwk",
+    jwk,
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false,
+    ["verify"]
+  );
+  const ok = await crypto.subtle.verify(
+    "RSASSA-PKCS1-v1_5",
+    key,
+    base64UrlToBytes(signaturePart),
+    textEncoder().encode(`${headerPart}.${payloadPart}`)
+  );
+  if (!ok) throw new Error("invalid_oidc_signature");
+  return claims;
+}
+
+async function requireGithubOidc(request, env) {
+  const token = getBearerToken(request);
+  if (!token) return jsonResponse({ error: "oidc_required" }, 401, env);
+  try {
+    await verifyGithubOidcToken(token, env);
+    return null;
+  } catch (error) {
+    return jsonResponse({ error: error instanceof Error ? error.message : "invalid_oidc" }, 401, env);
+  }
+}
+
 function isProtectedContentPath(url) {
-  return url.pathname === "/api/news"
+  return url.pathname === "/api/market-data"
+    || url.pathname === "/api/news"
     || url.pathname === "/api/board/media"
     || url.pathname.startsWith("/api/board/media/")
     || url.pathname === "/api/board/posts"
@@ -805,6 +892,67 @@ function newsPageResponse(store, requestUrl, env, extra = {}) {
   }, 200, env);
 }
 
+function protectedNewsPayloadFromMarketData(payload) {
+  return {
+    source: "worker_protected",
+    status: "protected",
+    retentionDays: 0,
+    fetchedAt: Math.max(0, Math.floor(Number(payload?.generatedAt) || Date.now() / 1000)),
+    protected: true,
+    items: [],
+  };
+}
+
+function emptyMarketDataPayload() {
+  return {
+    generatedAt: 0,
+    previousGeneratedAt: 0,
+    autoRefreshMinutes: 10,
+    fxUsdKrw: 0,
+    fxSource: "worker_protected",
+    boards: { binance: [], upbit: [], bithumb: [], coinbase: [] },
+    coinInfo: {},
+    news: {
+      source: "worker_protected",
+      status: "protected",
+      retentionDays: 0,
+      fetchedAt: 0,
+      protected: true,
+      items: [],
+    },
+    stats: {
+      binance: { total: 0, withCap: 0 },
+      upbit: { total: 0, withCap: 0 },
+      bithumb: { total: 0, withCap: 0 },
+      coinbase: { total: 0, withCap: 0 },
+    },
+    changes: {},
+    notes: {},
+    refreshIssues: {},
+    protected: true,
+  };
+}
+
+function normalizeMarketDataPayload(payload) {
+  if (!payload || typeof payload !== "object" || !payload.boards || typeof payload.boards !== "object") {
+    return null;
+  }
+  const normalized = {
+    ...payload,
+    boards: {
+      binance: Array.isArray(payload.boards.binance) ? payload.boards.binance : [],
+      upbit: Array.isArray(payload.boards.upbit) ? payload.boards.upbit : [],
+      bithumb: Array.isArray(payload.boards.bithumb) ? payload.boards.bithumb : [],
+      coinbase: Array.isArray(payload.boards.coinbase) ? payload.boards.coinbase : [],
+    },
+    coinInfo: payload.coinInfo && typeof payload.coinInfo === "object" ? payload.coinInfo : {},
+    stats: payload.stats && typeof payload.stats === "object" ? payload.stats : {},
+    news: protectedNewsPayloadFromMarketData(payload),
+    protected: true,
+  };
+  return normalized;
+}
+
 async function fetchSeedNewsItems(env) {
   const seedUrl = String(env.NEWS_SEED_URL || "").trim();
   if (!seedUrl) return [];
@@ -1011,6 +1159,74 @@ export class BoardStore {
     return normalized;
   }
 
+  async readMarketData() {
+    const meta = await this.state.storage.get(MARKET_DATA_KEY);
+    if (!meta || !Number.isFinite(Number(meta.chunkCount))) return null;
+    const chunkCount = Math.max(0, Math.floor(Number(meta.chunkCount) || 0));
+    if (!chunkCount) return null;
+    const chunks = [];
+    for (let index = 0; index < chunkCount; index += 1) {
+      const chunk = await this.state.storage.get(`${MARKET_DATA_CHUNK_PREFIX}${index}`);
+      if (typeof chunk !== "string") return null;
+      chunks.push(chunk);
+    }
+    try {
+      return normalizeMarketDataPayload(JSON.parse(chunks.join("")));
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  async writeMarketData(request) {
+    const text = await request.text();
+    const bytes = new TextEncoder().encode(text).byteLength;
+    if (!bytes || bytes > MARKET_DATA_MAX_BYTES) {
+      return jsonResponse({ error: "market_data_too_large" }, 413, this.env);
+    }
+    let payload = null;
+    try {
+      payload = JSON.parse(text);
+    } catch (_error) {
+      return jsonResponse({ error: "invalid_market_data_json" }, 400, this.env);
+    }
+    const normalized = normalizeMarketDataPayload(payload);
+    if (!normalized) return jsonResponse({ error: "invalid_market_data" }, 400, this.env);
+
+    const serialized = JSON.stringify(normalized);
+    const chunkCount = Math.max(1, Math.ceil(serialized.length / MARKET_DATA_CHUNK_CHARS));
+    const previousMeta = await this.state.storage.get(MARKET_DATA_KEY);
+    const previousChunkCount = Math.max(0, Math.floor(Number(previousMeta?.chunkCount) || 0));
+    for (let index = 0; index < chunkCount; index += 1) {
+      const start = index * MARKET_DATA_CHUNK_CHARS;
+      await this.state.storage.put(`${MARKET_DATA_CHUNK_PREFIX}${index}`, serialized.slice(start, start + MARKET_DATA_CHUNK_CHARS));
+    }
+    if (previousChunkCount > chunkCount) {
+      const staleKeys = [];
+      for (let index = chunkCount; index < previousChunkCount; index += 1) {
+        staleKeys.push(`${MARKET_DATA_CHUNK_PREFIX}${index}`);
+      }
+      if (staleKeys.length) await this.state.storage.delete(staleKeys);
+    }
+    await this.state.storage.put(MARKET_DATA_KEY, {
+      generatedAt: Math.max(0, Math.floor(Number(normalized.generatedAt) || 0)),
+      updatedAt: Date.now(),
+      bytes: new TextEncoder().encode(serialized).byteLength,
+      chunkCount,
+    });
+    return jsonResponse({
+      ok: true,
+      generatedAt: normalized.generatedAt || 0,
+      bytes: new TextEncoder().encode(serialized).byteLength,
+      chunkCount,
+    }, 200, this.env);
+  }
+
+  async handleMarketDataRequest() {
+    const payload = await this.readMarketData();
+    if (!payload) return jsonResponse({ error: "market_data_not_ready" }, 404, this.env);
+    return jsonResponse(payload, 200, this.env);
+  }
+
   async refreshNewsStore(force = false) {
     const now = Date.now();
     const cacheMs = getNewsCacheMs(this.env);
@@ -1153,9 +1369,20 @@ export class BoardStore {
     const url = new URL(request.url);
     const postId = decodeURIComponent(url.pathname.replace(/^\/api\/board\/posts\/?/, ""));
 
+    if (request.method === "POST" && url.pathname === "/api/market-data") {
+      if (request.headers.get("X-Market-Data-Sync") !== "1") {
+        return jsonResponse({ error: "market_data_sync_required" }, 403, this.env);
+      }
+      return this.writeMarketData(request);
+    }
+
     if (isProtectedContentPath(url)) {
       const authResponse = await requireAuth(request, this.env);
       if (authResponse) return authResponse;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/market-data") {
+      return this.handleMarketDataRequest(request, url);
     }
 
     if (request.method === "GET" && url.pathname === "/api/news") {
@@ -1351,6 +1578,20 @@ export default {
     if (request.method === "OPTIONS") return optionsResponse(env);
 
     const url = new URL(request.url);
+    if (url.pathname === "/api/market-data" && request.method === "POST") {
+      const authResponse = await requireGithubOidc(request, env);
+      if (authResponse) return authResponse;
+      if (!env.BOARD_STORE) return jsonResponse({ error: "market_data_storage_not_configured" }, 500, env);
+      const id = env.BOARD_STORE.idFromName("free-board");
+      const headers = new Headers(request.headers);
+      headers.set("X-Market-Data-Sync", "1");
+      return env.BOARD_STORE.get(id).fetch(new Request(request.url, {
+        method: request.method,
+        headers,
+        body: request.body,
+      }));
+    }
+
     if (request.method === "GET" && url.pathname.startsWith("/api/board/media/")) {
       const authResponse = await requireAuth(request, env);
       if (authResponse) return authResponse;
@@ -1373,6 +1614,11 @@ export default {
     if (isProtectedContentPath(url)) {
       const authResponse = await requireAuth(request, env);
       if (authResponse) return authResponse;
+    }
+    if (url.pathname === "/api/market-data" && request.method === "GET") {
+      if (!env.BOARD_STORE) return jsonResponse({ error: "market_data_storage_not_configured" }, 500, env);
+      const id = env.BOARD_STORE.idFromName("free-board");
+      return env.BOARD_STORE.get(id).fetch(request);
     }
     if (url.pathname === "/api/news" && request.method === "GET") {
       if (!env.BOARD_STORE) return jsonResponse(await fetchCoinnessNewsSafely(env), 200, env);

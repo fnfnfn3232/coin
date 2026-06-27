@@ -2882,7 +2882,6 @@
   <script>
     window.SERVER_AUTH_API_BASE = "https://coin-board-auth.dlatl20000.workers.dev";
   </script>
-  <script src="./data.js?v=20260612-server-auth"></script>
   <script>
     const SITE_PASSWORD = "";
     const ADMIN_BUILD_VERSION = "server-traffic-2026-06-16-0938";
@@ -2907,7 +2906,6 @@
     const LOCK_TTL_MS = 24 * 60 * 60 * 1000;
     const LOCK_EXTEND_MAX = 3;
     const MANUAL_REFRESH_COOLDOWN_MS = 30 * 1000;
-    const REMOTE_DATA_URL = "https://raw.githubusercontent.com/fnfnfn3232/2026-04-22-spot-usdt/auto-data/data.js";
     const LIVE_MARKET_REFRESH_MS = 10 * 60 * 1000;
     const BOOT_REFRESH_THROTTLE_MS = 20 * 1000;
     const BOOT_REFRESH_LAST_KEY = "fdv_boot_refresh_last_v5";
@@ -3028,12 +3026,22 @@
 
     const appShell = document.getElementById("appShell");
     let data = window.BOARD_DATA || {
+      generatedAt: 0,
+      autoRefreshMinutes: 10,
       boards: { binance: [], upbit: [], bithumb: [], coinbase: [] },
-      stats: {},
+      coinInfo: {},
+      stats: {
+        binance: { total: 0, withCap: 0 },
+        upbit: { total: 0, withCap: 0 },
+        bithumb: { total: 0, withCap: 0 },
+        coinbase: { total: 0, withCap: 0 },
+      },
       notes: {},
-      news: { items: [] },
+      news: { source: "worker_protected", status: "protected", protected: true, items: [] },
     };
-    const cachedData = loadLastGoodData();
+    let marketDataLoaded = isValidBoardPayload(window.BOARD_DATA);
+    let marketDataLoadPromise = null;
+    const cachedData = hasServerAuth() && !isLocalPreview() ? null : loadLastGoodData();
     if (isValidBoardPayload(cachedData)) {
       const cachedGeneratedAt = Number(cachedData.generatedAt) || 0;
       const currentGeneratedAt = Number(data.generatedAt) || 0;
@@ -5067,7 +5075,9 @@
         if (until > Date.now()) {
           hideSiteLock();
           renderLockTtl();
-          verifyServerSession().catch((error) => console.error(error));
+          verifyServerSession()
+            .then(() => fetchLatestBoardData())
+            .catch((error) => console.error(error));
           return;
         }
         localStorage.removeItem(LOCK_AUTH_UNTIL_KEY);
@@ -5083,6 +5093,8 @@
           try {
             lockError.textContent = "서버에서 확인 중입니다...";
             await loginWithServerPassword(value);
+            lockError.textContent = "\uCF54\uC778 \uB370\uC774\uD130\uB97C \uBD88\uB7EC\uC624\uB294 \uC911\uC785\uB2C8\uB2E4...";
+            await fetchLatestBoardData();
             setLockExtendCount(0);
             setLockAuthFor24Hours();
             hideSiteLock();
@@ -6391,7 +6403,7 @@
 
       function getDataSourceCandidates() {
         const ts = Date.now();
-        return [`${REMOTE_DATA_URL}?ts=${ts}`, `./data.js?ts=${ts}`];
+        return [`./data.js?ts=${ts}`];
       }
 
       async function fetchBoardDataScriptText(url) {
@@ -6466,6 +6478,35 @@
       }
 
       async function fetchLatestBoardData() {
+        if (marketDataLoadPromise) return marketDataLoadPromise;
+        if (hasServerAuth() && !isLocalPreview()) {
+          if (isSiteLocked()) throw new Error("site_locked");
+          const beforeGeneratedAt = Number(data.generatedAt) || 0;
+          marketDataLoadPromise = fetchServerAuth(`/api/market-data?ts=${Date.now()}`, { method: "GET", timeoutMs: 12000 })
+            .then((parsed) => {
+              if (!isValidBoardPayload(parsed)) {
+                throw new Error(parsed?.error || "market_data_invalid");
+              }
+              data = parsed;
+              window.BOARD_DATA = parsed;
+              marketDataLoaded = true;
+              normalizeKnownAssetIdentities();
+              normalizeKoreanAssetNames(parsed);
+              saveLastGoodData(data);
+              renderSummaryStats();
+              renderAutoStatus();
+              renderCurrentView();
+              return {
+                changed: Number(parsed.generatedAt || 0) !== beforeGeneratedAt,
+                generatedAt: Number(parsed.generatedAt || 0),
+              };
+            })
+            .finally(() => {
+              marketDataLoadPromise = null;
+            });
+          return marketDataLoadPromise;
+        }
+
         const beforeGeneratedAt = Number(data.generatedAt) || 0;
         let parsed = null;
         let lastError = null;
@@ -6494,6 +6535,7 @@
 
         data = parsed;
         window.BOARD_DATA = parsed;
+        marketDataLoaded = true;
         normalizeKnownAssetIdentities();
         normalizeKoreanAssetNames(parsed);
         saveLastGoodData(data);
@@ -7544,7 +7586,9 @@
       manualRefreshBtn.textContent = TEXT.manualRefresh;
       normalizeKnownAssetIdentities();
       normalizeKoreanAssetNames();
-      saveLastGoodData(data);
+      if (!hasServerAuth() || isLocalPreview() || marketDataLoaded) {
+        saveLastGoodData(data);
+      }
       renderSummaryStats();
       renderAutoStatus();
       renderManualRefreshState();
@@ -7626,6 +7670,7 @@
       let bootRefreshTimer = null;
       async function runAutoRefreshTick(mode = "interval") {
         if (autoRefreshInFlight) return;
+        if (isSiteLocked()) return;
         if (mode === "boot") {
           const now = Date.now();
           const remainMs = BOOT_REFRESH_THROTTLE_MS - (now - getBootRefreshLastTs());
