@@ -24,7 +24,9 @@ The current frontend is wired to use this API when `window.SERVER_AUTH_API_BASE`
 - `SESSION_SECRET`
   - Long random string used to sign session cookies.
 - `NEWS_LIMIT`
-  - Optional. Default behavior in code caps this at 100.
+  - Optional. Coinness currently accepts up to 40 per fetch; keep this at `40`.
+- `NEWS_STORE_LIMIT`
+  - Optional. The Worker keeps up to 1000 merged Coinness items for paging and search.
 - `NEWS_BODY_MODE`
   - Optional. Use `preview` by default.
   - `full` returns full Coinness text only after login, but this can still carry content-license risk.
@@ -56,7 +58,7 @@ Content-Type: application/json
 News:
 
 ```http
-GET /api/news
+GET /api/news?limit=40&offset=0&q=검색어
 Cookie: coin_board_session=...
 ```
 
