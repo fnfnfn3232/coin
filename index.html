@@ -3297,32 +3297,49 @@
 
       async function hydrateProtectedBoardMedia(root = document) {
         const scope = root instanceof Element || root instanceof Document ? root : document;
-        const nodes = scope.querySelectorAll("img, video");
-        nodes.forEach(async (node) => {
-          const originalUrl = node.dataset.protectedBoardMediaSrc || node.getAttribute("src") || "";
+        const loadProtectedMediaUrl = async (node, attrName, datasetPrefix, originalUrl, onLoaded) => {
           const mediaPath = getProtectedBoardMediaPath(originalUrl);
-          if (!mediaPath || node.dataset.protectedBoardMediaLoaded === "1" || node.dataset.protectedBoardMediaLoading === "1") return;
-          node.dataset.protectedBoardMediaSrc = originalUrl;
-          node.dataset.protectedBoardMediaLoading = "1";
+          const loadedKey = datasetPrefix + "Loaded";
+          const loadingKey = datasetPrefix + "Loading";
+          const srcKey = datasetPrefix + "Src";
+          const objectUrlKey = datasetPrefix + "ObjectUrl";
+          const errorKey = datasetPrefix + "Error";
+          if (!mediaPath || node.dataset[loadedKey] === "1" || node.dataset[loadingKey] === "1") return;
+          node.dataset[srcKey] = originalUrl;
+          node.dataset[loadingKey] = "1";
           try {
             const blob = await fetchServerAuthBlob(mediaPath, { method: "GET", timeoutMs: 30000 });
             const objectUrl = URL.createObjectURL(blob);
-            const previousUrl = node.dataset.protectedBoardMediaObjectUrl || "";
+            const previousUrl = node.dataset[objectUrlKey] || "";
             if (previousUrl) URL.revokeObjectURL(previousUrl);
-            node.dataset.protectedBoardMediaObjectUrl = objectUrl;
-            node.setAttribute("src", objectUrl);
-            node.dataset.protectedBoardMediaLoaded = "1";
-            if (node instanceof HTMLVideoElement) node.load();
+            node.dataset[objectUrlKey] = objectUrl;
+            node.setAttribute(attrName, objectUrl);
+            node.dataset[loadedKey] = "1";
+            if (typeof onLoaded === "function") onLoaded(node);
           } catch (error) {
             console.error("protected board media load failed", error);
-            node.dataset.protectedBoardMediaError = "1";
+            node.dataset[errorKey] = "1";
             node.setAttribute("title", "Failed to load attached media. Please refresh and try again.");
           } finally {
-            delete node.dataset.protectedBoardMediaLoading;
+            delete node.dataset[loadingKey];
           }
+        };
+
+        scope.querySelectorAll("img, video, source").forEach((node) => {
+          const originalUrl = node.dataset.protectedBoardMediaSrc || node.getAttribute("src") || "";
+          loadProtectedMediaUrl(node, "src", "protectedBoardMedia", originalUrl, (loadedNode) => {
+            if (loadedNode instanceof HTMLVideoElement) loadedNode.load();
+            if (typeof HTMLSourceElement !== "undefined" && loadedNode instanceof HTMLSourceElement && loadedNode.parentElement instanceof HTMLVideoElement) {
+              loadedNode.parentElement.load();
+            }
+          });
+        });
+
+        scope.querySelectorAll("video[poster]").forEach((node) => {
+          const originalUrl = node.dataset.protectedBoardPosterSrc || node.getAttribute("poster") || "";
+          loadProtectedMediaUrl(node, "poster", "protectedBoardPoster", originalUrl);
         });
       }
-
 
       async function downloadProtectedBoardAttachment(url, fileName = "attachment") {
         const mediaPath = getProtectedBoardMediaPath(url);
@@ -7285,10 +7302,14 @@
         const clickTarget = event.target instanceof Element ? event.target : event.target?.parentElement;
         if (!clickTarget) return;
 
-        const protectedDownloadLink = clickTarget.closest("[data-protected-board-download]");
+        const protectedDownloadLink = clickTarget.closest("[data-protected-board-download], a[href]");
         if (protectedDownloadLink) {
           const downloadUrl = protectedDownloadLink.dataset.protectedBoardDownload || protectedDownloadLink.getAttribute("href") || "";
-          const fileName = protectedDownloadLink.dataset.protectedBoardFileName || protectedDownloadLink.getAttribute("download") || "attachment";
+          const fileName = protectedDownloadLink.dataset.protectedBoardFileName
+            || protectedDownloadLink.getAttribute("download")
+            || protectedDownloadLink.textContent
+            || downloadUrl.split("/").pop()
+            || "attachment";
           if (getProtectedBoardMediaPath(downloadUrl)) {
             event.preventDefault();
             showFreeBoardMessage("첨부파일을 다운로드 중입니다...", false);
