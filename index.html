@@ -1256,6 +1256,13 @@
         gap: 7px;
       }
 
+      .free-board-compose-top {
+        display: grid;
+        grid-template-columns: minmax(240px, 420px) minmax(240px, 360px);
+        gap: 10px;
+        align-items: end;
+      }
+
       .free-board-field label {
         color: #bdd4df;
         font-size: 13px;
@@ -1904,6 +1911,7 @@
         .admin-grid,
         .admin-sections,
         .free-board-shell,
+        .free-board-compose-top,
         .free-board-media {
           grid-template-columns: 1fr;
         }
@@ -3696,14 +3704,20 @@
                     <h2 class="free-board-title">${freeBoardMode === "edit" ? "글 수정" : "글쓰기"}</h2>
                     <p class="free-board-desc">${freeBoardMode === "edit" ? "작성 시 정한 글 비밀번호로 수정합니다. 관리자모드가 켜져 있으면 비밀번호 없이 수정할 수 있습니다." : "글 등록용 비밀번호를 따로 정합니다. 이 비밀번호로 나중에 수정/삭제할 수 있습니다."}</p>
                   </div>
-                  <div class="free-board-field">
-                    <label for="freeBoardCategory">게시판</label>
-                    <select id="freeBoardCategory" name="category">
-                      ${getFreeBoardCategories()
-                        .filter((item) => item.value !== "all")
-                        .map((item) => `<option value="${escapeAttr(item.value)}"${selectedCategory === item.value ? " selected" : ""}>${escapeHtml(item.label)}</option>`)
-                        .join("")}
-                    </select>
+                  <div class="free-board-compose-top">
+                    <div class="free-board-field">
+                      <label for="freeBoardCategory">게시판</label>
+                      <select id="freeBoardCategory" name="category">
+                        ${getFreeBoardCategories()
+                          .filter((item) => item.value !== "all")
+                          .map((item) => `<option value="${escapeAttr(item.value)}"${selectedCategory === item.value ? " selected" : ""}>${escapeHtml(item.label)}</option>`)
+                          .join("")}
+                      </select>
+                    </div>
+                    <div class="free-board-field">
+                      <label for="freeBoardPassword">${freeBoardMode === "edit" ? "글 비밀번호" : "글 등록 비밀번호"}</label>
+                      <input id="freeBoardPassword" name="postPassword" type="password" autocomplete="off" placeholder="${freeBoardMode === "edit" && freeBoardAdminMode ? "관리자모드에서는 비워도 됩니다" : "수정/삭제에 사용할 비밀번호"}"${freeBoardMode === "edit" && freeBoardAdminMode ? "" : " required"} />
+                    </div>
                   </div>
                   <div class="free-board-field">
                     <label for="freeBoardTitle">제목</label>
@@ -3729,13 +3743,9 @@
                     <div class="free-board-compose-preview" id="freeBoardComposePreview" hidden></div>
                     <div class="free-board-help">첨부파일은 종류와 관계없이 파일 1개당 최대 200MB까지 가능합니다. HTML 사용을 체크해도 script, iframe, 이벤트 속성은 제거됩니다.</div>
                   </div>
-                  <div class="free-board-field">
-                    <label for="freeBoardPassword">${freeBoardMode === "edit" ? "글 비밀번호" : "글 등록 비밀번호"}</label>
-                    <input id="freeBoardPassword" name="postPassword" type="password" autocomplete="off" placeholder="${freeBoardMode === "edit" && freeBoardAdminMode ? "관리자모드에서는 비워도 됩니다" : "수정/삭제에 사용할 비밀번호"}"${freeBoardMode === "edit" && freeBoardAdminMode ? "" : " required"} />
-                  </div>
                   <div class="free-board-actions">
+                    <button class="free-board-list-btn" type="button" data-free-board-list>취소</button>
                     <button class="free-board-submit" type="submit">${freeBoardMode === "edit" ? "수정 완료" : "등록"}</button>
-                    <button class="free-board-list-btn" type="button" data-free-board-list>목록</button>
                     <span class="free-board-message${freeBoardMessageIsError ? " error" : ""}" id="freeBoardMessage">${escapeHtml(freeBoardMessage)}</span>
                   </div>
                 </form>
