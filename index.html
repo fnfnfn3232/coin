@@ -3642,6 +3642,7 @@
       let freeBoardPage = 1;
       let freeBoardSelectedId = "";
       let freeBoardCommentsCollapsed = false;
+      let freeBoardCommentSubmitting = false;
       let freeBoardServerPosts = [];
       let freeBoardPostsLoaded = false;
       let freeBoardPostsPromise = null;
@@ -3677,6 +3678,13 @@
           messageEl.textContent = freeBoardMessage;
           messageEl.classList.toggle("error", freeBoardMessageIsError);
         }
+      }
+
+      function setFreeBoardCommentSubmitting(form, isSubmitting) {
+        const submitButton = form?.querySelector("button[type='submit']");
+        if (!submitButton) return;
+        submitButton.disabled = Boolean(isSubmitting);
+        submitButton.textContent = isSubmitting ? "등록 중..." : "등록";
       }
 
       function normalizeFreeBoardPost(post) {
@@ -7291,6 +7299,9 @@
             showFreeBoardMessage("댓글 내용과 댓글 비밀번호를 입력해 주세요.", true);
             return;
           }
+          if (freeBoardCommentSubmitting) return;
+          freeBoardCommentSubmitting = true;
+          setFreeBoardCommentSubmitting(commentForm, true);
           try {
             showFreeBoardMessage("댓글을 등록 중입니다...", false);
             const comment = {
@@ -7317,6 +7328,9 @@
           } catch (error) {
             console.error(error);
             showFreeBoardMessage("댓글 등록에 실패했습니다. 입력 내용은 유지됩니다.", true);
+          } finally {
+            freeBoardCommentSubmitting = false;
+            setFreeBoardCommentSubmitting(commentForm, false);
           }
           return;
         }
