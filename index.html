@@ -1294,11 +1294,72 @@
       }
 
       .free-board-comments {
-        padding: 12px 0;
+        gap: 0;
+        margin-top: 4px;
+        padding: 0;
         border: 0;
         border-top: 1px solid rgba(151, 183, 198, 0.18);
+        border-bottom: 1px solid rgba(84, 104, 255, 0.48);
         border-radius: 0;
         background: transparent;
+      }
+
+      .free-board-comments-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        min-height: 45px;
+        padding: 0;
+        border-bottom: 1px solid rgba(84, 104, 255, 0.46);
+        color: #dfeaf0;
+        font-size: 14px;
+        font-weight: 850;
+      }
+
+      .free-board-comments-left,
+      .free-board-comments-tools,
+      .free-board-comments-sort {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        flex-wrap: wrap;
+      }
+
+      .free-board-comments-count strong {
+        color: #ffb79f;
+      }
+
+      .free-board-sort-item {
+        color: #dfeaf0;
+      }
+
+      .free-board-sort-item.active {
+        color: #9db8ff;
+      }
+
+      .free-board-comment-tool {
+        min-width: 0;
+        padding: 0;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        color: #dfeaf0;
+        font: inherit;
+        font-weight: 850;
+      }
+
+      .free-board-comment-tool:hover {
+        color: #8eefff;
+      }
+
+      .free-board-comments-tools .divider {
+        color: rgba(151, 183, 198, 0.36);
+      }
+
+      .free-board-comments.is-collapsed .free-board-comment-list,
+      .free-board-comments.is-collapsed .free-board-comment-form {
+        display: none;
       }
 
       .free-board-admin-log {
@@ -1344,38 +1405,115 @@
       }
 
       .free-board-comment-form {
-        grid-template-columns: minmax(100px, 150px) minmax(180px, 1fr) minmax(120px, 170px) auto;
+        grid-template-columns: minmax(150px, 200px) minmax(0, 1fr) minmax(105px, 135px);
+        gap: 16px;
+        align-items: stretch;
+        padding: 16px 16px 17px;
+        border-bottom: 1px solid rgba(84, 104, 255, 0.46);
       }
 
       .free-board-comment-list {
         display: grid;
-        gap: 8px;
+        gap: 0;
       }
 
       .free-board-comment {
         display: grid;
-        gap: 6px;
-        padding: 10px;
-        border: 1px solid rgba(151, 183, 198, 0.12);
-        border-radius: 12px;
-        background: rgba(9, 24, 34, 0.7);
+        grid-template-columns: minmax(130px, 220px) minmax(0, 1fr) auto;
+        gap: 16px;
+        align-items: start;
+        padding: 14px 0;
+        border-bottom: 1px solid rgba(151, 183, 198, 0.15);
+        background: transparent;
       }
 
       .free-board-comment-head {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        color: var(--muted);
+        display: grid;
+        gap: 4px;
+        align-content: start;
+        color: #a8b4bd;
         font-size: 12px;
+      }
+
+      .free-board-comment-author {
+        color: #dfeaf0;
+        font-weight: 850;
+      }
+
+      .free-board-comment-time {
+        color: #a8b4bd;
       }
 
       .free-board-comment-body {
         white-space: pre-wrap;
         color: #dff7ff;
-        font-size: 14px;
-        line-height: 1.55;
+        font-size: 15px;
+        line-height: 1.62;
         overflow-wrap: anywhere;
+      }
+
+      .free-board-comment-delete {
+        align-self: start;
+        white-space: nowrap;
+      }
+
+      .free-board-comment-fields {
+        display: grid;
+        gap: 8px;
+        align-content: start;
+      }
+
+      .free-board-comment-form input,
+      .free-board-comment-form textarea {
+        width: 100%;
+        border-radius: 2px;
+        background: rgba(255, 255, 255, 0.045);
+      }
+
+      .free-board-comment-editor {
+        min-height: 104px;
+        resize: vertical;
+      }
+
+      .free-board-comment-submit-wrap {
+        display: flex;
+        align-items: flex-end;
+        justify-content: flex-end;
+      }
+
+      .free-board-comment-form .free-board-submit {
+        width: 100%;
+        min-width: 105px;
+        border-radius: 3px;
+      }
+
+      .free-board-comment-list .free-board-empty {
+        padding: 16px 0;
+        border-bottom: 1px solid rgba(151, 183, 198, 0.15);
+      }
+
+      .free-board-detail-actions {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding-top: 14px;
+      }
+
+      .free-board-detail-actions-left,
+      .free-board-detail-actions-right {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .free-board-detail-actions .free-board-list-btn,
+      .free-board-detail-actions .free-board-submit,
+      .free-board-detail-actions .free-board-delete {
+        min-width: 88px;
+        border-radius: 3px;
+        padding: 10px 16px;
       }
 
       .free-board-title {
@@ -2137,6 +2275,85 @@
 
         .free-board-attachments {
           padding: 8px 0;
+        }
+
+        .free-board-comments {
+          margin-top: 2px;
+        }
+
+        .free-board-comments-head {
+          align-items: flex-start;
+          min-height: 0;
+          padding: 10px 0;
+          font-size: 12px;
+        }
+
+        .free-board-comments-tools {
+          justify-content: flex-start;
+        }
+
+        .free-board-comment {
+          grid-template-columns: 1fr;
+          gap: 7px;
+          padding: 12px 0;
+        }
+
+        .free-board-comment-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
+
+        .free-board-comment-body {
+          font-size: 13px;
+          line-height: 1.62;
+        }
+
+        .free-board-comment-delete {
+          justify-self: start;
+        }
+
+        .free-board-comment-form {
+          grid-template-columns: 1fr;
+          gap: 8px;
+          padding: 12px 0;
+        }
+
+        .free-board-comment-editor {
+          min-height: 96px;
+          font-size: 13px;
+        }
+
+        .free-board-comment-submit-wrap {
+          justify-content: stretch;
+        }
+
+        .free-board-detail-actions {
+          flex-direction: column;
+          align-items: stretch;
+          padding-top: 12px;
+        }
+
+        .free-board-detail-actions-left,
+        .free-board-detail-actions-right {
+          display: grid;
+        }
+
+        .free-board-detail-actions-left {
+          grid-template-columns: 1fr;
+        }
+
+        .free-board-detail-actions-right {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+
+        .free-board-detail-actions .free-board-list-btn,
+        .free-board-detail-actions .free-board-submit,
+        .free-board-detail-actions .free-board-delete {
+          width: 100%;
+          min-width: 0;
         }
 
         .free-board-body {
@@ -3057,6 +3274,7 @@
       let freeBoardQuery = "";
       let freeBoardPage = 1;
       let freeBoardSelectedId = "";
+      let freeBoardCommentsCollapsed = false;
       let freeBoardServerPosts = [];
       let freeBoardPostsLoaded = false;
       let freeBoardPostsPromise = null;
@@ -3936,22 +4154,43 @@
           ? comments.map((comment) => `
               <div class="free-board-comment">
                 <div class="free-board-comment-head">
-                  <span>${escapeHtml(comment.author || "익명")} · ${escapeHtml(formatFreeBoardTime(comment.createdAt))}</span>
-                  <button class="free-board-delete" type="button" data-free-board-comment-delete="${escapeAttr(comment.id)}">댓글 삭제</button>
+                  <span class="free-board-comment-author">${escapeHtml(comment.author || "익명")}</span>
+                  <span class="free-board-comment-time">${escapeHtml(formatFreeBoardDetailTime(comment.createdAt))}</span>
                 </div>
                 <div class="free-board-comment-body">${escapeHtml(comment.body)}</div>
+                <button class="free-board-delete free-board-comment-delete" type="button" data-free-board-comment-delete="${escapeAttr(comment.id)}">삭제</button>
               </div>
             `).join("")
           : `<div class="free-board-empty">아직 댓글이 없습니다.</div>`;
         return `
-          <section class="free-board-comments">
-            <h3 class="free-board-title">댓글 ${formatNumber(comments.length, 0)}개</h3>
+          <section class="free-board-comments${freeBoardCommentsCollapsed ? " is-collapsed" : ""}">
+            <div class="free-board-comments-head">
+              <div class="free-board-comments-left">
+                <span class="free-board-comments-count">전체 댓글 <strong>${formatNumber(comments.length, 0)}개</strong></span>
+                <span class="free-board-comments-sort" aria-label="댓글 정렬">
+                  <span class="free-board-sort-item active">등록순</span>
+                  <span class="free-board-sort-item">최신순</span>
+                  <span class="free-board-sort-item">답글순</span>
+                </span>
+              </div>
+              <div class="free-board-comments-tools">
+                <button class="free-board-comment-tool" type="button" data-free-board-body-top>본문 보기</button>
+                <span class="divider">|</span>
+                <button class="free-board-comment-tool" type="button" data-free-board-comments-toggle>${freeBoardCommentsCollapsed ? "댓글열기" : "댓글닫기"}</button>
+                <span class="divider">|</span>
+                <button class="free-board-comment-tool" type="button" data-free-board-comments-refresh>새로고침</button>
+              </div>
+            </div>
             <div class="free-board-comment-list">${commentItems}</div>
             <form class="free-board-comment-form" id="freeBoardCommentForm">
-              <input name="author" type="text" maxlength="40" autocomplete="off" placeholder="글쓴이(익명 가능)" />
-              <input name="body" type="text" maxlength="3000" autocomplete="off" placeholder="댓글 내용" required />
-              <input name="commentPassword" type="password" autocomplete="off" placeholder="댓글 비밀번호" required />
-              <button class="free-board-submit" type="submit">댓글 등록</button>
+              <div class="free-board-comment-fields">
+                <input name="author" type="text" maxlength="40" autocomplete="off" placeholder="닉네임" />
+                <input name="commentPassword" type="password" autocomplete="off" placeholder="비밀번호" required />
+              </div>
+              <textarea class="free-board-comment-editor" name="body" maxlength="3000" autocomplete="off" placeholder="댓글을 입력하세요." required></textarea>
+              <div class="free-board-comment-submit-wrap">
+                <button class="free-board-submit" type="submit">등록</button>
+              </div>
             </form>
           </section>
         `;
@@ -3989,14 +4228,19 @@
                     ${renderFreeBoardMedia(selectedPost.mediaUrls)}
                   </div>
                   ${renderFreeBoardAttachments(validateEmbeddedMediaTokens(selectedPost.body).tokens)}
-                  <div class="free-board-actions">
-                    <button class="free-board-list-btn" type="button" data-free-board-list>목록</button>
-                    <button class="free-board-list-btn" type="button" data-free-board-edit="${escapeAttr(selectedPost.id)}">수정</button>
-                    <button class="free-board-delete" type="button" data-free-board-delete="${escapeAttr(selectedPost.id)}">삭제</button>
-                  </div>
                 </article>
               </section>
               ${renderFreeBoardComments(selectedPost)}
+              <div class="free-board-detail-actions">
+                <div class="free-board-detail-actions-left">
+                  <button class="free-board-list-btn" type="button" data-free-board-list>전체글</button>
+                </div>
+                <div class="free-board-detail-actions-right">
+                  <button class="free-board-list-btn" type="button" data-free-board-edit="${escapeAttr(selectedPost.id)}">수정</button>
+                  <button class="free-board-delete" type="button" data-free-board-delete="${escapeAttr(selectedPost.id)}">삭제</button>
+                  <button class="free-board-submit" type="button" data-free-board-write>글쓰기</button>
+                </div>
+              </div>
             </div>
           `;
           return;
@@ -6614,6 +6858,34 @@
         const clickTarget = event.target instanceof Element ? event.target : event.target?.parentElement;
         if (!clickTarget) return;
 
+        if (clickTarget.closest("[data-free-board-body-top]")) {
+          newsPanel.querySelector(".free-board-read")?.scrollIntoView({ block: "start", behavior: "smooth" });
+          return;
+        }
+
+        if (clickTarget.closest("[data-free-board-comments-toggle]")) {
+          freeBoardCommentsCollapsed = !freeBoardCommentsCollapsed;
+          renderFreeBoard();
+          return;
+        }
+
+        if (clickTarget.closest("[data-free-board-comments-refresh]")) {
+          if (!hasFreeBoardServer()) {
+            renderFreeBoard();
+            return;
+          }
+          showFreeBoardMessage("댓글을 새로고침 중입니다.", false);
+          try {
+            await fetchFreeBoardPosts(true);
+            showFreeBoardMessage("", false);
+          } catch (error) {
+            console.error(error);
+            showFreeBoardMessage("댓글을 새로고침하지 못했습니다. 잠시 후 다시 시도해 주세요.", true);
+          }
+          if (state.viewMode === "board" && freeBoardMode === "read") renderFreeBoard();
+          return;
+        }
+
         const uploadButton = clickTarget.closest("[data-free-board-upload-media]");
         if (uploadButton) {
           const fileInput = document.getElementById("freeBoardFileInput");
@@ -6753,6 +7025,7 @@
             }
             freeBoardSelectedId = id;
             freeBoardMode = "read";
+            freeBoardCommentsCollapsed = false;
             renderFreeBoard();
             writeAppHistoryState();
           }
