@@ -3437,6 +3437,29 @@
         return `${fileName} ${percent}% (${formatBytes(uploadedBytes)} / ${formatBytes(totalBytes)})`;
       }
 
+      function waitForUploadRetry(ms) {
+        return new Promise((resolve) => window.setTimeout(resolve, ms));
+      }
+
+      function isRetryableUploadError(error) {
+        const status = Math.max(0, Math.floor(Number(error?.status) || 0));
+        return !status || status === 408 || status === 425 || status === 429 || status >= 500;
+      }
+
+      async function fetchServerAuthWithUploadRetry(path, options, retryCount = 2) {
+        let lastError = null;
+        for (let attempt = 0; attempt <= retryCount; attempt += 1) {
+          try {
+            return await fetchServerAuth(path, options);
+          } catch (error) {
+            lastError = error;
+            if (attempt >= retryCount || !isRetryableUploadError(error)) throw error;
+            await waitForUploadRetry(700 * (attempt + 1));
+          }
+        }
+        throw lastError || new Error("upload_failed");
+      }
+
       async function uploadFreeBoardAttachment(file, onProgress = null) {
         const contentType = String(file?.type || "application/octet-stream").toLowerCase() || "application/octet-stream";
         if (!file?.size || file.size > FREE_BOARD_MAX_UPLOAD_FILE_BYTES) {
@@ -3475,7 +3498,7 @@
           const start = index * chunkSize;
           const end = Math.min(start + chunkSize, file.size);
           const chunk = file.slice(start, end, "application/octet-stream");
-          await fetchServerAuth(`/api/board/media/uploads/${encodeURIComponent(uploadId)}/chunks/${index}`, {
+          await fetchServerAuthWithUploadRetry(`/api/board/media/uploads/${encodeURIComponent(uploadId)}/chunks/${index}`, {
             method: "POST",
             timeoutMs: 60000,
             headers: { "Content-Type": "application/octet-stream" },
