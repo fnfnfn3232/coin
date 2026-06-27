@@ -4544,7 +4544,7 @@
             `).join("")
           : `<div class="free-board-empty">아직 댓글이 없습니다.</div>`;
         return `
-          <section class="free-board-comments${freeBoardCommentsCollapsed ? " is-collapsed" : ""}">
+          <section class="free-board-comments${freeBoardCommentsCollapsed ? " is-collapsed" : ""}" data-free-board-comments-section>
             <div class="free-board-comments-head">
               <div class="free-board-comments-left">
                 <span class="free-board-comments-count">전체 댓글 <strong>${formatNumber(comments.length, 0)}개</strong></span>
@@ -4572,6 +4572,41 @@
         `;
       }
 
+      function getSelectedFreeBoardPost() {
+        return loadFreeBoardPosts().find((post) => post.id === freeBoardSelectedId) || null;
+      }
+
+      function getFreeBoardCommentCount(post) {
+        const comments = Array.isArray(post?.comments) ? post.comments : [];
+        return Math.max(comments.length, Math.floor(Number(post?.commentCount) || 0));
+      }
+
+      function updateFreeBoardReadCommentCount(post) {
+        const count = getFreeBoardCommentCount(post);
+        newsPanel.querySelectorAll("[data-free-board-read-comment-count]").forEach((node) => {
+          node.textContent = `댓글 ${formatNumber(count, 0)}`;
+        });
+      }
+
+      function renderFreeBoardCommentsSection() {
+        if (state.viewMode !== "board" || freeBoardMode !== "read") return;
+        const post = getSelectedFreeBoardPost();
+        const currentSection = newsPanel.querySelector("[data-free-board-comments-section]");
+        if (!post || !currentSection) {
+          renderFreeBoard();
+          return;
+        }
+        const template = document.createElement("template");
+        template.innerHTML = renderFreeBoardComments(post).trim();
+        const nextSection = template.content.firstElementChild;
+        if (!nextSection) {
+          renderFreeBoard();
+          return;
+        }
+        currentSection.replaceWith(nextSection);
+        updateFreeBoardReadCommentCount(post);
+      }
+
       function renderFreeBoard() {
         const posts = loadFreeBoardPosts();
         const filteredPosts = getFilteredFreeBoardPosts(posts);
@@ -4595,7 +4630,7 @@
                       </div>
                       <div class="free-board-read-stats">
                         <span>조회 ${formatNumber(selectedPost.views, 0)}</span>
-                        <span>댓글 ${formatNumber(Array.isArray(selectedPost.comments) ? selectedPost.comments.length : 0, 0)}</span>
+                        <span data-free-board-read-comment-count>댓글 ${formatNumber(getFreeBoardCommentCount(selectedPost), 0)}</span>
                       </div>
                     </div>
                   </div>
@@ -5157,13 +5192,14 @@
         }
         if (hasFreeBoardServer()) {
           await deleteServerFreeBoardComment(id, targetCommentId, commentPassword, adminPassword);
+          await fetchFreeBoardPosts(true);
         } else {
           post.comments = (post.comments || []).filter((comment) => comment.id !== targetCommentId);
           post.commentCount = post.comments.length;
           saveFreeBoardPosts(posts);
         }
         showFreeBoardMessage("댓글을 삭제했습니다.", false);
-        renderFreeBoard();
+        renderFreeBoardCommentsSection();
         return true;
       }
 
@@ -7245,6 +7281,7 @@
             };
             if (hasFreeBoardServer()) {
               await createServerFreeBoardComment(postId, comment, commentPassword);
+              await fetchFreeBoardPosts(true);
             } else {
               const posts = loadFreeBoardPosts();
               const target = posts.find((post) => post.id === postId);
@@ -7256,7 +7293,7 @@
             }
             commentForm.reset();
             showFreeBoardMessage("댓글을 등록했습니다.", false);
-            renderFreeBoard();
+            renderFreeBoardCommentsSection();
           } catch (error) {
             console.error(error);
             showFreeBoardMessage("댓글 등록에 실패했습니다. 입력 내용은 유지됩니다.", true);
@@ -7421,13 +7458,13 @@
 
         if (clickTarget.closest("[data-free-board-comments-toggle]")) {
           freeBoardCommentsCollapsed = !freeBoardCommentsCollapsed;
-          renderFreeBoard();
+          renderFreeBoardCommentsSection();
           return;
         }
 
         if (clickTarget.closest("[data-free-board-comments-refresh]")) {
           if (!hasFreeBoardServer()) {
-            renderFreeBoard();
+            renderFreeBoardCommentsSection();
             return;
           }
           showFreeBoardMessage("댓글을 새로고침 중입니다.", false);
@@ -7438,7 +7475,7 @@
             console.error(error);
             showFreeBoardMessage("댓글을 새로고침하지 못했습니다. 잠시 후 다시 시도해 주세요.", true);
           }
-          if (state.viewMode === "board" && freeBoardMode === "read") renderFreeBoard();
+          renderFreeBoardCommentsSection();
           return;
         }
 
