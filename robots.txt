@@ -1,0 +1,3 @@
+User-agent: *
+Disallow: /2026-04-22-spot-usdt/
+Noindex: /2026-04-22-spot-usdt/
