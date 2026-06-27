@@ -1176,6 +1176,12 @@
         padding: 14px;
       }
 
+      .free-board-read-card {
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+      }
+
       .free-board-read-head {
         display: grid;
         gap: 8px;
@@ -1192,11 +1198,51 @@
       }
 
       .free-board-read-body {
-        min-height: 260px;
-        padding: 18px;
-        border: 1px solid rgba(151, 183, 198, 0.14);
-        border-radius: 12px;
-        background: rgba(4, 14, 22, 0.72);
+        min-height: 180px;
+        padding: 8px 0 16px;
+      }
+
+      .free-board-attachments {
+        display: grid;
+        gap: 8px;
+        padding: 10px 0;
+        border-top: 1px solid rgba(151, 183, 198, 0.14);
+      }
+
+      .free-board-attachments-title {
+        color: #bdd4df;
+        font-size: 13px;
+        font-weight: 850;
+      }
+
+      .free-board-attachment-list {
+        display: grid;
+        gap: 6px;
+      }
+
+      .free-board-attachment-link {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        min-width: 0;
+        padding: 8px 0;
+        color: #dff7ff;
+        text-decoration: none;
+      }
+
+      .free-board-attachment-name {
+        min-width: 0;
+        overflow-wrap: anywhere;
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      .free-board-attachment-size {
+        flex: 0 0 auto;
+        color: #8fa0aa;
+        font-size: 12px;
+        font-weight: 750;
       }
 
       .free-board-admin-box,
@@ -2039,10 +2085,14 @@
 
         .free-board-read-body {
           min-height: 0;
-          padding: 10px 0;
+          padding: 8px 0 12px;
           border: 0;
           border-radius: 0;
           background: transparent;
+        }
+
+        .free-board-attachments {
+          padding: 8px 0;
         }
 
         .free-board-body {
@@ -3395,7 +3445,7 @@
       function renderFreeBoardMediaSizes(tokens) {
         let visibleIndex = 0;
         const items = (tokens || [])
-          .filter((token) => token.actualKind && token.actualKind === token.requestedKind)
+          .filter((token) => token.actualKind && token.actualKind === token.requestedKind && token.actualKind !== "file")
           .map((token) => {
             const size = Math.max(0, Math.floor(Number(token.meta?.size) || 0));
             if (!size) return "";
@@ -3413,6 +3463,29 @@
         `;
       }
 
+      function renderFreeBoardAttachments(tokens) {
+        const items = (tokens || [])
+          .filter((token) => token.actualKind === "file" && token.requestedKind === "file" && isSafeAttachmentUrl(token.url))
+          .map((token) => {
+            const fileName = String(token.meta?.name || "첨부파일").trim() || "첨부파일";
+            const size = Math.max(0, Math.floor(Number(token.meta?.size) || 0));
+            const sizeHtml = size ? `<span class="free-board-attachment-size">${escapeHtml(formatBytes(size))}</span>` : "";
+            return `
+              <a class="free-board-attachment-link" href="${escapeAttr(token.url)}" target="_blank" rel="noopener noreferrer" download>
+                <span class="free-board-attachment-name">${escapeHtml(fileName)}</span>
+                ${sizeHtml}
+              </a>
+            `;
+          });
+        if (!items.length) return "";
+        return `
+          <section class="free-board-attachments">
+            <div class="free-board-attachments-title">첨부파일</div>
+            <div class="free-board-attachment-list">${items.join("")}</div>
+          </section>
+        `;
+      }
+
       function renderTextWithMediaTokens(value) {
         const pattern = /\[(image|video|file):([^\]\r\n]+)\]/gi;
         const text = String(value || "");
@@ -3424,6 +3497,10 @@
           if (before) parts.push(escapeHtml(before));
           const kind = String(match[1] || "").toLowerCase();
           const { url, meta } = parseMediaTokenPayload(match[2]);
+          if (kind === "file") {
+            lastIndex = pattern.lastIndex;
+            continue;
+          }
           const media = renderMediaTag(url, kind, meta);
           parts.push(media || escapeHtml(match[0]));
           lastIndex = pattern.lastIndex;
@@ -3510,6 +3587,7 @@
         const pattern = /\[(image|video|file):([^\]\r\n]+)\]/gi;
         const placeholders = [];
         const withPlaceholders = text.replace(pattern, (full, kind, payload) => {
+          if (String(kind || "").toLowerCase() === "file") return "";
           const { url, meta } = parseMediaTokenPayload(payload);
           const media = renderMediaTag(url, String(kind || "").toLowerCase(), meta);
           if (!media) return full;
@@ -3536,7 +3614,8 @@
             }
             const text = segment.trim();
             if (!text) return "";
-            return `<div class="free-board-text">${renderTextWithMediaTokens(text)}</div>`;
+            const renderedText = renderTextWithMediaTokens(text).trim();
+            return renderedText ? `<div class="free-board-text">${renderedText}</div>` : "";
           })
           .filter(Boolean)
           .join("");
@@ -3834,7 +3913,7 @@
         if (freeBoardMode === "read" && selectedPost) {
           newsPanel.innerHTML = `
             <div class="free-board-shell">
-              <section class="free-board-card">
+              <section class="free-board-card free-board-read-card">
                 <article class="free-board-read">
                   <div class="free-board-read-head">
                     <div class="free-board-meta">${escapeHtml(freeBoardCategoryLabel(selectedPost.category))} · ${escapeHtml(selectedPost.author || "익명")} · ${escapeHtml(formatFreeBoardTime(selectedPost.createdAt))} · 조회 ${formatNumber(selectedPost.views, 0)}</div>
@@ -3844,7 +3923,7 @@
                     <div class="free-board-body">${renderSafePostBody(selectedPost.body, selectedPost.htmlEnabled)}</div>
                     ${renderFreeBoardMedia(selectedPost.mediaUrls)}
                   </div>
-                  ${renderFreeBoardMediaSizes(validateEmbeddedMediaTokens(selectedPost.body).tokens)}
+                  ${renderFreeBoardAttachments(validateEmbeddedMediaTokens(selectedPost.body).tokens)}
                   <div class="free-board-actions">
                     <button class="free-board-list-btn" type="button" data-free-board-list>목록</button>
                     <button class="free-board-list-btn" type="button" data-free-board-edit="${escapeAttr(selectedPost.id)}">수정</button>
