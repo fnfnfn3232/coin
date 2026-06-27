@@ -725,6 +725,17 @@ def fetch_coinness_news(previous_news: dict | None = None) -> dict:
         }
 
 
+def make_protected_news_payload() -> dict:
+    return {
+        "source": "worker_protected",
+        "status": "protected",
+        "retentionDays": 0,
+        "fetchedAt": int(time.time()),
+        "protected": True,
+        "items": [],
+    }
+
+
 def build_name_keys(name: str, english_name: str, korean_name: str) -> set[str]:
     return {
         key
@@ -2373,7 +2384,7 @@ def make_payload(previous_payload: dict | None = None) -> dict:
         coinbase_rows = guard_rows
         refresh_issues["coinbase"] = f"fallback_previous_payload:{guard_reason}"
 
-    news_payload = fetch_coinness_news((previous_payload or {}).get("news"))
+    news_payload = make_protected_news_payload()
     apply_upbit_live_fills(upbit_rows, binance_rows, bithumb_rows)
     apply_upbit_targeted_fills(upbit_rows, bithumb_rows)
     apply_bithumb_supply_fills(bithumb_rows, upbit_rows, binance_rows)

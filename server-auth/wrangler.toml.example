@@ -6,7 +6,6 @@ compatibility_date = "2026-06-12"
 FRONTEND_ORIGIN = "https://fnfnfn3232.github.io"
 NEWS_LIMIT = "40"
 NEWS_STORE_LIMIT = "1000"
-NEWS_SEED_URL = "https://fnfnfn3232.github.io/2026-04-22-spot-usdt/data.js"
 NEWS_BODY_MODE = "preview"
 NEWS_CACHE_SECONDS = "600"
 
