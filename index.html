@@ -2885,6 +2885,7 @@
     const ADMIN_BUILD_VERSION = "server-traffic-2026-06-16-0938";
     const LOCK_AUTH_UNTIL_KEY = "fdv_lock_until_server_v1";
     const LOCK_EXTEND_COUNT_KEY = "fdv_lock_extend_count_server_v1";
+    const SERVER_AUTH_TOKEN_KEY = "fdv_server_auth_token_v1";
     const MANUAL_REFRESH_LAST_KEY = "fdv_manual_refresh_last_v1";
     const ADMIN_TRAFFIC_KEY = "fdv_admin_traffic_v1";
     const USAGE_BEACON_SENT_KEY = "fdv_usage_beacon_sent_v1";
@@ -3143,8 +3144,30 @@
         return document.body.classList.contains("locked") && !siteLock.classList.contains("hidden");
       }
 
+      function getServerAuthToken() {
+        try {
+          return String(localStorage.getItem(SERVER_AUTH_TOKEN_KEY) || "");
+        } catch (_error) {
+          return "";
+        }
+      }
+
+      function setServerAuthToken(token) {
+        try {
+          const value = String(token || "");
+          if (value) {
+            localStorage.setItem(SERVER_AUTH_TOKEN_KEY, value);
+          } else {
+            localStorage.removeItem(SERVER_AUTH_TOKEN_KEY);
+          }
+        } catch (_error) {
+          // If storage is unavailable, the Worker cookie remains as a fallback.
+        }
+      }
+
       function handleServerAuthExpired() {
         if (!hasServerAuth() || isLocalPreview()) return;
+        setServerAuthToken("");
         localStorage.removeItem(LOCK_AUTH_UNTIL_KEY);
         localStorage.removeItem(LOCK_EXTEND_COUNT_KEY);
         renderLockTtl();
@@ -3167,6 +3190,10 @@
         const headers = { ...(fetchOptions.headers || {}) };
         if (fetchOptions.body && !headers["Content-Type"] && !headers["content-type"]) {
           headers["Content-Type"] = "application/json";
+        }
+        const token = getServerAuthToken();
+        if (token && !headers.Authorization && !headers.authorization && path !== "/api/login") {
+          headers.Authorization = `Bearer ${token}`;
         }
         let response;
         try {
@@ -3194,6 +3221,9 @@
             handleServerAuthExpired();
           }
           throw error;
+        }
+        if (payload?.token) {
+          setServerAuthToken(payload.token);
         }
         return payload;
       }

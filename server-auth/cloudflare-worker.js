@@ -82,7 +82,7 @@ function optionsResponse(env) {
     headers: {
       "Access-Control-Allow-Origin": env.FRONTEND_ORIGIN || "",
       "Access-Control-Allow-Credentials": "true",
-      "Access-Control-Allow-Headers": "Content-Type, X-File-Name",
+      "Access-Control-Allow-Headers": "Authorization, Content-Type, X-File-Name",
       "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
       "Access-Control-Max-Age": "86400",
       "Vary": "Origin",
@@ -138,17 +138,30 @@ function getCookie(request, name) {
   return "";
 }
 
-async function createSessionCookie(env) {
+function getBearerToken(request) {
+  const header = request.headers.get("Authorization") || "";
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1].trim() : "";
+}
+
+async function createSessionToken(env) {
   const exp = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
   const nonce = crypto.randomUUID();
   const payload = `${exp}.${nonce}`;
   const signature = await hmacHex(env.SESSION_SECRET, payload);
-  const token = `${payload}.${signature}`;
+  return `${payload}.${signature}`;
+}
+
+function sessionCookie(token) {
   return `${COOKIE_NAME}=${token}; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=${SESSION_TTL_SECONDS}`;
 }
 
+async function createSessionCookie(env) {
+  return sessionCookie(await createSessionToken(env));
+}
+
 async function isAuthenticated(request, env) {
-  const token = getCookie(request, COOKIE_NAME);
+  const token = getCookie(request, COOKIE_NAME) || getBearerToken(request);
   const parts = token.split(".");
   if (parts.length !== 3) return false;
   const [expText, nonce, signature] = parts;
@@ -897,9 +910,10 @@ async function handleLogin(request, env) {
   if (!timingSafeEqual(passwordHash, env.SITE_PASSWORD_SHA256)) {
     return jsonResponse({ error: "invalid_password" }, 401, env);
   }
+  const token = await createSessionToken(env);
   const headers = new Headers(jsonResponse({ ok: true }, 200, env).headers);
-  headers.append("Set-Cookie", await createSessionCookie(env));
-  return new Response(JSON.stringify({ ok: true }), { status: 200, headers });
+  headers.append("Set-Cookie", sessionCookie(token));
+  return new Response(JSON.stringify({ ok: true, token }), { status: 200, headers });
 }
 
 function handleLogout(env) {
@@ -911,9 +925,10 @@ function handleLogout(env) {
 async function handleSession(request, env) {
   const authResponse = await requireAuth(request, env);
   if (authResponse) return authResponse;
+  const token = await createSessionToken(env);
   const headers = new Headers(jsonResponse({ ok: true }, 200, env).headers);
-  headers.append("Set-Cookie", await createSessionCookie(env));
-  return new Response(JSON.stringify({ ok: true }), { status: 200, headers });
+  headers.append("Set-Cookie", sessionCookie(token));
+  return new Response(JSON.stringify({ ok: true, token }), { status: 200, headers });
 }
 
 export class BoardStore {
