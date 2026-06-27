@@ -15,7 +15,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+  id-token: write
 
 concurrency:
   group: auto-refresh-data
@@ -51,19 +52,25 @@ jobs:
           echo "Build failed after retries"
           exit 1
 
-      - name: Publish latest data to auto-data branch
+      - name: Publish latest data to protected Worker
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MARKET_DATA_API_URL: "https://coin-board-auth.dlatl20000.workers.dev/api/market-data"
         run: |
           set -euo pipefail
-          mkdir -p _auto_data
-          cp data.js board_snapshot.json _auto_data/
-          cd _auto_data
-          git init -q
-          git checkout -B auto-data
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data.js board_snapshot.json
-          git commit -m "chore: auto refresh data"
-          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git push --force origin auto-data
+          token_response="$(curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=coin-board-auth-market-data")"
+          id_token="$(python -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<<"${token_response}")"
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsS \
+              -X POST \
+              -H "Authorization: Bearer ${id_token}" \
+              -H "Content-Type: application/json" \
+              --data-binary @board_snapshot.json \
+              "${MARKET_DATA_API_URL}"; then
+              echo "Protected market data publish succeeded on attempt ${attempt}"
+              exit 0
+            fi
+            echo "Protected market data publish failed on attempt ${attempt}"
+            sleep 20
+          done
+          echo "Protected market data publish failed after retries"
+          exit 1
