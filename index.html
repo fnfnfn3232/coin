@@ -236,6 +236,10 @@
       min-width: 0;
     }
 
+    .delete-auth-form {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto;
+    }
+
     .admin-actions {
       display: flex;
       gap: 8px;
@@ -1538,7 +1542,7 @@
 
       .free-board-compose-top {
         display: grid;
-        grid-template-columns: minmax(240px, 420px) minmax(240px, 360px);
+        grid-template-columns: minmax(180px, 360px) minmax(180px, 280px) minmax(180px, 280px);
         gap: 10px;
         align-items: end;
       }
@@ -2814,15 +2818,18 @@
         <div class="admin-head">
           <div>
             <h2 class="admin-title" id="deleteAuthTitle">글 삭제 확인</h2>
-            <p class="admin-desc">글은 글 비밀번호, 댓글은 댓글 비밀번호로 삭제합니다. 관리자모드가 켜져 있으면 바로 삭제됩니다.</p>
+            <p class="admin-desc" id="deleteAuthDesc">글은 글 비밀번호, 댓글은 댓글 비밀번호로 삭제합니다. 관리자 비밀번호로도 처리할 수 있습니다.</p>
           </div>
           <button class="admin-close" id="deleteAuthCloseBtn" type="button">닫기</button>
         </div>
-        <form class="admin-form" id="deleteAuthForm">
+        <form class="admin-form delete-auth-form" id="deleteAuthForm">
           <div class="lock-input-wrap">
             <input id="deleteAuthPasswordInput" type="password" autocomplete="off" placeholder="글/댓글 비밀번호" />
           </div>
-          <button type="submit">삭제</button>
+          <div class="lock-input-wrap">
+            <input id="deleteAuthAdminPasswordInput" type="password" autocomplete="off" placeholder="관리자 비밀번호" />
+          </div>
+          <button id="deleteAuthSubmitBtn" type="submit">삭제</button>
           <button class="admin-close" id="deleteAuthCancelBtn" type="button">취소</button>
         </form>
         <div class="admin-error" id="deleteAuthError"></div>
@@ -3072,7 +3079,11 @@
       const adminCancelBtn = document.getElementById("adminCancelBtn");
       const deleteAuthModal = document.getElementById("deleteAuthModal");
       const deleteAuthForm = document.getElementById("deleteAuthForm");
+      const deleteAuthTitle = document.getElementById("deleteAuthTitle");
+      const deleteAuthDesc = document.getElementById("deleteAuthDesc");
       const deleteAuthPasswordInput = document.getElementById("deleteAuthPasswordInput");
+      const deleteAuthAdminPasswordInput = document.getElementById("deleteAuthAdminPasswordInput");
+      const deleteAuthSubmitBtn = document.getElementById("deleteAuthSubmitBtn");
       const deleteAuthError = document.getElementById("deleteAuthError");
       const deleteAuthCloseBtn = document.getElementById("deleteAuthCloseBtn");
       const deleteAuthCancelBtn = document.getElementById("deleteAuthCancelBtn");
@@ -3303,6 +3314,9 @@
       let pendingDeletePostId = "";
       let pendingDeleteCommentId = "";
       let pendingDeleteType = "post";
+      let pendingAuthAction = "delete";
+      let freeBoardEditAuthPostPassword = "";
+      let freeBoardEditAuthAdminPassword = "";
       let isApplyingHistoryState = false;
       let liveNewsPromise = null;
       let liveNewsFetchedAtMs = 0;
@@ -4272,7 +4286,7 @@
                 <form class="free-board-form" id="freeBoardForm">
                   <div>
                     <h2 class="free-board-title">${freeBoardMode === "edit" ? "글 수정" : "글쓰기"}</h2>
-                    <p class="free-board-desc">${freeBoardMode === "edit" ? "작성 시 정한 글 비밀번호로 수정합니다. 관리자모드가 켜져 있으면 비밀번호 없이 수정할 수 있습니다." : "글 등록용 비밀번호를 따로 정합니다. 이 비밀번호로 나중에 수정/삭제할 수 있습니다."}</p>
+                    <p class="free-board-desc">${freeBoardMode === "edit" ? "작성 시 정한 글 비밀번호 또는 관리자 비밀번호로 수정합니다." : "글 등록용 비밀번호를 따로 정합니다. 이 비밀번호로 나중에 수정/삭제할 수 있습니다."}</p>
                   </div>
                   <div class="free-board-compose-top">
                     <div class="free-board-field">
@@ -4286,8 +4300,14 @@
                     </div>
                     <div class="free-board-field">
                       <label for="freeBoardPassword">${freeBoardMode === "edit" ? "글 비밀번호" : "글 등록 비밀번호"}</label>
-                      <input id="freeBoardPassword" name="postPassword" type="password" autocomplete="off" placeholder="${freeBoardMode === "edit" && freeBoardAdminMode ? "관리자모드에서는 비워도 됩니다" : "수정/삭제에 사용할 비밀번호"}"${freeBoardMode === "edit" && freeBoardAdminMode ? "" : " required"} />
+                      <input id="freeBoardPassword" name="postPassword" type="password" autocomplete="off" placeholder="${freeBoardMode === "edit" ? "글 비밀번호로 수정" : "수정/삭제에 사용할 비밀번호"}" value="${freeBoardMode === "edit" ? escapeAttr(freeBoardEditAuthPostPassword) : ""}"${freeBoardMode === "edit" ? "" : " required"} />
                     </div>
+                    ${freeBoardMode === "edit" ? `
+                      <div class="free-board-field">
+                        <label for="freeBoardEditAdminPassword">관리자 비밀번호</label>
+                        <input id="freeBoardEditAdminPassword" name="adminPassword" type="password" autocomplete="off" placeholder="관리자 비밀번호로 수정" value="${escapeAttr(freeBoardEditAuthAdminPassword)}" />
+                      </div>
+                    ` : ""}
                   </div>
                   <div class="free-board-field">
                     <label for="freeBoardTitle">제목</label>
@@ -4696,24 +4716,38 @@
         setAdminCapsWarning(false);
       }
 
-      function showDeleteAuthModal(postId, type = "post", commentId = "") {
+      function showDeleteAuthModal(postId, type = "post", commentId = "", action = "delete") {
         pendingDeletePostId = String(postId || "");
         pendingDeleteType = type === "comment" ? "comment" : "post";
         pendingDeleteCommentId = String(commentId || "");
+        pendingAuthAction = action === "edit" ? "edit" : "delete";
+        const isEdit = pendingAuthAction === "edit";
+        const isComment = pendingDeleteType === "comment";
+        deleteAuthTitle.textContent = isEdit ? "글 수정 확인" : (isComment ? "댓글 삭제 확인" : "글 삭제 확인");
+        deleteAuthDesc.textContent = isEdit
+          ? "글 비밀번호 또는 관리자 비밀번호를 입력하면 수정 화면으로 이동합니다."
+          : (isComment
+            ? "댓글 비밀번호 또는 관리자 비밀번호로 댓글을 삭제할 수 있습니다."
+            : "글 비밀번호 또는 관리자 비밀번호로 글을 삭제할 수 있습니다.");
+        deleteAuthSubmitBtn.textContent = isEdit ? "확인" : "삭제";
         deleteAuthModal.classList.remove("hidden");
         deleteAuthPasswordInput.value = "";
+        deleteAuthAdminPasswordInput.value = "";
         deleteAuthError.textContent = "";
-        deleteAuthPasswordInput.placeholder = pendingDeleteType === "comment" ? "댓글 비밀번호" : "글 비밀번호";
+        deleteAuthPasswordInput.placeholder = isComment ? "댓글 비밀번호" : "글 비밀번호";
+        deleteAuthAdminPasswordInput.placeholder = "관리자 비밀번호";
         window.setTimeout(() => deleteAuthPasswordInput.focus(), 0);
       }
 
       function closeDeleteAuthModal() {
         deleteAuthModal.classList.add("hidden");
         deleteAuthPasswordInput.value = "";
+        deleteAuthAdminPasswordInput.value = "";
         deleteAuthError.textContent = "";
         pendingDeletePostId = "";
         pendingDeleteCommentId = "";
         pendingDeleteType = "post";
+        pendingAuthAction = "delete";
       }
 
       async function deleteFreeBoardPostById(postId, postPassword = "", adminPassword = "") {
@@ -4939,21 +4973,37 @@
         event.preventDefault();
         const postId = pendingDeletePostId;
         const password = String(deleteAuthPasswordInput.value || "");
+        const adminPassword = String(deleteAuthAdminPasswordInput.value || "");
         if (!postId) {
           closeDeleteAuthModal();
           return;
         }
-        if (!password) {
-          deleteAuthError.textContent = pendingDeleteType === "comment" ? "댓글 비밀번호를 입력해 주세요." : "글 비밀번호를 입력해 주세요.";
+        if (!password && !adminPassword) {
+          deleteAuthError.textContent = pendingAuthAction === "edit"
+            ? "글 비밀번호 또는 관리자 비밀번호를 입력해 주세요."
+            : (pendingDeleteType === "comment"
+              ? "댓글 비밀번호 또는 관리자 비밀번호를 입력해 주세요."
+              : "글 비밀번호 또는 관리자 비밀번호를 입력해 주세요.");
           deleteAuthPasswordInput.focus();
+          return;
+        }
+        if (pendingAuthAction === "edit") {
+          freeBoardSelectedId = postId;
+          freeBoardMode = "edit";
+          freeBoardEditAuthPostPassword = password;
+          freeBoardEditAuthAdminPassword = adminPassword;
+          showFreeBoardMessage("", false);
+          closeDeleteAuthModal();
+          renderFreeBoard();
+          writeAppHistoryState();
           return;
         }
         try {
           deleteAuthError.textContent = "비밀번호 확인 중입니다...";
           if (pendingDeleteType === "comment") {
-            await deleteFreeBoardCommentById(postId, pendingDeleteCommentId, password, "");
+            await deleteFreeBoardCommentById(postId, pendingDeleteCommentId, password, adminPassword);
           } else {
-            await deleteFreeBoardPostById(postId, password, "");
+            await deleteFreeBoardPostById(postId, password, adminPassword);
           }
           closeDeleteAuthModal();
         } catch (error) {
@@ -4962,6 +5012,7 @@
             ? "비밀번호가 맞지 않습니다."
             : "서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.";
           deleteAuthPasswordInput.value = "";
+          deleteAuthAdminPasswordInput.value = "";
           deleteAuthPasswordInput.focus();
         }
       });
@@ -6784,14 +6835,21 @@
 
         const formData = new FormData(form);
         const postPassword = String(formData.get("postPassword") || "");
+        const editAdminPassword = String(formData.get("adminPassword") || "");
         const category = normalizeFreeBoardCategory(formData.get("category"));
         const title = String(formData.get("title") || "").trim();
         const author = String(formData.get("author") || "").trim();
         const body = convertPlainMediaUrlsToMediaTokens(String(formData.get("body") || "")).trim();
         const htmlEnabled = formData.get("htmlEnabled") === "on";
+        const effectivePostPassword = freeBoardMode === "edit"
+          ? (postPassword || freeBoardEditAuthPostPassword)
+          : postPassword;
+        const effectiveAdminPassword = freeBoardMode === "edit"
+          ? (editAdminPassword || freeBoardEditAuthAdminPassword || (freeBoardAdminMode ? freeBoardAdminPassword : ""))
+          : (freeBoardAdminMode ? freeBoardAdminPassword : "");
 
-        if (!postPassword && !(freeBoardMode === "edit" && freeBoardAdminMode)) {
-          showFreeBoardMessage("글 비밀번호를 입력해 주세요. 이 비밀번호로 수정/삭제합니다.", true);
+        if (freeBoardMode === "edit" ? (!effectivePostPassword && !effectiveAdminPassword) : !postPassword) {
+          showFreeBoardMessage(freeBoardMode === "edit" ? "글 비밀번호 또는 관리자 비밀번호를 입력해 주세요." : "글 비밀번호를 입력해 주세요. 이 비밀번호로 수정/삭제합니다.", true);
           return;
         }
         if (!title || !body) {
@@ -6821,11 +6879,13 @@
             target.updatedAt = Date.now();
             if (hasFreeBoardServer()) {
               showFreeBoardMessage("서버에 수정 중입니다...", false);
-              await updateServerFreeBoardPost(target.id, target, postPassword, freeBoardAdminMode ? freeBoardAdminPassword : "");
+              await updateServerFreeBoardPost(target.id, target, effectivePostPassword, effectiveAdminPassword);
             } else {
               saveFreeBoardPosts(posts);
             }
             form.reset();
+            freeBoardEditAuthPostPassword = "";
+            freeBoardEditAuthAdminPassword = "";
             showFreeBoardMessage("수정했습니다.", false);
             freeBoardMode = "read";
             renderFreeBoard();
@@ -6846,7 +6906,7 @@
           };
           if (hasFreeBoardServer()) {
             showFreeBoardMessage("서버에 등록 중입니다...", false);
-            await createServerFreeBoardPost(newPost, postPassword, freeBoardAdminMode ? freeBoardAdminPassword : "");
+            await createServerFreeBoardPost(newPost, postPassword, effectiveAdminPassword);
           } else {
             posts.unshift(newPost);
             saveFreeBoardPosts(posts);
@@ -6859,7 +6919,13 @@
           writeAppHistoryState();
         } catch (error) {
           console.error(error);
-          showFreeBoardMessage("서버 저장에 실패했습니다. 입력 내용은 유지되니 잠시 후 다시 시도해 주세요.", true);
+          const message = String(error?.message || "");
+          showFreeBoardMessage(
+            message.includes("server_auth_failed") || message.includes("401")
+              ? "비밀번호가 맞지 않습니다. 글 비밀번호 또는 관리자 비밀번호를 확인해 주세요."
+              : "서버 저장에 실패했습니다. 입력 내용은 유지되니 잠시 후 다시 시도해 주세요.",
+            true
+          );
         }
       });
 
@@ -7035,6 +7101,8 @@
             freeBoardSelectedId = id;
             freeBoardMode = "read";
             freeBoardCommentsCollapsed = false;
+            freeBoardEditAuthPostPassword = "";
+            freeBoardEditAuthAdminPassword = "";
             renderFreeBoard();
             writeAppHistoryState();
           }
@@ -7043,6 +7111,8 @@
 
         if (clickTarget.closest("[data-free-board-write]")) {
           freeBoardMode = "write";
+          freeBoardEditAuthPostPassword = "";
+          freeBoardEditAuthAdminPassword = "";
           showFreeBoardMessage("", false);
           renderFreeBoard();
           writeAppHistoryState();
@@ -7052,6 +7122,8 @@
         if (clickTarget.closest("[data-free-board-list]")) {
           freeBoardMode = "list";
           freeBoardSelectedId = "";
+          freeBoardEditAuthPostPassword = "";
+          freeBoardEditAuthAdminPassword = "";
           renderFreeBoard();
           writeAppHistoryState();
           return;
@@ -7059,11 +7131,10 @@
 
         const editButton = clickTarget.closest("[data-free-board-edit]");
         if (editButton) {
-          freeBoardSelectedId = String(editButton.dataset.freeBoardEdit || "");
-          freeBoardMode = "edit";
-          showFreeBoardMessage("", false);
-          renderFreeBoard();
-          writeAppHistoryState();
+          const postId = String(editButton.dataset.freeBoardEdit || "");
+          freeBoardEditAuthPostPassword = "";
+          freeBoardEditAuthAdminPassword = "";
+          showDeleteAuthModal(postId, "post", "", "edit");
           return;
         }
 
