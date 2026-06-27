@@ -3323,6 +3323,23 @@
         });
       }
 
+
+      async function downloadProtectedBoardAttachment(url, fileName = "attachment") {
+        const mediaPath = getProtectedBoardMediaPath(url);
+        if (!mediaPath) return false;
+        const blob = await fetchServerAuthBlob(mediaPath, { method: "GET", timeoutMs: 120000 });
+        const objectUrl = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = objectUrl;
+        link.download = String(fileName || "attachment").trim() || "attachment";
+        link.style.display = "none";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 30000);
+        return true;
+      }
+
       function getPerformanceTransferBytes() {
         try {
           const ownOrigin = location.origin;
@@ -3965,7 +3982,7 @@
           const fileName = String(meta?.name || "첨부파일").trim() || "첨부파일";
           const size = Math.max(0, Math.floor(Number(meta?.size) || 0));
           const sizeText = size ? ` · ${formatBytes(size)}` : "";
-          return `<a class="free-board-file-link" href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer" download><span class="free-board-file-name">${escapeHtml(fileName)}</span><span class="free-board-file-meta">첨부파일${escapeHtml(sizeText)}</span></a>`;
+          return `<a class="free-board-file-link" href="${escapeAttr(url)}" data-protected-board-download="${escapeAttr(url)}" data-protected-board-file-name="${escapeAttr(fileName)}" target="_blank" rel="noopener noreferrer" download><span class="free-board-file-name">${escapeHtml(fileName)}</span><span class="free-board-file-meta">첨부파일${escapeHtml(sizeText)}</span></a>`;
         }
         const kind = getSafeMediaKind(url);
         if (!kind || (preferredKind && preferredKind !== kind)) return "";
@@ -4016,7 +4033,7 @@
             const size = Math.max(0, Math.floor(Number(token.meta?.size) || 0));
             const sizeHtml = size ? `<span class="free-board-attachment-size">${escapeHtml(formatBytes(size))}</span>` : "";
             return `
-              <a class="free-board-attachment-link" href="${escapeAttr(token.url)}" target="_blank" rel="noopener noreferrer" download>
+              <a class="free-board-attachment-link" href="${escapeAttr(token.url)}" data-protected-board-download="${escapeAttr(token.url)}" data-protected-board-file-name="${escapeAttr(fileName)}" target="_blank" rel="noopener noreferrer" download>
                 <span class="free-board-attachment-name">${escapeHtml(fileName)}</span>
                 ${sizeHtml}
               </a>
@@ -7267,6 +7284,24 @@
       newsPanel.addEventListener("click", async (event) => {
         const clickTarget = event.target instanceof Element ? event.target : event.target?.parentElement;
         if (!clickTarget) return;
+
+        const protectedDownloadLink = clickTarget.closest("[data-protected-board-download]");
+        if (protectedDownloadLink) {
+          const downloadUrl = protectedDownloadLink.dataset.protectedBoardDownload || protectedDownloadLink.getAttribute("href") || "";
+          const fileName = protectedDownloadLink.dataset.protectedBoardFileName || protectedDownloadLink.getAttribute("download") || "attachment";
+          if (getProtectedBoardMediaPath(downloadUrl)) {
+            event.preventDefault();
+            showFreeBoardMessage("첨부파일을 다운로드 중입니다...", false);
+            try {
+              await downloadProtectedBoardAttachment(downloadUrl, fileName);
+              showFreeBoardMessage("첨부파일 다운로드를 시작했습니다.", false);
+            } catch (error) {
+              console.error(error);
+              showFreeBoardMessage("첨부파일을 다운로드하지 못했습니다. 새로고침 후 다시 시도해 주세요.", true);
+            }
+            return;
+          }
+        }
 
         if (clickTarget.closest("[data-news-clear]")) {
           newsSearchQuery = "";
