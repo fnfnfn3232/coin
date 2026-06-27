@@ -43,8 +43,9 @@ function mediaHeaders(media, env = {}) {
   const headers = {
     "Content-Type": media.contentType,
     "Content-Disposition": disposition,
-    "Cache-Control": "public, max-age=31536000, immutable",
-    "Access-Control-Allow-Origin": env.FRONTEND_ORIGIN || "*",
+    "Cache-Control": "private, no-store",
+    "Access-Control-Allow-Origin": env.FRONTEND_ORIGIN || "",
+    "Access-Control-Allow-Credentials": "true",
     "Vary": "Origin",
   };
   const size = Math.max(0, Math.floor(Number(media.size) || 0));
@@ -363,6 +364,14 @@ async function writeBoardPosts(env, posts) {
 async function requireAuth(request, env) {
   if (await isAuthenticated(request, env)) return null;
   return jsonResponse({ error: "auth_required" }, 401, env);
+}
+
+function isProtectedContentPath(url) {
+  return url.pathname === "/api/news"
+    || url.pathname === "/api/board/media"
+    || url.pathname.startsWith("/api/board/media/")
+    || url.pathname === "/api/board/posts"
+    || url.pathname.startsWith("/api/board/posts/");
 }
 
 async function isValidPassword(password, env) {
@@ -1121,6 +1130,11 @@ export class BoardStore {
     const url = new URL(request.url);
     const postId = decodeURIComponent(url.pathname.replace(/^\/api\/board\/posts\/?/, ""));
 
+    if (isProtectedContentPath(url)) {
+      const authResponse = await requireAuth(request, this.env);
+      if (authResponse) return authResponse;
+    }
+
     if (request.method === "GET" && url.pathname === "/api/news") {
       return this.handleNewsRequest(request, url);
     }
@@ -1315,6 +1329,8 @@ export default {
 
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname.startsWith("/api/board/media/")) {
+      const authResponse = await requireAuth(request, env);
+      if (authResponse) return authResponse;
       return handleBoardMedia(request, env, url);
     }
 
@@ -1327,6 +1343,10 @@ export default {
     }
     if (url.pathname === "/api/logout" && request.method === "POST") {
       return handleLogout(env);
+    }
+    if (isProtectedContentPath(url)) {
+      const authResponse = await requireAuth(request, env);
+      if (authResponse) return authResponse;
     }
     if (url.pathname === "/api/news" && request.method === "GET") {
       if (!env.BOARD_STORE) return jsonResponse(await fetchCoinnessNewsSafely(env), 200, env);
