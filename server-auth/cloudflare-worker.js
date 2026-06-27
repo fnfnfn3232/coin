@@ -908,6 +908,14 @@ function handleLogout(env) {
   return new Response(JSON.stringify({ ok: true }), { status: 200, headers });
 }
 
+async function handleSession(request, env) {
+  const authResponse = await requireAuth(request, env);
+  if (authResponse) return authResponse;
+  const headers = new Headers(jsonResponse({ ok: true }, 200, env).headers);
+  headers.append("Set-Cookie", await createSessionCookie(env));
+  return new Response(JSON.stringify({ ok: true }), { status: 200, headers });
+}
+
 export class BoardStore {
   constructor(state, env) {
     this.state = state;
@@ -1343,6 +1351,9 @@ export default {
     }
     if (url.pathname === "/api/logout" && request.method === "POST") {
       return handleLogout(env);
+    }
+    if (url.pathname === "/api/session" && request.method === "GET") {
+      return handleSession(request, env);
     }
     if (isProtectedContentPath(url)) {
       const authResponse = await requireAuth(request, env);
