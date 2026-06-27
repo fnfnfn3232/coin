@@ -3139,11 +3139,21 @@
         return ["localhost", "127.0.0.1", "::1"].includes(location.hostname);
       }
 
+      function isSiteLocked() {
+        return document.body.classList.contains("locked") && !siteLock.classList.contains("hidden");
+      }
+
       function handleServerAuthExpired() {
         if (!hasServerAuth() || isLocalPreview()) return;
         localStorage.removeItem(LOCK_AUTH_UNTIL_KEY);
         localStorage.removeItem(LOCK_EXTEND_COUNT_KEY);
         renderLockTtl();
+        if (isSiteLocked()) {
+          if (!lockError.textContent) {
+            lockError.textContent = "로그인이 만료되었습니다. 비밀번호를 다시 입력해 주세요.";
+          }
+          return;
+        }
         showSiteLock();
         lockError.textContent = "로그인이 만료되었습니다. 비밀번호를 다시 입력해 주세요.";
       }
@@ -3320,6 +3330,7 @@
 
       async function fetchLiveNewsPage({ offset = 0, append = false, force = false } = {}) {
         if (!hasServerAuth()) return null;
+        if (isSiteLocked()) return data.news || null;
         const now = Date.now();
         if (liveNewsPromise) return liveNewsPromise;
         const normalizedOffset = Math.max(0, Math.floor(Number(offset) || 0));
@@ -3385,6 +3396,7 @@
 
       function requestLiveNewsRefresh(force = false) {
         if (!hasServerAuth()) return;
+        if (isSiteLocked()) return;
         if (liveNewsPromise) return;
         if (newsSearchQuery && force) return;
         if (force && getLoadedNewsItems(data.news).length > NEWS_PAGE_SIZE) return;
@@ -3534,6 +3546,7 @@
 
       async function fetchFreeBoardPosts(force = false) {
         if (!hasFreeBoardServer()) return loadFreeBoardPosts();
+        if (isSiteLocked()) return loadFreeBoardPosts();
         if (!force && freeBoardServerRetryAfterMs > Date.now()) return loadFreeBoardPosts();
         if (!force && freeBoardPostsLoaded) return freeBoardServerPosts;
         if (freeBoardPostsPromise) return freeBoardPostsPromise;
@@ -3556,6 +3569,7 @@
       }
 
       function requestFreeBoardPostsRefresh(force = false) {
+        if (isSiteLocked()) return;
         if (!force && freeBoardServerRetryAfterMs > Date.now()) return;
         if (!hasFreeBoardServer() || freeBoardPostsPromise) return;
         fetchFreeBoardPosts(force)
