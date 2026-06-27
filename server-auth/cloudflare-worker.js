@@ -7,6 +7,7 @@ const USAGE_STATS_KEY = "usage-stats-v1";
 const NEWS_STORE_KEY = "coinness-news-store-v1";
 const MARKET_DATA_KEY = "market-data-v1";
 const MARKET_DATA_CHUNK_PREFIX = "market-data-v1:chunk:";
+const LOGIN_ATTEMPT_KEY_PREFIX = "login-attempt:";
 const BOARD_MAX_POSTS = 200;
 const BOARD_MAX_MEDIA = 10;
 const BOARD_MAX_COMMENTS = 100;
@@ -21,6 +22,8 @@ const MARKET_DATA_CHUNK_CHARS = 256 * 1024;
 const GITHUB_PAGES_MONTHLY_SOFT_LIMIT_BYTES = 100 * 1024 * 1024 * 1024;
 const USAGE_BEACON_MAX_BYTES = 25 * 1024 * 1024;
 const DEFAULT_NEWS_CACHE_SECONDS = 10 * 60;
+const LOGIN_FAILURE_LIMIT = 10;
+const LOGIN_LOCK_MS = 30 * 60 * 1000;
 const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
 const GITHUB_OIDC_JWKS_URL = `${GITHUB_OIDC_ISSUER}/.well-known/jwks`;
 const GITHUB_OIDC_REPOSITORY = "fnfnfn3232/2026-04-22-spot-usdt";
@@ -150,6 +153,45 @@ function getBearerToken(request) {
   const header = request.headers.get("Authorization") || "";
   const match = header.match(/^Bearer\s+(.+)$/i);
   return match ? match[1].trim() : "";
+}
+
+function getClientIp(request) {
+  const directIp = request.headers.get("CF-Connecting-IP") || "";
+  if (directIp) return directIp.trim();
+  const forwardedFor = request.headers.get("X-Forwarded-For") || "";
+  const firstForwarded = forwardedFor.split(",")[0]?.trim();
+  return firstForwarded || "unknown";
+}
+
+function getForwardedLoginClientIp(request) {
+  return (request.headers.get("X-Login-Client-IP") || getClientIp(request)).trim() || "unknown";
+}
+
+function normalizeLoginAttemptRecord(raw) {
+  return {
+    failures: Math.max(0, Math.floor(Number(raw?.failures) || 0)),
+    lockedUntil: Math.max(0, Math.floor(Number(raw?.lockedUntil) || 0)),
+    updatedAt: Math.max(0, Math.floor(Number(raw?.updatedAt) || 0)),
+  };
+}
+
+async function getLoginAttemptKey(clientIp) {
+  return `${LOGIN_ATTEMPT_KEY_PREFIX}${await sha256Hex(clientIp || "unknown")}`;
+}
+
+function loginLockedResponse(record, env) {
+  const retryAfterSeconds = Math.max(1, Math.ceil((record.lockedUntil - Date.now()) / 1000));
+  const headers = new Headers(jsonResponse({
+    error: "too_many_login_attempts",
+    retryAfterSeconds,
+    lockedUntil: record.lockedUntil,
+  }, 429, env).headers);
+  headers.set("Retry-After", String(retryAfterSeconds));
+  return new Response(JSON.stringify({
+    error: "too_many_login_attempts",
+    retryAfterSeconds,
+    lockedUntil: record.lockedUntil,
+  }), { status: 429, headers });
 }
 
 async function createSessionToken(env) {
@@ -1365,9 +1407,58 @@ export class BoardStore {
     return jsonResponse({ id, url: url.toString(), contentType, fileName: getBoardMediaFileName(request), size: bytes.byteLength }, 201, this.env);
   }
 
+  async handleLoginRequest(request) {
+    let body = {};
+    try {
+      body = await request.json();
+    } catch (_error) {
+      return jsonResponse({ error: "invalid_json" }, 400, this.env);
+    }
+
+    const now = Date.now();
+    const attemptKey = await getLoginAttemptKey(getForwardedLoginClientIp(request));
+    let record = normalizeLoginAttemptRecord(await this.state.storage.get(attemptKey));
+
+    if (record.lockedUntil > now) {
+      return loginLockedResponse(record, this.env);
+    }
+    if (record.lockedUntil && record.lockedUntil <= now) {
+      record = normalizeLoginAttemptRecord(null);
+      await this.state.storage.delete(attemptKey);
+    }
+
+    const passwordHash = await sha256Hex(body.password || "");
+    if (!timingSafeEqual(passwordHash, this.env.SITE_PASSWORD_SHA256)) {
+      const failures = Math.min(LOGIN_FAILURE_LIMIT, record.failures + 1);
+      const nextRecord = {
+        failures,
+        lockedUntil: failures >= LOGIN_FAILURE_LIMIT ? now + LOGIN_LOCK_MS : 0,
+        updatedAt: now,
+      };
+      await this.state.storage.put(attemptKey, nextRecord);
+      if (nextRecord.lockedUntil > now) {
+        return loginLockedResponse(nextRecord, this.env);
+      }
+      return jsonResponse({
+        error: "invalid_password",
+        remainingAttempts: Math.max(0, LOGIN_FAILURE_LIMIT - failures),
+      }, 401, this.env);
+    }
+
+    await this.state.storage.delete(attemptKey);
+    const token = await createSessionToken(this.env);
+    const headers = new Headers(jsonResponse({ ok: true }, 200, this.env).headers);
+    headers.append("Set-Cookie", sessionCookie(token));
+    return new Response(JSON.stringify({ ok: true, token }), { status: 200, headers });
+  }
+
   async fetch(request) {
     const url = new URL(request.url);
     const postId = decodeURIComponent(url.pathname.replace(/^\/api\/board\/posts\/?/, ""));
+
+    if (request.method === "POST" && url.pathname === "/api/login") {
+      return this.handleLoginRequest(request);
+    }
 
     if (request.method === "POST" && url.pathname === "/api/market-data") {
       if (request.headers.get("X-Market-Data-Sync") !== "1") {
@@ -1603,6 +1694,16 @@ export default {
     }
 
     if (url.pathname === "/api/login" && request.method === "POST") {
+      if (env.BOARD_STORE) {
+        const id = env.BOARD_STORE.idFromName("free-board");
+        const headers = new Headers(request.headers);
+        headers.set("X-Login-Client-IP", getClientIp(request));
+        return env.BOARD_STORE.get(id).fetch(new Request(request.url, {
+          method: request.method,
+          headers,
+          body: request.body,
+        }));
+      }
       return handleLogin(request, env);
     }
     if (url.pathname === "/api/logout" && request.method === "POST") {
