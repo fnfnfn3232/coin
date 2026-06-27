@@ -5056,6 +5056,14 @@
         return `${String(hours).padStart(2, "0")}시${String(minutes).padStart(2, "0")}분`;
       }
 
+      function getLoginErrorMessage(error) {
+        if (Number(error?.status) === 429 || error?.payload?.error === "too_many_login_attempts") {
+          const retryMs = Math.max(60, Number(error?.payload?.retryAfterSeconds) || 30 * 60) * 1000;
+          return `로그인 시도가 너무 많습니다. ${formatRemainingLockTime(retryMs)} 후 다시 시도해 주세요.`;
+        }
+        return "비밀번호가 맞지 않거나 인증 서버에 연결할 수 없습니다.";
+      }
+
       function renderLockTtl() {
         const until = getLockAuthUntil();
         const remain = Math.max(0, until - Date.now());
@@ -5100,8 +5108,8 @@
             hideSiteLock();
             renderLockTtl();
             lockPasswordInput.value = "";
-          } catch (_error) {
-            lockError.textContent = "비밀번호가 맞지 않거나 인증 서버에 연결할 수 없습니다.";
+          } catch (error) {
+            lockError.textContent = getLoginErrorMessage(error);
             lockPasswordInput.value = "";
             lockPasswordInput.focus();
           }
@@ -5216,8 +5224,8 @@
             adminServerPassword = value;
             adminError.textContent = "";
             showAdminDashboard();
-          } catch (_error) {
-            adminError.textContent = "비밀번호가 맞지 않거나 인증 서버에 연결할 수 없습니다.";
+          } catch (error) {
+            adminError.textContent = getLoginErrorMessage(error);
             adminPasswordInput.value = "";
             adminPasswordInput.focus();
           }
