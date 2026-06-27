@@ -3278,13 +3278,32 @@
         });
       }
 
+      function hasPagedNewsData(news = data.news) {
+        return Number.isFinite(Number(news?.nextOffset))
+          || Number.isFinite(Number(news?.storedCount))
+          || Number.isFinite(Number(news?.total));
+      }
+
+      function getLoadedNewsItems(news = data.news) {
+        const items = Array.isArray(news?.items) ? news.items : [];
+        return hasPagedNewsData(news) ? items : items.slice(0, NEWS_PAGE_SIZE);
+      }
+
+      function getNewsNextOffset(news = data.news) {
+        const loadedItems = getLoadedNewsItems(news);
+        if (hasPagedNewsData(news)) {
+          return Math.max(Number(news?.nextOffset) || 0, loadedItems.length);
+        }
+        return loadedItems.length;
+      }
+
       async function fetchLiveNewsPage({ offset = 0, append = false, force = false } = {}) {
         if (!hasServerAuth()) return null;
         const now = Date.now();
         if (liveNewsPromise) return liveNewsPromise;
         const normalizedOffset = Math.max(0, Math.floor(Number(offset) || 0));
         const currentQuery = String(data.news?.query || "");
-        const currentItems = Array.isArray(data.news?.items) ? data.news.items : [];
+        const currentItems = getLoadedNewsItems(data.news);
         if (!append && !force && normalizedOffset === 0 && newsSearchQuery === currentQuery && now - liveNewsFetchedAtMs < LIVE_NEWS_REFRESH_MS) {
           return data.news || null;
         }
@@ -3306,8 +3325,6 @@
             let nextItems = payload.items;
             if (append && payloadQuery === currentQuery) {
               nextItems = mergeClientNewsItems(currentItems, payload.items);
-            } else if (!append && normalizedOffset === 0 && payloadQuery === currentQuery && currentItems.length > NEWS_PAGE_SIZE) {
-              nextItems = mergeClientNewsItems(payload.items, currentItems).slice(0, Math.max(currentItems.length, payload.items.length));
             }
             data.news = {
               ...payload,
@@ -3341,8 +3358,7 @@
       }
 
       async function loadMoreLiveNews() {
-        const currentItems = Array.isArray(data.news?.items) ? data.news.items : [];
-        const nextOffset = Math.max(Number(data.news?.nextOffset) || 0, currentItems.length);
+        const nextOffset = getNewsNextOffset(data.news);
         return fetchLiveNewsPage({ offset: nextOffset, append: true, force: false });
       }
 
@@ -3350,6 +3366,7 @@
         if (!hasServerAuth()) return;
         if (liveNewsPromise) return;
         if (newsSearchQuery && force) return;
+        if (force && getLoadedNewsItems(data.news).length > NEWS_PAGE_SIZE) return;
         if (!force && Date.now() - liveNewsFetchedAtMs < LIVE_NEWS_REFRESH_MS) return;
         refreshLiveNews(force)
           .then(() => {
@@ -4449,10 +4466,12 @@
 
       function renderNewsPanel() {
         requestLiveNewsRefresh(liveNewsFetchedAtMs === 0);
-        const items = Array.isArray(data.news?.items) ? data.news.items : [];
-        const total = Math.max(0, Math.floor(Number(data.news?.total) || items.length));
+        const allItems = Array.isArray(data.news?.items) ? data.news.items : [];
+        const items = getLoadedNewsItems(data.news);
+        const pagedNews = hasPagedNewsData(data.news);
+        const total = Math.max(0, Math.floor(Number(data.news?.total) || allItems.length || items.length));
         const storedCount = Math.max(0, Math.floor(Number(data.news?.storedCount) || total || items.length));
-        const hasMore = Boolean(data.news?.hasMore);
+        const hasMore = pagedNews ? Boolean(data.news?.hasMore) : allItems.length > items.length;
         const remaining = Math.max(0, total - items.length);
         const lastUpdatedText = liveNewsLastUpdatedAtMs
           ? new Date(liveNewsLastUpdatedAtMs).toLocaleTimeString("ko-KR", {
