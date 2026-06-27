@@ -788,6 +788,26 @@
         margin: 0;
       }
 
+      .news-search {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin: 0 0 10px;
+      }
+
+      .news-search input {
+        width: min(420px, 100%);
+      }
+
+      .news-search button {
+        border-radius: 4px;
+        border-color: rgba(84, 104, 255, 0.6);
+        background: rgba(46, 58, 130, 0.55);
+        color: #e8f4ff;
+        font-weight: 850;
+      }
+
       .news-meta {
         color: #8fb4c7;
         font-size: 12px;
@@ -2879,6 +2899,7 @@
     const FREE_BOARD_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"]);
     const GITHUB_PAGES_MONTHLY_SOFT_LIMIT_BYTES = 100 * 1024 * 1024 * 1024;
     const LIVE_NEWS_REFRESH_MS = 10 * 60 * 1000;
+    const NEWS_PAGE_SIZE = 40;
     const LOCK_TTL_MS = 24 * 60 * 60 * 1000;
     const LOCK_EXTEND_MAX = 3;
     const MANUAL_REFRESH_COOLDOWN_MS = 30 * 1000;
@@ -3247,18 +3268,55 @@
         };
       }
 
-      async function refreshLiveNews(force = false) {
+      function mergeClientNewsItems(primary, secondary) {
+        const seen = new Set();
+        return [...(primary || []), ...(secondary || [])].filter((item) => {
+          const key = String(item?.id || item?.articleUrl || item?.headline || "");
+          if (!key || seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      }
+
+      async function fetchLiveNewsPage({ offset = 0, append = false, force = false } = {}) {
         if (!hasServerAuth()) return null;
         const now = Date.now();
         if (liveNewsPromise) return liveNewsPromise;
-        if (!force && now - liveNewsFetchedAtMs < LIVE_NEWS_REFRESH_MS) return data.news || null;
+        const normalizedOffset = Math.max(0, Math.floor(Number(offset) || 0));
+        const currentQuery = String(data.news?.query || "");
+        const currentItems = Array.isArray(data.news?.items) ? data.news.items : [];
+        if (!append && !force && normalizedOffset === 0 && newsSearchQuery === currentQuery && now - liveNewsFetchedAtMs < LIVE_NEWS_REFRESH_MS) {
+          return data.news || null;
+        }
 
-        liveNewsPromise = fetchServerAuth(`/api/news?ts=${Date.now()}`, { method: "GET" })
+        const params = new URLSearchParams({
+          limit: String(NEWS_PAGE_SIZE),
+          offset: String(normalizedOffset),
+          ts: String(Date.now()),
+        });
+        if (newsSearchQuery) params.set("q", newsSearchQuery);
+        if (force) params.set("refresh", "1");
+
+        liveNewsPromise = fetchServerAuth(`/api/news?${params.toString()}`, { method: "GET" })
           .then((payload) => {
-            if (!payload || !Array.isArray(payload.items) || !payload.items.length) {
+            if (!payload || !Array.isArray(payload.items)) {
               throw new Error(payload?.error || "live_news_empty");
             }
-            data.news = payload;
+            const payloadQuery = String(payload.query || "");
+            let nextItems = payload.items;
+            if (append && payloadQuery === currentQuery) {
+              nextItems = mergeClientNewsItems(currentItems, payload.items);
+            } else if (!append && normalizedOffset === 0 && payloadQuery === currentQuery && currentItems.length > NEWS_PAGE_SIZE) {
+              nextItems = mergeClientNewsItems(payload.items, currentItems).slice(0, Math.max(currentItems.length, payload.items.length));
+            }
+            data.news = {
+              ...payload,
+              items: nextItems,
+              count: nextItems.length,
+              offset: 0,
+              nextOffset: Math.max(Number(payload.nextOffset) || 0, nextItems.length),
+              hasMore: Math.max(Number(payload.nextOffset) || 0, nextItems.length) < Math.max(Number(payload.total) || 0, nextItems.length),
+            };
             liveNewsFetchedAtMs = Date.now();
             liveNewsLastUpdatedAtMs = liveNewsFetchedAtMs;
             liveNewsError = "";
@@ -3278,9 +3336,20 @@
         return liveNewsPromise;
       }
 
+      async function refreshLiveNews(force = false) {
+        return fetchLiveNewsPage({ offset: 0, append: false, force });
+      }
+
+      async function loadMoreLiveNews() {
+        const currentItems = Array.isArray(data.news?.items) ? data.news.items : [];
+        const nextOffset = Math.max(Number(data.news?.nextOffset) || 0, currentItems.length);
+        return fetchLiveNewsPage({ offset: nextOffset, append: true, force: false });
+      }
+
       function requestLiveNewsRefresh(force = false) {
         if (!hasServerAuth()) return;
         if (liveNewsPromise) return;
+        if (newsSearchQuery && force) return;
         if (!force && Date.now() - liveNewsFetchedAtMs < LIVE_NEWS_REFRESH_MS) return;
         refreshLiveNews(force)
           .then(() => {
@@ -3322,6 +3391,7 @@
       let liveNewsFetchedAtMs = 0;
       let liveNewsLastUpdatedAtMs = 0;
       let liveNewsError = "";
+      let newsSearchQuery = "";
       let adminServerPassword = "";
       let serverUsageStats = null;
       let serverUsageError = "";
@@ -4380,6 +4450,10 @@
       function renderNewsPanel() {
         requestLiveNewsRefresh(liveNewsFetchedAtMs === 0);
         const items = Array.isArray(data.news?.items) ? data.news.items : [];
+        const total = Math.max(0, Math.floor(Number(data.news?.total) || items.length));
+        const storedCount = Math.max(0, Math.floor(Number(data.news?.storedCount) || total || items.length));
+        const hasMore = Boolean(data.news?.hasMore);
+        const remaining = Math.max(0, total - items.length);
         const lastUpdatedText = liveNewsLastUpdatedAtMs
           ? new Date(liveNewsLastUpdatedAtMs).toLocaleTimeString("ko-KR", {
               hour: "2-digit",
@@ -4395,14 +4469,24 @@
             : lastUpdatedText
               ? `<p class="news-refresh-status">최신 뉴스 확인 완료: ${escapeHtml(lastUpdatedText)}</p>`
               : "";
+        const searchHtml = `
+          <form class="news-search" id="newsSearchForm">
+            <input name="newsQuery" type="search" autocomplete="off" placeholder="뉴스 검색" value="${escapeAttr(newsSearchQuery)}" />
+            <button type="submit">검색</button>
+            ${newsSearchQuery ? `<button type="button" data-news-clear>초기화</button>` : ""}
+          </form>
+        `;
+        const metaHtml = `<p class="news-meta">${newsSearchQuery ? `검색 결과 ${formatNumber(total, 0)}건` : `저장된 뉴스 ${formatNumber(storedCount, 0)}건`} · 현재 ${formatNumber(items.length, 0)}건 표시</p>`;
         if (!items.length) {
-          newsPanel.innerHTML = `${statusHtml}<p class="news-empty">${escapeHtml(TEXT.newsEmpty)}</p>`;
+          newsPanel.innerHTML = `${statusHtml}${searchHtml}${metaHtml}<p class="news-empty">${escapeHtml(newsSearchQuery ? "검색 결과가 없습니다." : TEXT.newsEmpty)}</p>`;
           return;
         }
         newsPanel.innerHTML = `
           ${statusHtml}
+          ${searchHtml}
+          ${metaHtml}
           <div class="news-text-box">
-            ${items.slice(0, 40).map((item) => {
+            ${items.map((item) => {
               const title = item.originalTitle || item.title || item.headline || item.name || "뉴스";
               const body = item.summary || item.contentPreview || item.body || item.description || item.text || "";
               const time = formatNewsTime(item.publishAt || item.publishedAt || item.time || item.datetime || item.createdAt || "");
@@ -4424,6 +4508,9 @@
                 </article>
               `;
             }).join("")}
+          </div>
+          <div class="news-more-wrap">
+            ${hasMore ? `<button class="news-more-btn" type="button" data-news-more${liveNewsPromise ? " disabled" : ""}>${escapeHtml(TEXT.newsMore.replace("{remaining}", formatNumber(remaining, 0)))}</button>` : `<button class="news-more-btn" type="button" disabled>${escapeHtml(TEXT.newsMoreDone)}</button>`}
           </div>
         `;
       }
@@ -6787,6 +6874,23 @@
       });
 
       newsPanel.addEventListener("submit", async (event) => {
+        const newsSearchForm = event.target.closest("#newsSearchForm");
+        if (newsSearchForm) {
+          event.preventDefault();
+          const formData = new FormData(newsSearchForm);
+          newsSearchQuery = String(formData.get("newsQuery") || "").trim().slice(0, 80);
+          data.news = { items: [], query: newsSearchQuery, total: 0, storedCount: 0, hasMore: false, nextOffset: 0 };
+          liveNewsFetchedAtMs = 0;
+          renderNewsPanel();
+          try {
+            await refreshLiveNews(true);
+          } catch (error) {
+            console.error(error);
+          }
+          renderNewsPanel();
+          return;
+        }
+
         const commentForm = event.target.closest("#freeBoardCommentForm");
         if (commentForm) {
           event.preventDefault();
@@ -6932,6 +7036,30 @@
       newsPanel.addEventListener("click", async (event) => {
         const clickTarget = event.target instanceof Element ? event.target : event.target?.parentElement;
         if (!clickTarget) return;
+
+        if (clickTarget.closest("[data-news-clear]")) {
+          newsSearchQuery = "";
+          data.news = { items: [], query: "", total: 0, storedCount: 0, hasMore: false, nextOffset: 0 };
+          liveNewsFetchedAtMs = 0;
+          renderNewsPanel();
+          try {
+            await refreshLiveNews(true);
+          } catch (error) {
+            console.error(error);
+          }
+          renderNewsPanel();
+          return;
+        }
+
+        if (clickTarget.closest("[data-news-more]")) {
+          try {
+            await loadMoreLiveNews();
+          } catch (error) {
+            console.error(error);
+          }
+          renderNewsPanel();
+          return;
+        }
 
         if (clickTarget.closest("[data-free-board-body-top]")) {
           newsPanel.querySelector(".free-board-read")?.scrollIntoView({ block: "start", behavior: "smooth" });

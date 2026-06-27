@@ -4,10 +4,13 @@ const SESSION_TTL_SECONDS = 24 * 60 * 60;
 const BOARD_POSTS_KEY = "free-board-posts";
 const BOARD_ADMIN_LOGS_KEY = "free-board-admin-logs";
 const USAGE_STATS_KEY = "usage-stats-v1";
+const NEWS_STORE_KEY = "coinness-news-store-v1";
 const BOARD_MAX_POSTS = 200;
 const BOARD_MAX_MEDIA = 10;
 const BOARD_MAX_COMMENTS = 100;
 const BOARD_ADMIN_LOG_LIMIT = 100;
+const NEWS_STORE_MAX_ITEMS = 1000;
+const NEWS_PAGE_MAX_ITEMS = 40;
 const BOARD_MEDIA_KEY_PREFIX = "free-board-media:";
 const BOARD_MEDIA_MAX_BYTES = 200 * 1024 * 1024;
 const BOARD_MEDIA_CHUNK_BYTES = 1024 * 1024;
@@ -683,6 +686,103 @@ function normalizeNewsItem(entry, includeFullText) {
   return item;
 }
 
+function normalizeStoredNewsItem(entry) {
+  const id = Number(entry?.id || 0);
+  const publishAt = String(entry?.publishAt || "").trim();
+  const publishAtTs = Number(entry?.publishAtTs) || parsePublishAt(publishAt);
+  const headline = cleanNewsText(entry?.headline || entry?.title || entry?.originalTitle || entry?.name);
+  const summary = cleanNewsText(entry?.summary || entry?.contentPreview || entry?.body || entry?.description || entry?.text);
+  if (!id || !publishAtTs || (!headline && !summary)) return null;
+  const item = {
+    id,
+    publishAt,
+    publishAtTs,
+    headline: headline || "Coinness news",
+    summary: makePreview(summary || headline, 220),
+    sourceName: cleanBoardText(entry?.sourceName || "Coinness", 40) || "Coinness",
+    articleUrl: cleanBoardText(entry?.articleUrl || entry?.url || entry?.link || `https://coinness.com/news/${id}`, 1000),
+    originUrl: cleanBoardText(entry?.originUrl || entry?.sourceUrl || "", 1000),
+    originTitle: cleanNewsText(entry?.originTitle || entry?.linkTitle || "").slice(0, 200),
+  };
+  if (entry?.content) item.content = cleanNewsText(entry.content).slice(0, 5000);
+  return item;
+}
+
+function getNewsStoreLimit(env) {
+  const limit = Math.floor(Number(env.NEWS_STORE_LIMIT) || NEWS_STORE_MAX_ITEMS);
+  return Math.min(Math.max(limit, NEWS_PAGE_MAX_ITEMS), NEWS_STORE_MAX_ITEMS);
+}
+
+function getNewsRequestLimit(value) {
+  const limit = Math.floor(Number(value) || NEWS_PAGE_MAX_ITEMS);
+  return Math.min(Math.max(limit, 1), NEWS_PAGE_MAX_ITEMS);
+}
+
+function getNewsRequestOffset(value) {
+  return Math.max(0, Math.floor(Number(value) || 0));
+}
+
+function sortNewsItems(items) {
+  return (Array.isArray(items) ? items : [])
+    .map((item) => normalizeStoredNewsItem(item))
+    .filter(Boolean)
+    .sort((a, b) => (b.publishAtTs - a.publishAtTs) || (b.id - a.id));
+}
+
+function mergeNewsItems(existing, incoming, limit) {
+  const byId = new Map();
+  for (const item of sortNewsItems(existing)) byId.set(String(item.id), item);
+  for (const item of sortNewsItems(incoming)) {
+    byId.set(String(item.id), { ...(byId.get(String(item.id)) || {}), ...item });
+  }
+  return sortNewsItems([...byId.values()]).slice(0, limit);
+}
+
+function normalizeNewsQuery(value) {
+  return cleanNewsText(value).replace(/\s+/g, " ").trim().slice(0, 80);
+}
+
+function filterNewsItems(items, query) {
+  const normalizedQuery = normalizeNewsQuery(query).toLowerCase();
+  if (!normalizedQuery) return sortNewsItems(items);
+  return sortNewsItems(items).filter((item) => {
+    const haystack = [
+      item.headline,
+      item.summary,
+      item.content,
+      item.originTitle,
+      item.sourceName,
+    ].join(" ").toLowerCase();
+    return haystack.includes(normalizedQuery);
+  });
+}
+
+function newsPageResponse(store, requestUrl, env, extra = {}) {
+  const query = normalizeNewsQuery(requestUrl.searchParams.get("q") || "");
+  const limit = getNewsRequestLimit(requestUrl.searchParams.get("limit"));
+  const offset = getNewsRequestOffset(requestUrl.searchParams.get("offset"));
+  const allItems = sortNewsItems(store?.items || []);
+  const filteredItems = filterNewsItems(allItems, query);
+  const pageItems = filteredItems.slice(offset, offset + limit);
+  return jsonResponse({
+    source: "coinness",
+    mode: String(env.NEWS_BODY_MODE || "preview").toLowerCase() === "full" ? "full" : "preview",
+    fetchedAt: Math.floor(Number(store?.fetchedAt || 0) / 1000) || Math.floor(Date.now() / 1000),
+    cached: Boolean(extra.cached),
+    stale: Boolean(extra.stale),
+    error: extra.error || "",
+    query,
+    limit,
+    offset,
+    count: pageItems.length,
+    total: filteredItems.length,
+    storedCount: allItems.length,
+    hasMore: offset + pageItems.length < filteredItems.length,
+    nextOffset: offset + pageItems.length,
+    items: pageItems,
+  }, 200, env);
+}
+
 let lastGoodNews = null;
 let cachedNews = null;
 let cachedNewsAtMs = 0;
@@ -693,7 +793,7 @@ function getNewsCacheMs(env) {
 }
 
 async function fetchCoinnessNews(env) {
-  const limit = Math.min(Math.max(Number(env.NEWS_LIMIT || 40), 1), 100);
+  const limit = Math.min(Math.max(Number(env.NEWS_LIMIT || NEWS_PAGE_MAX_ITEMS), 1), NEWS_PAGE_MAX_ITEMS);
   const includeFullText = String(env.NEWS_BODY_MODE || "preview").toLowerCase() === "full";
   const query = new URLSearchParams({ languageCode: "ko", limit: String(limit) });
   const response = await fetch(`${COINNESS_NEWS_ENDPOINT}?${query.toString()}`, {
@@ -836,6 +936,70 @@ export class BoardStore {
     return normalized;
   }
 
+  async readNewsStore() {
+    const stored = await this.state.storage.get(NEWS_STORE_KEY);
+    const rawItems = Array.isArray(stored)
+      ? stored
+      : (Array.isArray(stored?.items) ? stored.items : []);
+    return {
+      fetchedAt: Math.max(0, Math.floor(Number(stored?.fetchedAt) || 0)),
+      items: sortNewsItems(rawItems).slice(0, getNewsStoreLimit(this.env)),
+    };
+  }
+
+  async writeNewsStore(store) {
+    const normalized = {
+      fetchedAt: Math.max(0, Math.floor(Number(store?.fetchedAt) || Date.now())),
+      items: sortNewsItems(store?.items || []).slice(0, getNewsStoreLimit(this.env)),
+    };
+    await this.state.storage.put(NEWS_STORE_KEY, normalized);
+    return normalized;
+  }
+
+  async refreshNewsStore(force = false) {
+    const now = Date.now();
+    const cacheMs = getNewsCacheMs(this.env);
+    const store = await this.readNewsStore();
+    if (!force && store.items.length && now - store.fetchedAt < cacheMs) {
+      return { store, cached: true };
+    }
+    try {
+      const latest = await fetchCoinnessNews(this.env);
+      const merged = mergeNewsItems(store.items, latest.items, getNewsStoreLimit(this.env));
+      const nextStore = await this.writeNewsStore({
+        fetchedAt: now,
+        items: merged,
+      });
+      if (nextStore.items.length) {
+        lastGoodNews = { ...latest, items: nextStore.items };
+      }
+      return { store: nextStore };
+    } catch (error) {
+      if (store.items.length) {
+        return {
+          store,
+          stale: true,
+          error: error instanceof Error ? error.message : "coinness_fetch_failed",
+        };
+      }
+      const fallback = await fetchCoinnessNewsSafely(this.env);
+      return {
+        store: {
+          fetchedAt: now,
+          items: sortNewsItems(fallback.items || []).slice(0, getNewsStoreLimit(this.env)),
+        },
+        stale: true,
+        error: fallback.error || (error instanceof Error ? error.message : "coinness_fetch_failed"),
+      };
+    }
+  }
+
+  async handleNewsRequest(request, url) {
+    const force = url.searchParams.get("refresh") === "1";
+    const result = await this.refreshNewsStore(force);
+    return newsPageResponse(result.store, url, this.env, result);
+  }
+
   async recordUsageBeacon(body) {
     const rawBytes = Math.max(0, Math.floor(Number(body?.bytes) || 0));
     const bytes = Math.min(rawBytes, USAGE_BEACON_MAX_BYTES);
@@ -923,6 +1087,10 @@ export class BoardStore {
   async fetch(request) {
     const url = new URL(request.url);
     const postId = decodeURIComponent(url.pathname.replace(/^\/api\/board\/posts\/?/, ""));
+
+    if (request.method === "GET" && url.pathname === "/api/news") {
+      return this.handleNewsRequest(request, url);
+    }
 
     if (request.method === "POST" && url.pathname === "/api/usage/beacon") {
       const body = await parseJsonBody(request);
@@ -1128,7 +1296,9 @@ export default {
       return handleLogout(env);
     }
     if (url.pathname === "/api/news" && request.method === "GET") {
-      return jsonResponse(await fetchCoinnessNewsSafely(env), 200, env);
+      if (!env.BOARD_STORE) return jsonResponse(await fetchCoinnessNewsSafely(env), 200, env);
+      const id = env.BOARD_STORE.idFromName("free-board");
+      return env.BOARD_STORE.get(id).fetch(request);
     }
     if (url.pathname === "/api/usage/beacon" || url.pathname === "/api/usage/stats" || url.pathname === "/api/board/logs") {
       if (!env.BOARD_STORE) return jsonResponse({ error: "usage_storage_not_configured" }, 500, env);

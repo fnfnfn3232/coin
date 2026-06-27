@@ -29,6 +29,7 @@ jobs:
           [vars]
           FRONTEND_ORIGIN = "https://fnfnfn3232.github.io"
           NEWS_LIMIT = "40"
+          NEWS_STORE_LIMIT = "1000"
           NEWS_BODY_MODE = "preview"
           NEWS_CACHE_SECONDS = "600"
 
