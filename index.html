@@ -2900,6 +2900,7 @@
     const FREE_BOARD_PAGE_SIZE = 20;
     const FREE_BOARD_SERVER_ENABLED = true;
     const FREE_BOARD_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"]);
+    const BOARD_MEDIA_PLACEHOLDER_SRC = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
     const GITHUB_PAGES_MONTHLY_SOFT_LIMIT_BYTES = 100 * 1024 * 1024 * 1024;
     const LIVE_NEWS_REFRESH_MS = 10 * 60 * 1000;
     const NEWS_PAGE_SIZE = 40;
@@ -3237,6 +3238,89 @@
           setServerAuthToken(payload.token);
         }
         return payload;
+      }
+
+      function getProtectedBoardMediaPath(value) {
+        if (!hasServerAuth() || !SERVER_AUTH_API_BASE) return "";
+        try {
+          const mediaUrl = new URL(String(value || ""), location.href);
+          const apiUrl = new URL(SERVER_AUTH_API_BASE);
+          const mediaPathPattern = new RegExp("^/api/board/media/[^/]+$", "i");
+          if (mediaUrl.origin !== apiUrl.origin) return "";
+          if (!mediaPathPattern.test(mediaUrl.pathname)) return "";
+          return mediaUrl.pathname;
+        } catch (_error) {
+          return "";
+        }
+      }
+
+      async function fetchServerAuthBlob(path, options = {}) {
+        const { timeoutMs: requestTimeoutMs, ...fetchOptions } = options;
+        const supportsAbortController = typeof AbortController === "function";
+        const controller = supportsAbortController ? new AbortController() : null;
+        const timeoutMs = Math.max(1000, Number(requestTimeoutMs) || 30000);
+        const timeoutId = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : 0;
+        const headers = { ...(fetchOptions.headers || {}) };
+        const token = getServerAuthToken();
+        if (token && !headers.Authorization && !headers.authorization) {
+          headers.Authorization = `Bearer ${token}`;
+        }
+        let response;
+        try {
+          response = await fetch(`${SERVER_AUTH_API_BASE}${path}`, {
+            ...fetchOptions,
+            credentials: "include",
+            headers,
+            ...(controller ? { signal: controller.signal } : {}),
+          });
+        } finally {
+          if (timeoutId) window.clearTimeout(timeoutId);
+        }
+        if (!response.ok) {
+          let payload = null;
+          try {
+            payload = await response.clone().json();
+          } catch (_error) {
+            payload = null;
+          }
+          const message = payload?.error || `server_auth_failed:${response.status}`;
+          const error = new Error(message);
+          error.status = response.status;
+          error.payload = payload;
+          if (response.status === 401 && message === "auth_required") {
+            handleServerAuthExpired();
+          }
+          throw error;
+        }
+        return response.blob();
+      }
+
+      async function hydrateProtectedBoardMedia(root = document) {
+        const scope = root instanceof Element || root instanceof Document ? root : document;
+        const nodes = scope.querySelectorAll("img, video");
+        nodes.forEach(async (node) => {
+          const originalUrl = node.dataset.protectedBoardMediaSrc || node.getAttribute("src") || "";
+          const mediaPath = getProtectedBoardMediaPath(originalUrl);
+          if (!mediaPath || node.dataset.protectedBoardMediaLoaded === "1" || node.dataset.protectedBoardMediaLoading === "1") return;
+          node.dataset.protectedBoardMediaSrc = originalUrl;
+          node.dataset.protectedBoardMediaLoading = "1";
+          try {
+            const blob = await fetchServerAuthBlob(mediaPath, { method: "GET", timeoutMs: 30000 });
+            const objectUrl = URL.createObjectURL(blob);
+            const previousUrl = node.dataset.protectedBoardMediaObjectUrl || "";
+            if (previousUrl) URL.revokeObjectURL(previousUrl);
+            node.dataset.protectedBoardMediaObjectUrl = objectUrl;
+            node.setAttribute("src", objectUrl);
+            node.dataset.protectedBoardMediaLoaded = "1";
+            if (node instanceof HTMLVideoElement) node.load();
+          } catch (error) {
+            console.error("protected board media load failed", error);
+            node.dataset.protectedBoardMediaError = "1";
+            node.setAttribute("title", "Failed to load attached media. Please refresh and try again.");
+          } finally {
+            delete node.dataset.protectedBoardMediaLoading;
+          }
+        });
       }
 
       function getPerformanceTransferBytes() {
@@ -3872,6 +3956,7 @@
           <div class="free-board-media">${items.join("")}</div>
           ${renderFreeBoardMediaSizes(tokens)}
         `;
+        hydrateProtectedBoardMedia(preview);
       }
 
       function renderMediaTag(url, preferredKind = "", meta = {}) {
@@ -3887,6 +3972,13 @@
         const youtubeEmbedUrl = kind === "video" ? getYouTubeEmbedUrl(url) : "";
         if (youtubeEmbedUrl) {
           return `<iframe class="free-board-youtube" src="${escapeAttr(youtubeEmbedUrl)}" title="게시글 유튜브 영상" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>`;
+        }
+        const protectedPath = getProtectedBoardMediaPath(url);
+        if (protectedPath && kind === "image") {
+          return `<img src="${BOARD_MEDIA_PLACEHOLDER_SRC}" data-protected-board-media-src="${escapeAttr(url)}" alt="board image" loading="lazy" referrerpolicy="no-referrer" />`;
+        }
+        if (protectedPath && kind === "video") {
+          return `<video data-protected-board-media-src="${escapeAttr(url)}" controls preload="metadata" playsinline referrerpolicy="no-referrer"></video>`;
         }
         const safeUrl = escapeAttr(url);
         if (kind === "image") {
@@ -4429,6 +4521,7 @@
               </div>
             </div>
           `;
+          hydrateProtectedBoardMedia(newsPanel);
           return;
         }
 
