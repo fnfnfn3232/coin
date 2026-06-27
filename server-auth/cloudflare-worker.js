@@ -783,6 +783,27 @@ function newsPageResponse(store, requestUrl, env, extra = {}) {
   }, 200, env);
 }
 
+async function fetchSeedNewsItems(env) {
+  const seedUrl = String(env.NEWS_SEED_URL || "").trim();
+  if (!seedUrl) return [];
+  try {
+    const response = await fetch(seedUrl, {
+      headers: {
+        "Accept": "application/javascript,text/javascript,text/plain,*/*",
+        "Cache-Control": "no-cache",
+      },
+    });
+    if (!response.ok) return [];
+    const text = await response.text();
+    const match = text.match(/window\.BOARD_DATA\s*=\s*([\s\S]*?);?\s*$/);
+    if (!match) return [];
+    const parsed = JSON.parse(match[1].replace(/;\s*$/, ""));
+    return Array.isArray(parsed?.news?.items) ? parsed.news.items.map(normalizeStoredNewsItem).filter(Boolean) : [];
+  } catch (_error) {
+    return [];
+  }
+}
+
 let lastGoodNews = null;
 let cachedNews = null;
 let cachedNewsAtMs = 0;
@@ -943,6 +964,7 @@ export class BoardStore {
       : (Array.isArray(stored?.items) ? stored.items : []);
     return {
       fetchedAt: Math.max(0, Math.floor(Number(stored?.fetchedAt) || 0)),
+      seededAt: Math.max(0, Math.floor(Number(stored?.seededAt) || 0)),
       items: sortNewsItems(rawItems).slice(0, getNewsStoreLimit(this.env)),
     };
   }
@@ -950,6 +972,7 @@ export class BoardStore {
   async writeNewsStore(store) {
     const normalized = {
       fetchedAt: Math.max(0, Math.floor(Number(store?.fetchedAt) || Date.now())),
+      seededAt: Math.max(0, Math.floor(Number(store?.seededAt) || 0)),
       items: sortNewsItems(store?.items || []).slice(0, getNewsStoreLimit(this.env)),
     };
     await this.state.storage.put(NEWS_STORE_KEY, normalized);
@@ -964,10 +987,20 @@ export class BoardStore {
       return { store, cached: true };
     }
     try {
+      let baseItems = store.items;
+      let seededAt = store.seededAt;
+      if (!seededAt) {
+        const seedItems = await fetchSeedNewsItems(this.env);
+        if (seedItems.length) {
+          baseItems = mergeNewsItems(baseItems, seedItems, getNewsStoreLimit(this.env));
+          seededAt = now;
+        }
+      }
       const latest = await fetchCoinnessNews(this.env);
-      const merged = mergeNewsItems(store.items, latest.items, getNewsStoreLimit(this.env));
+      const merged = mergeNewsItems(baseItems, latest.items, getNewsStoreLimit(this.env));
       const nextStore = await this.writeNewsStore({
         fetchedAt: now,
+        seededAt,
         items: merged,
       });
       if (nextStore.items.length) {
