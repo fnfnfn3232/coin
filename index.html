@@ -2742,7 +2742,7 @@
       <p class="lock-desc">설정된 비밀번호를 입력해야 이 페이지를 볼 수 있습니다.</p>
       <form class="lock-form" id="lockForm">
         <div class="lock-input-wrap">
-          <input id="lockPasswordInput" type="password" autocomplete="off" placeholder="비밀번호" />
+          <input id="lockPasswordInput" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" enterkeyhint="done" placeholder="비밀번호" />
           <div class="lock-caps-warning" id="lockCapsWarning" role="status" aria-live="polite" hidden>Caps Lock이 켜져 있습니다.</div>
         </div>
         <button type="submit" id="lockSubmitBtn">확인</button>
@@ -2765,7 +2765,7 @@
         </div>
         <form class="admin-form" id="adminForm">
           <div class="lock-input-wrap">
-            <input id="adminPasswordInput" type="password" autocomplete="off" placeholder="관리자 비밀번호" />
+            <input id="adminPasswordInput" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" enterkeyhint="done" placeholder="관리자 비밀번호" />
             <div class="lock-caps-warning" id="adminCapsWarning" role="status" aria-live="polite" hidden>Caps Lock이 켜져 있습니다.</div>
           </div>
           <button type="submit">확인</button>
@@ -3383,7 +3383,7 @@
       }
 
       function sendUsageBeacon() {
-        if (!hasServerAuth()) return;
+        if (!hasServerAuth() || isSiteLocked()) return;
         const key = getUsageBeaconKey();
         try {
           if (sessionStorage.getItem(USAGE_BEACON_SENT_KEY) === key) return;
@@ -3392,6 +3392,7 @@
           // Ignore storage failures; the beacon can still be sent once for this page run.
         }
         window.setTimeout(() => {
+          if (isSiteLocked()) return;
           const bytes = getPerformanceTransferBytes();
           fetchServerAuth("/api/usage/beacon", {
             method: "POST",
@@ -3401,7 +3402,9 @@
               path: location.pathname,
               resourceCount: performance.getEntriesByType("resource").length,
             }),
-          }).catch((error) => console.error(error));
+          }).catch((error) => {
+            if (Number(error?.status) !== 401) console.error(error);
+          });
         }, 1500);
       }
 
@@ -5226,15 +5229,17 @@
         const value = String(lockPasswordInput.value || "");
         if (hasServerAuth()) {
           try {
-            lockError.textContent = "서버에서 확인 중입니다...";
+            lockError.textContent = "\uC11C\uBC84\uC5D0\uC11C \uD655\uC778 \uC911\uC785\uB2C8\uB2E4...";
             await loginWithServerPassword(value);
-            lockError.textContent = "\uCF54\uC778 \uB370\uC774\uD130\uB97C \uBD88\uB7EC\uC624\uB294 \uC911\uC785\uB2C8\uB2E4...";
-            await fetchLatestBoardData();
             setLockExtendCount(0);
             setLockAuthFor24Hours();
             hideSiteLock();
             renderLockTtl();
             lockPasswordInput.value = "";
+            fetchLatestBoardData().catch((error) => {
+              console.error(error);
+              manualRefreshHint.textContent = "\uB85C\uADF8\uC778\uC740 \uC644\uB8CC\uB410\uC9C0\uB9CC \uB370\uC774\uD130\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. \uC218\uB3D9 \uAC31\uC2E0\uC744 \uB20C\uB7EC \uB2E4\uC2DC \uC2DC\uB3C4\uD574 \uC8FC\uC138\uC694.";
+            });
           } catch (error) {
             lockError.textContent = getLoginErrorMessage(error);
             lockPasswordInput.value = "";
