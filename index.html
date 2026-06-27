@@ -1172,8 +1172,8 @@
 
       .free-board-read {
         display: grid;
-        gap: 12px;
-        padding: 14px;
+        gap: 14px;
+        padding: 8px 0 18px;
       }
 
       .free-board-read-card {
@@ -1184,17 +1184,44 @@
 
       .free-board-read-head {
         display: grid;
-        gap: 8px;
+        gap: 9px;
         padding-bottom: 12px;
-        border-bottom: 1px solid rgba(84, 104, 255, 0.45);
+        border-bottom: 1px solid rgba(151, 183, 198, 0.18);
       }
 
       .free-board-read-title {
         margin: 0;
-        color: #fff1cf;
-        font-size: clamp(22px, 3vw, 34px);
-        line-height: 1.25;
-        letter-spacing: -0.03em;
+        color: #f5fbff;
+        font-size: clamp(20px, 2vw, 26px);
+        line-height: 1.32;
+        letter-spacing: 0;
+      }
+
+      .free-board-read-subhead {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        flex-wrap: wrap;
+        color: #a7b5bd;
+        font-size: 13px;
+        font-weight: 750;
+        line-height: 1.45;
+      }
+
+      .free-board-read-author-time,
+      .free-board-read-stats {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .free-board-read-author-time span + span::before,
+      .free-board-read-stats span + span::before {
+        content: "|";
+        margin-right: 8px;
+        color: rgba(167, 181, 189, 0.72);
       }
 
       .free-board-read-body {
@@ -1264,6 +1291,14 @@
 
       .free-board-board-nav {
         background: rgba(4, 14, 22, 0.42);
+      }
+
+      .free-board-comments {
+        padding: 12px 0;
+        border: 0;
+        border-top: 1px solid rgba(151, 183, 198, 0.18);
+        border-radius: 0;
+        background: transparent;
       }
 
       .free-board-admin-log {
@@ -2081,6 +2116,15 @@
           font-size: 19px;
           line-height: 1.32;
           letter-spacing: 0;
+        }
+
+        .free-board-read-subhead {
+          gap: 5px;
+          font-size: 11px;
+        }
+
+        .free-board-read-stats {
+          width: 100%;
         }
 
         .free-board-read-body {
@@ -3635,6 +3679,18 @@
         return date.toLocaleString("ko-KR");
       }
 
+      function formatFreeBoardDetailTime(value) {
+        const date = new Date(Number(value) || Date.now());
+        const pad = (number) => String(number).padStart(2, "0");
+        const year = date.getFullYear();
+        const month = pad(date.getMonth() + 1);
+        const day = pad(date.getDate());
+        const hour = pad(date.getHours());
+        const minute = pad(date.getMinutes());
+        const second = pad(date.getSeconds());
+        return `${year}.${month}.${day} ${hour}:${minute}:${second}`;
+      }
+
       function formatFreeBoardShortTime(value) {
         const date = new Date(Number(value) || Date.now());
         const now = new Date();
@@ -3916,8 +3972,17 @@
               <section class="free-board-card free-board-read-card">
                 <article class="free-board-read">
                   <div class="free-board-read-head">
-                    <div class="free-board-meta">${escapeHtml(freeBoardCategoryLabel(selectedPost.category))} · ${escapeHtml(selectedPost.author || "익명")} · ${escapeHtml(formatFreeBoardTime(selectedPost.createdAt))} · 조회 ${formatNumber(selectedPost.views, 0)}</div>
                     <h2 class="free-board-read-title">${escapeHtml(selectedPost.title)}</h2>
+                    <div class="free-board-read-subhead">
+                      <div class="free-board-read-author-time">
+                        <span>${escapeHtml(selectedPost.author || "익명")}</span>
+                        <span>${escapeHtml(formatFreeBoardDetailTime(selectedPost.createdAt))}</span>
+                      </div>
+                      <div class="free-board-read-stats">
+                        <span>조회 ${formatNumber(selectedPost.views, 0)}</span>
+                        <span>댓글 ${formatNumber(Array.isArray(selectedPost.comments) ? selectedPost.comments.length : 0, 0)}</span>
+                      </div>
+                    </div>
                   </div>
                   <div class="free-board-read-body">
                     <div class="free-board-body">${renderSafePostBody(selectedPost.body, selectedPost.htmlEnabled)}</div>
