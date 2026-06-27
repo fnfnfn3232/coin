@@ -3429,7 +3429,15 @@
         return Boolean(SITE_PASSWORD) && String(password || "") === SITE_PASSWORD;
       }
 
-      async function uploadFreeBoardAttachment(file) {
+      function formatUploadProgress(file, progress) {
+        const totalBytes = Math.max(0, Math.floor(Number(progress?.totalBytes) || Number(file?.size) || 0));
+        const uploadedBytes = Math.min(totalBytes, Math.max(0, Math.floor(Number(progress?.uploadedBytes) || 0)));
+        const percent = totalBytes ? Math.min(100, Math.floor((uploadedBytes / totalBytes) * 100)) : 0;
+        const fileName = String(file?.name || "attachment").trim() || "attachment";
+        return `${fileName} ${percent}% (${formatBytes(uploadedBytes)} / ${formatBytes(totalBytes)})`;
+      }
+
+      async function uploadFreeBoardAttachment(file, onProgress = null) {
         const contentType = String(file?.type || "application/octet-stream").toLowerCase() || "application/octet-stream";
         if (!file?.size || file.size > FREE_BOARD_MAX_UPLOAD_FILE_BYTES) {
           throw new Error("media_too_large");
@@ -3440,14 +3448,44 @@
         if (!hasFreeBoardServer()) {
           throw new Error("board_server_required");
         }
-        const payload = await fetchServerAuth("/api/board/media", {
+        const reportProgress = (uploadedBytes, chunkIndex = 0, chunkCount = 1) => {
+          if (typeof onProgress !== "function") return;
+          onProgress({
+            uploadedBytes: Math.min(Number(file.size) || 0, Math.max(0, Math.floor(Number(uploadedBytes) || 0))),
+            totalBytes: Number(file.size) || 0,
+            chunkIndex,
+            chunkCount,
+          });
+        };
+        const initPayload = await fetchServerAuth("/api/board/media/uploads", {
           method: "POST",
-          timeoutMs: 300000,
-          headers: {
-            "Content-Type": contentType,
-            "X-File-Name": encodeURIComponent(String(file?.name || "attachment")),
-          },
-          body: file,
+          timeoutMs: 30000,
+          body: JSON.stringify({
+            fileName: String(file?.name || "attachment"),
+            contentType,
+            size: Math.max(0, Math.floor(Number(file.size) || 0)),
+          }),
+        });
+        const uploadId = String(initPayload?.uploadId || "").trim();
+        const chunkSize = Math.max(1, Math.floor(Number(initPayload?.chunkSize) || (1024 * 1024)));
+        const chunkCount = Math.max(1, Math.ceil((Number(file.size) || 0) / chunkSize));
+        if (!uploadId) throw new Error("invalid_upload_session");
+        reportProgress(0, 0, chunkCount);
+        for (let index = 0; index < chunkCount; index += 1) {
+          const start = index * chunkSize;
+          const end = Math.min(start + chunkSize, file.size);
+          const chunk = file.slice(start, end, "application/octet-stream");
+          await fetchServerAuth(`/api/board/media/uploads/${encodeURIComponent(uploadId)}/chunks/${index}`, {
+            method: "POST",
+            timeoutMs: 60000,
+            headers: { "Content-Type": "application/octet-stream" },
+            body: chunk,
+          });
+          reportProgress(end, index + 1, chunkCount);
+        }
+        const payload = await fetchServerAuth(`/api/board/media/uploads/${encodeURIComponent(uploadId)}/complete`, {
+          method: "POST",
+          timeoutMs: 120000,
         });
         const url = String(payload?.url || "").trim();
         if (!url || !isSafeAttachmentUrl(url)) {
@@ -7618,7 +7656,9 @@
           showFreeBoardMessage("첨부파일을 업로드 중입니다...", false);
           const tokens = [];
           for (const file of files) {
-            const upload = await uploadFreeBoardAttachment(file);
+            const upload = await uploadFreeBoardAttachment(file, (progress) => {
+              showFreeBoardMessage(formatUploadProgress(file, progress), false);
+            });
             const kind = FREE_BOARD_IMAGE_TYPES.has(String(file.type || "").toLowerCase()) ? "image" : "file";
             tokens.push(createMediaToken(kind, upload.url, { size: upload.size, name: upload.fileName || file.name }));
           }
@@ -7661,7 +7701,9 @@
             showFreeBoardMessage("클립보드 이미지를 업로드 중입니다...", false);
             const tokens = [];
             for (const file of imageFiles) {
-              const upload = await uploadFreeBoardAttachment(file);
+              const upload = await uploadFreeBoardAttachment(file, (progress) => {
+                showFreeBoardMessage(formatUploadProgress(file, progress), false);
+              });
               tokens.push(createMediaToken("image", upload.url, { size: upload.size, name: upload.fileName || file.name }));
             }
             insertTextIntoTextarea(textarea, tokens.join("\n"));
