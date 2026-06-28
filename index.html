@@ -1639,6 +1639,67 @@
         font-weight: 900;
       }
 
+      .free-board-compose-attachments {
+        display: grid;
+        gap: 8px;
+        padding: 12px;
+        border: 1px solid rgba(117, 221, 255, 0.16);
+        border-radius: 12px;
+        background: rgba(2, 11, 16, 0.68);
+      }
+
+      .free-board-compose-attachments[hidden] {
+        display: none;
+      }
+
+      .free-board-compose-attachment-list {
+        display: grid;
+        gap: 6px;
+      }
+
+      .free-board-compose-attachment-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        min-width: 0;
+        padding: 8px 0;
+        border-top: 1px solid rgba(151, 183, 198, 0.1);
+      }
+
+      .free-board-compose-attachment-item:first-child {
+        border-top: 0;
+      }
+
+      .free-board-compose-attachment-info {
+        display: grid;
+        gap: 3px;
+        min-width: 0;
+      }
+
+      .free-board-compose-attachment-name {
+        min-width: 0;
+        color: #dff7ff;
+        font-size: 13px;
+        font-weight: 850;
+        overflow-wrap: anywhere;
+      }
+
+      .free-board-compose-attachment-meta {
+        color: #8fa0aa;
+        font-size: 12px;
+        font-weight: 750;
+      }
+
+      .free-board-compose-attachment-remove {
+        flex: 0 0 auto;
+        padding: 6px 10px;
+        border-color: rgba(255, 138, 138, 0.28);
+        background: rgba(255, 110, 110, 0.06);
+        color: #ffd6d6;
+        font-size: 12px;
+      }
+
       .free-board-actions {
         display: flex;
         gap: 8px;
@@ -3643,6 +3704,7 @@
       let freeBoardSelectedId = "";
       let freeBoardCommentsCollapsed = false;
       let freeBoardCommentSubmitting = false;
+      let freeBoardComposeMediaTokens = [];
       let freeBoardServerPosts = [];
       let freeBoardPostsLoaded = false;
       let freeBoardPostsPromise = null;
@@ -3990,7 +4052,7 @@
 
       function convertPlainMediaUrlsToMediaTokens(value) {
         const placeholders = [];
-        const protectedText = String(value || "").replace(/\[(image|video):([^\]\r\n]+)\]/gi, (match) => {
+        const protectedText = String(value || "").replace(/\[(image|video|file):([^\]\r\n]+)\]/gi, (match) => {
           const token = `__BOARD_EXISTING_MEDIA_${placeholders.length}__`;
           placeholders.push({ token, value: match });
           return token;
@@ -4044,10 +4106,145 @@
         return { tokens, rejected, validCount };
       }
 
+      function isValidEmbeddedMediaToken(token) {
+        return Boolean(token?.actualKind && token.actualKind === token.requestedKind && token.url);
+      }
+
+      function createComposeMediaToken(kind, url, meta = {}) {
+        const requestedKind = String(kind || "").toLowerCase();
+        const safeUrl = String(url || "").trim();
+        const actualKind = requestedKind === "file"
+          ? (isSafeAttachmentUrl(safeUrl) ? "file" : "")
+          : getSafeMediaKind(safeUrl);
+        return {
+          requestedKind,
+          actualKind,
+          url: safeUrl,
+          meta: {
+            size: Math.max(0, Math.floor(Number(meta?.size) || 0)),
+            name: String(meta?.name || meta?.fileName || "").trim(),
+          },
+        };
+      }
+
+      function getComposeMediaTokenKey(token) {
+        const size = Math.max(0, Math.floor(Number(token?.meta?.size) || 0));
+        const name = String(token?.meta?.name || "").trim();
+        return `${token?.requestedKind || ""}|${token?.url || ""}|${size}|${name}`;
+      }
+
+      function mergeComposeMediaTokens(tokens) {
+        const seen = new Set();
+        const merged = [];
+        (tokens || []).forEach((token) => {
+          const normalized = createComposeMediaToken(token?.requestedKind, token?.url, token?.meta || {});
+          if (!isValidEmbeddedMediaToken(normalized)) return;
+          const key = getComposeMediaTokenKey(normalized);
+          if (seen.has(key)) return;
+          seen.add(key);
+          if (merged.length < FREE_BOARD_MAX_MEDIA) merged.push(normalized);
+        });
+        return merged;
+      }
+
+      function splitFreeBoardBodyAndMediaTokens(value) {
+        const tokens = [];
+        const body = String(value || "").replace(/\[(image|video|file):([^\]\r\n]+)\]/gi, (match, kind, payload) => {
+          const { url, meta } = parseMediaTokenPayload(payload);
+          const token = createComposeMediaToken(kind, url, meta);
+          if (!isValidEmbeddedMediaToken(token)) return match;
+          tokens.push(token);
+          return "";
+        });
+        return {
+          body: body.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim(),
+          tokens,
+        };
+      }
+
+      function serializeComposeMediaTokens(tokens = freeBoardComposeMediaTokens) {
+        return mergeComposeMediaTokens(tokens)
+          .map((token) => createMediaToken(token.requestedKind, token.url, token.meta || {}))
+          .join("\n");
+      }
+
+      function buildFreeBoardStoredBody(rawBody) {
+        const splitBody = splitFreeBoardBodyAndMediaTokens(convertPlainMediaUrlsToMediaTokens(rawBody));
+        freeBoardComposeMediaTokens = mergeComposeMediaTokens([...freeBoardComposeMediaTokens, ...splitBody.tokens]);
+        const tokenText = serializeComposeMediaTokens();
+        return [splitBody.body, tokenText].filter(Boolean).join("\n\n").trim();
+      }
+
+      function absorbTextareaMediaTokens(textarea) {
+        if (!textarea) return;
+        const splitBody = splitFreeBoardBodyAndMediaTokens(textarea.value || "");
+        if (!splitBody.tokens.length) return;
+        const cursor = Number.isFinite(textarea.selectionStart) ? textarea.selectionStart : splitBody.body.length;
+        textarea.value = splitBody.body;
+        freeBoardComposeMediaTokens = mergeComposeMediaTokens([...freeBoardComposeMediaTokens, ...splitBody.tokens]);
+        const nextCursor = Math.min(textarea.value.length, cursor);
+        textarea.setSelectionRange(nextCursor, nextCursor);
+      }
+
+      function getComposeAttachmentName(token) {
+        const metaName = String(token?.meta?.name || "").trim();
+        if (metaName) return metaName;
+        const fallback = token?.actualKind === "image" ? "이미지 첨부" : token?.actualKind === "video" ? "동영상 첨부" : "첨부파일";
+        try {
+          const lastPath = decodeURIComponent(new URL(token?.url || "").pathname.split("/").filter(Boolean).pop() || "");
+          return lastPath || fallback;
+        } catch (_error) {
+          return fallback;
+        }
+      }
+
+      function renderFreeBoardComposeAttachments() {
+        const panel = document.getElementById("freeBoardComposeAttachments");
+        if (!panel) return;
+        freeBoardComposeMediaTokens = mergeComposeMediaTokens(freeBoardComposeMediaTokens);
+        if (!freeBoardComposeMediaTokens.length) {
+          panel.hidden = true;
+          panel.innerHTML = "";
+          return;
+        }
+        const items = freeBoardComposeMediaTokens.map((token, index) => {
+          const name = getComposeAttachmentName(token);
+          const kindLabel = token.actualKind === "image" ? "이미지" : token.actualKind === "video" ? "동영상" : "첨부파일";
+          const size = Math.max(0, Math.floor(Number(token.meta?.size) || 0));
+          const sizeText = size ? ` · ${formatBytes(size)}` : "";
+          return `
+            <div class="free-board-compose-attachment-item">
+              <div class="free-board-compose-attachment-info">
+                <span class="free-board-compose-attachment-name">${escapeHtml(name)}</span>
+                <span class="free-board-compose-attachment-meta">${escapeHtml(kindLabel + sizeText)}</span>
+              </div>
+              <button class="free-board-compose-attachment-remove" type="button" data-free-board-remove-compose-media="${index}">삭제</button>
+            </div>
+          `;
+        });
+        panel.hidden = false;
+        panel.innerHTML = `
+          <div class="free-board-compose-preview-title">첨부파일</div>
+          <div class="free-board-compose-attachment-list">${items.join("")}</div>
+        `;
+      }
+
+      function addFreeBoardComposeMediaTokens(tokens) {
+        freeBoardComposeMediaTokens = mergeComposeMediaTokens([...freeBoardComposeMediaTokens, ...(tokens || [])]);
+        renderFreeBoardComposePreview(document.getElementById("freeBoardBody"));
+      }
+
+      function getFreeBoardComposeMediaCount(textarea = null) {
+        const splitBody = textarea ? splitFreeBoardBodyAndMediaTokens(textarea.value || "") : { tokens: [] };
+        return mergeComposeMediaTokens([...freeBoardComposeMediaTokens, ...splitBody.tokens]).length;
+      }
+
       function renderFreeBoardComposePreview(textarea) {
+        absorbTextareaMediaTokens(textarea);
+        renderFreeBoardComposeAttachments();
         const preview = document.getElementById("freeBoardComposePreview");
         if (!preview) return;
-        const tokens = validateEmbeddedMediaTokens(textarea?.value || "").tokens;
+        const tokens = freeBoardComposeMediaTokens.filter((token) => token.actualKind !== "file");
         const items = tokens
           .map((token) => renderMediaTag(token.url, token.requestedKind, token.meta))
           .filter(Boolean);
@@ -4697,6 +4894,8 @@
           const selectedCategory = editingPost
             ? normalizeFreeBoardCategory(editingPost.category)
             : (freeBoardFilter !== "all" ? normalizeFreeBoardCategory(freeBoardFilter) : "free");
+          const composeBodyParts = splitFreeBoardBodyAndMediaTokens(editingPost?.body || "");
+          freeBoardComposeMediaTokens = mergeComposeMediaTokens(composeBodyParts.tokens);
           newsPanel.innerHTML = `
             <div class="free-board-shell">
               <section class="free-board-card">
@@ -4746,8 +4945,9 @@
                         HTML 사용
                       </label>
                     </div>
-                    <textarea class="free-board-compose-body" id="freeBoardBody" name="body" maxlength="12000" placeholder="내용을 입력하세요. 모든 파일은 파일 첨부로 올리고, 이미지는 Ctrl+V 붙여넣기나 링크 버튼으로도 넣을 수 있습니다. 코드는 \`\`\` 코드 \`\`\` 형태로 넣으면 코드 박스로 표시됩니다." required>${escapeHtml(editingPost?.body || "")}</textarea>
+                    <textarea class="free-board-compose-body" id="freeBoardBody" name="body" maxlength="12000" placeholder="내용을 입력하세요. 모든 파일은 파일 첨부로 올리고, 이미지는 Ctrl+V 붙여넣기나 링크 버튼으로도 넣을 수 있습니다. 코드는 \`\`\` 코드 \`\`\` 형태로 넣으면 코드 박스로 표시됩니다.">${escapeHtml(composeBodyParts.body)}</textarea>
                     <div class="free-board-compose-preview" id="freeBoardComposePreview" hidden></div>
+                    <div class="free-board-compose-attachments" id="freeBoardComposeAttachments" hidden></div>
                     <div class="free-board-help">첨부파일은 종류와 관계없이 파일 1개당 최대 200MB까지 가능합니다. HTML 사용을 체크해도 script, iframe, 이벤트 속성은 제거됩니다.</div>
                   </div>
                   <div class="free-board-actions">
@@ -7345,7 +7545,7 @@
         const category = normalizeFreeBoardCategory(formData.get("category"));
         const title = String(formData.get("title") || "").trim();
         const author = String(formData.get("author") || "").trim();
-        const body = convertPlainMediaUrlsToMediaTokens(String(formData.get("body") || "")).trim();
+        const body = buildFreeBoardStoredBody(String(formData.get("body") || ""));
         const htmlEnabled = formData.get("htmlEnabled") === "on";
         const effectivePostPassword = freeBoardMode === "edit"
           ? (postPassword || freeBoardEditAuthPostPassword)
@@ -7513,6 +7713,17 @@
           return;
         }
 
+        const removeComposeMediaButton = clickTarget.closest("[data-free-board-remove-compose-media]");
+        if (removeComposeMediaButton) {
+          const index = Number(removeComposeMediaButton.dataset.freeBoardRemoveComposeMedia);
+          if (Number.isInteger(index) && index >= 0 && index < freeBoardComposeMediaTokens.length) {
+            freeBoardComposeMediaTokens.splice(index, 1);
+            renderFreeBoardComposePreview(document.getElementById("freeBoardBody"));
+            showFreeBoardMessage("첨부파일을 삭제했습니다. 저장을 눌러야 최종 반영됩니다.", false);
+          }
+          return;
+        }
+
         const uploadButton = clickTarget.closest("[data-free-board-upload-media]");
         if (uploadButton) {
           const fileInput = document.getElementById("freeBoardFileInput");
@@ -7535,9 +7746,12 @@
             return;
           }
           const textarea = document.getElementById("freeBoardBody");
-          insertTextIntoTextarea(textarea, createMediaToken(kind, trimmedUrl));
-          renderFreeBoardComposePreview(textarea);
-          showFreeBoardMessage(`${label} 링크를 본문에 넣었습니다.`, false);
+          if (getFreeBoardComposeMediaCount(textarea) >= FREE_BOARD_MAX_MEDIA) {
+            showFreeBoardMessage(`미디어는 최대 ${FREE_BOARD_MAX_MEDIA}개까지 가능합니다. 입력 내용은 유지됩니다.`, true);
+            return;
+          }
+          addFreeBoardComposeMediaTokens([createComposeMediaToken(kind, trimmedUrl)]);
+          showFreeBoardMessage(`${label} 링크를 첨부파일 목록에 추가했습니다.`, false);
           return;
         }
 
@@ -7741,7 +7955,7 @@
           return;
         }
         const textarea = document.getElementById("freeBoardBody");
-        const currentMediaCount = validateEmbeddedMediaTokens(textarea?.value || "").validCount;
+        const currentMediaCount = getFreeBoardComposeMediaCount(textarea);
         if (currentMediaCount + files.length > FREE_BOARD_MAX_MEDIA) {
           showFreeBoardMessage(`미디어는 최대 ${FREE_BOARD_MAX_MEDIA}개까지 가능합니다. 입력 내용은 유지됩니다.`, true);
           return;
@@ -7754,11 +7968,10 @@
               showFreeBoardMessage(formatUploadProgress(file, progress), false);
             });
             const kind = FREE_BOARD_IMAGE_TYPES.has(String(file.type || "").toLowerCase()) ? "image" : "file";
-            tokens.push(createMediaToken(kind, upload.url, { size: upload.size, name: upload.fileName || file.name }));
+            tokens.push(createComposeMediaToken(kind, upload.url, { size: upload.size, name: upload.fileName || file.name }));
           }
-          insertTextIntoTextarea(textarea, tokens.join("\n"));
-          renderFreeBoardComposePreview(textarea);
-          showFreeBoardMessage("첨부파일을 본문에 넣었습니다. 아래 미리보기에서 확인할 수 있습니다.", false);
+          addFreeBoardComposeMediaTokens(tokens);
+          showFreeBoardMessage("첨부파일을 목록에 추가했습니다. 아래에서 삭제하거나 저장할 수 있습니다.", false);
         } catch (error) {
           console.error(error);
           const message = error?.message === "media_too_large"
@@ -7786,7 +7999,7 @@
             showFreeBoardMessage("이미지 붙여넣기는 서버 게시판이 켜져 있을 때 사용할 수 있습니다. 이미지 링크는 버튼으로 넣을 수 있습니다.", true);
             return;
           }
-          const currentMediaCount = validateEmbeddedMediaTokens(textarea.value).validCount;
+          const currentMediaCount = getFreeBoardComposeMediaCount(textarea);
           if (currentMediaCount + imageFiles.length > FREE_BOARD_MAX_MEDIA) {
             showFreeBoardMessage(`미디어는 최대 ${FREE_BOARD_MAX_MEDIA}개까지 가능합니다. 입력 내용은 유지됩니다.`, true);
             return;
@@ -7798,11 +8011,10 @@
               const upload = await uploadFreeBoardAttachment(file, (progress) => {
                 showFreeBoardMessage(formatUploadProgress(file, progress), false);
               });
-              tokens.push(createMediaToken("image", upload.url, { size: upload.size, name: upload.fileName || file.name }));
+              tokens.push(createComposeMediaToken("image", upload.url, { size: upload.size, name: upload.fileName || file.name }));
             }
-            insertTextIntoTextarea(textarea, tokens.join("\n"));
-            renderFreeBoardComposePreview(textarea);
-            showFreeBoardMessage("붙여넣은 이미지를 본문에 넣었습니다. 아래 미리보기에서 확인할 수 있습니다.", false);
+            addFreeBoardComposeMediaTokens(tokens);
+            showFreeBoardMessage("붙여넣은 이미지를 첨부파일 목록에 추가했습니다.", false);
           } catch (error) {
             console.error(error);
             const message = error?.message === "media_too_large"
@@ -7819,10 +8031,16 @@
         if (!pastedText) return;
         const convertedText = convertPlainMediaUrlsToMediaTokens(pastedText);
         if (convertedText === pastedText) return;
+        const splitPasted = splitFreeBoardBodyAndMediaTokens(convertedText);
+        if (!splitPasted.tokens.length) return;
+        if (getFreeBoardComposeMediaCount(textarea) + splitPasted.tokens.length > FREE_BOARD_MAX_MEDIA) {
+          showFreeBoardMessage(`미디어는 최대 ${FREE_BOARD_MAX_MEDIA}개까지 가능합니다. 입력 내용은 유지됩니다.`, true);
+          return;
+        }
         event.preventDefault();
-        insertTextIntoTextarea(textarea, convertedText);
-        renderFreeBoardComposePreview(textarea);
-        showFreeBoardMessage("이미지/동영상 주소를 본문 미디어로 변환했습니다. 아래 미리보기에서 확인할 수 있습니다.", false);
+        if (splitPasted.body) insertTextIntoTextarea(textarea, splitPasted.body);
+        addFreeBoardComposeMediaTokens(splitPasted.tokens);
+        showFreeBoardMessage("이미지/동영상 주소를 첨부파일 목록에 추가했습니다.", false);
       });
 
       newsPanel.addEventListener("input", (event) => {
