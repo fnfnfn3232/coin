@@ -28,7 +28,7 @@ const LOGIN_FAILURE_LIMIT = 10;
 const LOGIN_LOCK_MS = 30 * 60 * 1000;
 const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
 const GITHUB_OIDC_JWKS_URL = `${GITHUB_OIDC_ISSUER}/.well-known/jwks`;
-const GITHUB_OIDC_REPOSITORY = "fnfnfn3232/2026-04-22-spot-usdt";
+const GITHUB_OIDC_REPOSITORY = "fnfnfn3232/coin";
 const GITHUB_OIDC_AUDIENCE = "coin-board-auth-market-data";
 
 function jsonResponse(body, status = 200, env = {}) {
