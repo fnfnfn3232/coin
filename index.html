@@ -175,6 +175,12 @@
       display: none;
     }
 
+    .delete-auth-modal {
+      z-index: 6200;
+      background: #1a1c1e;
+      backdrop-filter: none;
+    }
+
     .admin-card {
       width: min(860px, calc(100vw - 32px));
       max-height: calc(100vh - 40px);
@@ -186,7 +192,11 @@
     }
 
     .delete-auth-card {
-      width: min(520px, calc(100vw - 32px));
+      width: min(680px, calc(100vw - 32px));
+      border: 2px solid rgba(84, 104, 255, 0.82);
+      border-radius: 0;
+      background: #181b1c;
+      box-shadow: none;
     }
 
     .admin-auth,
@@ -240,7 +250,83 @@
     }
 
     .delete-auth-form {
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 20px;
+      align-items: center;
+      justify-items: center;
+      margin-top: 0;
+    }
+
+    .delete-auth-panel {
+      display: grid;
+      gap: 20px;
+      justify-items: center;
+      padding: 70px 42px;
+    }
+
+    .delete-auth-panel .admin-head {
+      display: block;
+      margin: 0;
+      text-align: center;
+    }
+
+    .delete-auth-panel .admin-title {
+      margin: 0;
+      color: #a9d2ff;
+      font-size: 21px;
+      letter-spacing: 0;
+    }
+
+    .delete-auth-panel .admin-desc,
+    .delete-auth-panel .admin-close-top {
+      display: none;
+    }
+
+    .delete-auth-inputs {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 10px;
+      width: min(520px, 100%);
+    }
+
+    .delete-auth-inputs input {
+      min-height: 46px;
+      border-radius: 0;
+      border-color: rgba(151, 183, 198, 0.28);
+      background: rgba(255, 255, 255, 0.035);
+      text-align: center;
+    }
+
+    .delete-auth-actions {
+      display: grid;
+      grid-template-columns: minmax(118px, 1fr) minmax(118px, 1fr);
+      gap: 8px;
+      width: min(250px, 100%);
+    }
+
+    .delete-auth-actions button {
+      min-height: 44px;
+      border-radius: 3px;
+      font-weight: 850;
+    }
+
+    .delete-auth-actions .admin-close {
+      border-color: rgba(151, 183, 198, 0.4);
+      background: rgba(117, 128, 135, 0.62);
+      color: #ffffff;
+    }
+
+    .delete-auth-actions #deleteAuthSubmitBtn {
+      border-color: rgba(103, 119, 255, 0.72);
+      background: rgba(70, 84, 180, 0.78);
+      color: #ffffff;
+    }
+
+    .delete-auth-panel .admin-error {
+      margin-top: -4px;
+      text-align: center;
+      min-height: 20px;
     }
 
     .admin-actions {
@@ -2575,6 +2661,23 @@
           padding: 6px 9px;
         }
 
+        .delete-auth-panel {
+          padding: 46px 18px;
+        }
+
+        .delete-auth-panel .admin-title {
+          font-size: 19px;
+        }
+
+        .delete-auth-inputs {
+          grid-template-columns: 1fr;
+          width: min(320px, 100%);
+        }
+
+        .delete-auth-actions {
+          width: min(250px, 100%);
+        }
+
         .lock-logout-btn,
         .lock-extend-btn {
           padding: 5px 9px;
@@ -2953,27 +3056,31 @@
     </section>
   </div>
 
-  <div class="admin-modal hidden" id="deleteAuthModal" aria-modal="true" role="dialog" aria-labelledby="deleteAuthTitle">
+  <div class="admin-modal delete-auth-modal hidden" id="deleteAuthModal" aria-modal="true" role="dialog" aria-labelledby="deleteAuthTitle">
     <section class="admin-card delete-auth-card">
-      <div class="admin-auth">
+      <div class="delete-auth-panel">
         <div class="admin-head">
           <div>
             <h2 class="admin-title" id="deleteAuthTitle">글 삭제 확인</h2>
             <p class="admin-desc" id="deleteAuthDesc">글은 글 비밀번호, 댓글은 댓글 비밀번호로 삭제합니다. 관리자 비밀번호로도 처리할 수 있습니다.</p>
           </div>
-          <button class="admin-close" id="deleteAuthCloseBtn" type="button">닫기</button>
+          <button class="admin-close admin-close-top" id="deleteAuthCloseBtn" type="button">닫기</button>
         </div>
         <form class="admin-form delete-auth-form" id="deleteAuthForm">
-          <div class="lock-input-wrap">
-            <input id="deleteAuthPasswordInput" type="password" autocomplete="off" placeholder="글/댓글 비밀번호" />
+          <div class="delete-auth-inputs">
+            <div class="lock-input-wrap">
+              <input id="deleteAuthPasswordInput" type="password" autocomplete="off" placeholder="글/댓글 비밀번호" />
+            </div>
+            <div class="lock-input-wrap">
+              <input id="deleteAuthAdminPasswordInput" type="password" autocomplete="off" placeholder="관리자 비밀번호" />
+            </div>
           </div>
-          <div class="lock-input-wrap">
-            <input id="deleteAuthAdminPasswordInput" type="password" autocomplete="off" placeholder="관리자 비밀번호" />
+          <div class="delete-auth-actions">
+            <button class="admin-close" id="deleteAuthCancelBtn" type="button">취소</button>
+            <button id="deleteAuthSubmitBtn" type="submit">확인</button>
           </div>
-          <button id="deleteAuthSubmitBtn" type="submit">삭제</button>
-          <button class="admin-close" id="deleteAuthCancelBtn" type="button">취소</button>
+          <div class="admin-error" id="deleteAuthError"></div>
         </form>
-        <div class="admin-error" id="deleteAuthError"></div>
       </div>
     </section>
   </div>
@@ -5456,13 +5563,13 @@
         pendingAuthAction = action === "edit" ? "edit" : "delete";
         const isEdit = pendingAuthAction === "edit";
         const isComment = pendingDeleteType === "comment";
-        deleteAuthTitle.textContent = isEdit ? "글 수정 확인" : (isComment ? "댓글 삭제 확인" : "글 삭제 확인");
+        deleteAuthTitle.textContent = "비밀번호를 입력하세요.";
         deleteAuthDesc.textContent = isEdit
           ? "글 비밀번호 또는 관리자 비밀번호를 입력하면 수정 화면으로 이동합니다."
           : (isComment
             ? "댓글 비밀번호 또는 관리자 비밀번호로 댓글을 삭제할 수 있습니다."
             : "글 비밀번호 또는 관리자 비밀번호로 글을 삭제할 수 있습니다.");
-        deleteAuthSubmitBtn.textContent = isEdit ? "확인" : "삭제";
+        deleteAuthSubmitBtn.textContent = "확인";
         deleteAuthSubmitBtn.disabled = false;
         deleteAuthModal.classList.remove("hidden");
         deleteAuthPasswordInput.value = "";
@@ -5802,7 +5909,7 @@
           deleteAuthPasswordInput.focus();
         } finally {
           deleteAuthSubmitBtn.disabled = false;
-          deleteAuthSubmitBtn.textContent = "삭제";
+          deleteAuthSubmitBtn.textContent = "확인";
         }
       });
       adminPasswordInput.addEventListener("keydown", updateAdminCapsWarning);
