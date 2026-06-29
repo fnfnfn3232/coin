@@ -353,6 +353,14 @@
       transition: opacity 0.16s ease, transform 0.16s ease, visibility 0.16s ease;
     }
 
+    .lock-ttl-row {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
     body.scrolled-past-top .lock-ttl-wrap,
     body.scrolled-past-top .admin-launch {
       opacity: 0;
@@ -378,6 +386,7 @@
       letter-spacing: 0.01em;
     }
 
+    .lock-logout-btn,
     .lock-extend-btn {
       padding: 6px 12px;
       border-radius: 999px;
@@ -388,11 +397,22 @@
       cursor: pointer;
     }
 
+    .lock-logout-btn {
+      border-color: rgba(255, 138, 138, 0.28);
+      color: #ffd6d6;
+    }
+
+    .lock-logout-btn:hover {
+      border-color: rgba(255, 138, 138, 0.48);
+      color: #fff0f0;
+    }
+
     .lock-extend-btn:hover {
       border-color: rgba(117, 221, 255, 0.45);
       color: #eff9ff;
     }
 
+    .lock-logout-btn:disabled,
     .lock-extend-btn:disabled {
       opacity: 0.5;
       cursor: not-allowed;
@@ -2545,6 +2565,7 @@
         }
 
         .lock-ttl,
+        .lock-logout-btn,
         .lock-extend-btn,
         .admin-launch {
           font-size: 11px;
@@ -2554,6 +2575,7 @@
           padding: 6px 9px;
         }
 
+        .lock-logout-btn,
         .lock-extend-btn {
           padding: 5px 9px;
         }
@@ -2825,7 +2847,10 @@
   </main>
 
   <div class="lock-ttl-wrap" id="lockTtlWrap">
-    <div class="lock-ttl" id="lockTtl">로그인 유지시간 00시00분</div>
+    <div class="lock-ttl-row">
+      <div class="lock-ttl" id="lockTtl">로그인 유지시간 00시00분</div>
+      <button class="lock-logout-btn" id="lockLogoutBtn" type="button">로그아웃</button>
+    </div>
     <button class="lock-extend-btn" id="lockExtendBtn" type="button">연장</button>
   </div>
 
@@ -3174,6 +3199,7 @@
       const siteLock = document.getElementById("siteLock");
       const lockTtl = document.getElementById("lockTtl");
       const lockExtendBtn = document.getElementById("lockExtendBtn");
+      const lockLogoutBtn = document.getElementById("lockLogoutBtn");
       const lockForm = document.getElementById("lockForm");
       const lockPasswordInput = document.getElementById("lockPasswordInput");
       const lockCapsWarning = document.getElementById("lockCapsWarning");
@@ -3272,9 +3298,7 @@
 
       function handleServerAuthExpired() {
         if (!hasServerAuth() || isLocalPreview()) return;
-        setServerAuthToken("");
-        localStorage.removeItem(LOCK_AUTH_UNTIL_KEY);
-        localStorage.removeItem(LOCK_EXTEND_COUNT_KEY);
+        clearSiteLoginState();
         renderLockTtl();
         if (isSiteLocked()) {
           if (!lockError.textContent) {
@@ -3506,6 +3530,11 @@
           method: "POST",
           body: JSON.stringify({ password }),
         });
+      }
+
+      async function logoutServerSession() {
+        if (!hasServerAuth() || isLocalPreview()) return;
+        await fetchServerAuth("/api/logout", { method: "POST", timeoutMs: 3000 });
       }
 
       async function verifyServerSession() {
@@ -5556,6 +5585,8 @@
         const used = getLockExtendCount();
         const remain = Math.max(0, LOCK_EXTEND_MAX - used);
 
+        lockLogoutBtn.disabled = !active;
+
         if (!active) {
           lockExtendBtn.disabled = true;
           lockExtendBtn.textContent = "연장";
@@ -5570,6 +5601,16 @@
 
         lockExtendBtn.disabled = false;
         lockExtendBtn.textContent = `연장 ${remain}회 남음`;
+      }
+
+      function clearSiteLoginState() {
+        setServerAuthToken("");
+        localStorage.removeItem(LOCK_AUTH_UNTIL_KEY);
+        localStorage.removeItem(LOCK_EXTEND_COUNT_KEY);
+        adminServerPassword = "";
+        freeBoardAdminMode = false;
+        freeBoardAdminPassword = "";
+        freeBoardAdminLogs = [];
       }
 
       function formatRemainingLockTime(ms) {
@@ -5612,8 +5653,7 @@
             .catch((error) => console.error(error));
           return;
         }
-        localStorage.removeItem(LOCK_AUTH_UNTIL_KEY);
-        localStorage.removeItem(LOCK_EXTEND_COUNT_KEY);
+        clearSiteLoginState();
         renderLockTtl();
         showSiteLock();
       }
@@ -5828,6 +5868,23 @@
         setLockExtendCount(used + 1);
         setLockAuthFor24Hours();
         renderLockTtl();
+      });
+
+      lockLogoutBtn.addEventListener("click", async () => {
+        if (lockLogoutBtn.disabled) return;
+        lockLogoutBtn.disabled = true;
+        try {
+          await logoutServerSession();
+        } catch (error) {
+          console.error(error);
+        } finally {
+          clearSiteLoginState();
+          closeAdminModal();
+          closeDeleteAuthModal();
+          renderLockTtl();
+          showSiteLock();
+          lockError.textContent = "";
+        }
       });
 
       document.getElementById("eyebrow").textContent = TEXT.eyebrow;
