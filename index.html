@@ -3902,6 +3902,13 @@
         return payload?.post || null;
       }
 
+      async function verifyServerFreeBoardPostPassword(postId, postPassword = "", adminPassword = "") {
+        return fetchServerAuth(`/api/board/posts/${encodeURIComponent(postId)}/verify`, {
+          method: "POST",
+          body: JSON.stringify({ postPassword, adminPassword }),
+        });
+      }
+
       function getFreeBoardSaveErrorMessage(error) {
         const message = String(error?.message || "");
         const status = Math.max(0, Math.floor(Number(error?.status) || 0));
@@ -5395,6 +5402,7 @@
             ? "댓글 비밀번호 또는 관리자 비밀번호로 댓글을 삭제할 수 있습니다."
             : "글 비밀번호 또는 관리자 비밀번호로 글을 삭제할 수 있습니다.");
         deleteAuthSubmitBtn.textContent = isEdit ? "확인" : "삭제";
+        deleteAuthSubmitBtn.disabled = false;
         deleteAuthModal.classList.remove("hidden");
         deleteAuthPasswordInput.value = "";
         deleteAuthAdminPasswordInput.value = "";
@@ -5669,14 +5677,34 @@
           return;
         }
         if (pendingAuthAction === "edit") {
-          freeBoardSelectedId = postId;
-          freeBoardMode = "edit";
-          freeBoardEditAuthPostPassword = password;
-          freeBoardEditAuthAdminPassword = adminPassword;
-          showFreeBoardMessage("", false);
-          closeDeleteAuthModal();
-          renderFreeBoard();
-          writeAppHistoryState();
+          try {
+            deleteAuthError.textContent = "비밀번호 확인 중입니다...";
+            deleteAuthSubmitBtn.disabled = true;
+            await verifyServerFreeBoardPostPassword(postId, password, adminPassword);
+            freeBoardSelectedId = postId;
+            freeBoardMode = "edit";
+            freeBoardEditAuthPostPassword = password;
+            freeBoardEditAuthAdminPassword = adminPassword;
+            showFreeBoardMessage("", false);
+            closeDeleteAuthModal();
+            renderFreeBoard();
+            writeAppHistoryState();
+          } catch (error) {
+            const message = String(error?.message || "");
+            if (message === "auth_required") {
+              deleteAuthError.textContent = "로그인이 만료되었습니다. 비밀번호를 다시 입력해 주세요.";
+            } else {
+              deleteAuthError.textContent = message === "invalid_password" || message.includes("server_auth_failed") || message.includes("401") || Number(error?.status) === 401
+              ? "비밀번호가 맞지 않습니다. 다시 입력해 주세요."
+              : "비밀번호 확인에 실패했습니다. 잠시 후 다시 시도해 주세요.";
+            }
+            deleteAuthPasswordInput.value = "";
+            deleteAuthAdminPasswordInput.value = "";
+            deleteAuthPasswordInput.focus();
+          } finally {
+            deleteAuthSubmitBtn.disabled = false;
+            deleteAuthSubmitBtn.textContent = "확인";
+          }
           return;
         }
         try {

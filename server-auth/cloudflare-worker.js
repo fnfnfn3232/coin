@@ -820,6 +820,17 @@ async function handleBoardPosts(request, env, url) {
     return jsonResponse({ posts, post: target }, 200, env);
   }
 
+  if (request.method === "POST" && postId && url.pathname.endsWith("/verify")) {
+    const id = postId.replace(/\/verify$/, "");
+    const body = await parseJsonBody(request);
+    const authResponse = await requireAuthOrPassword(request, env, body);
+    if (authResponse) return authResponse;
+    const posts = await readBoardPosts(env);
+    const target = posts.find((post) => post.id === id);
+    if (!target) return jsonResponse({ error: "not_found" }, 404, env);
+    return jsonResponse({ ok: true }, 200, env);
+  }
+
   if (request.method === "PUT" && postId) {
     const body = await parseJsonBody(request);
     const authResponse = await requireAuthOrPassword(request, env, body);
@@ -1743,6 +1754,18 @@ export class BoardStore {
       target.views = Math.max(0, Math.floor(Number(target.views) || 0)) + 1;
       await this.writePosts(posts);
       return boardJsonResponse(posts, 200, this.env, { post: target });
+    }
+
+    if (request.method === "POST" && postId && url.pathname.endsWith("/verify")) {
+      const id = postId.replace(/\/verify$/, "");
+      const body = await parseJsonBody(request);
+      const posts = await this.readPosts();
+      const target = posts.find((post) => post.id === id);
+      if (!target) return jsonResponse({ error: "not_found" }, 404, this.env);
+      if (!await canManagePost(target, body, this.env)) {
+        return jsonResponse({ error: "invalid_password" }, 401, this.env);
+      }
+      return jsonResponse({ ok: true }, 200, this.env);
     }
 
     if (request.method === "POST" && /^\/api\/board\/posts\/[^/]+\/comments$/.test(url.pathname)) {
