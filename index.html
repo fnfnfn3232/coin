@@ -3308,6 +3308,15 @@
       }
     }
 
+    function canUseLastGoodData() {
+      if (!hasServerAuth() || isLocalPreview()) return true;
+      try {
+        return Number(localStorage.getItem(LOCK_AUTH_UNTIL_KEY) || 0) > Date.now();
+      } catch (_error) {
+        return false;
+      }
+    }
+
     const appShell = document.getElementById("appShell");
     let data = window.BOARD_DATA || {
       generatedAt: 0,
@@ -3325,7 +3334,7 @@
     };
     let marketDataLoaded = isValidBoardPayload(window.BOARD_DATA);
     let marketDataLoadPromise = null;
-    const cachedData = hasServerAuth() && !isLocalPreview() ? null : loadLastGoodData();
+    const cachedData = canUseLastGoodData() ? loadLastGoodData() : null;
     if (isValidBoardPayload(cachedData)) {
       const cachedGeneratedAt = Number(cachedData.generatedAt) || 0;
       const currentGeneratedAt = Number(data.generatedAt) || 0;
@@ -3909,7 +3918,7 @@
         if (isSiteLocked()) return;
         if (liveNewsPromise) return;
         if (newsSearchQuery && force) return;
-        if (force && getLoadedNewsItems(data.news).length > NEWS_PAGE_SIZE) return;
+        if (force && liveNewsFetchedAtMs > 0 && getLoadedNewsItems(data.news).length > NEWS_PAGE_SIZE) return;
         if (!force && Date.now() - liveNewsFetchedAtMs < LIVE_NEWS_REFRESH_MS) return;
         refreshLiveNews(force)
           .then(() => {
@@ -5319,7 +5328,10 @@
         `;
         const metaHtml = `<p class="news-meta">${newsSearchQuery ? `검색 결과 ${formatNumber(total, 0)}건` : `저장된 뉴스 ${formatNumber(storedCount, 0)}건`} · 현재 ${formatNumber(items.length, 0)}건 표시</p>`;
         if (!items.length) {
-          newsPanel.innerHTML = `${statusHtml}${searchHtml}${metaHtml}<p class="news-empty">${escapeHtml(newsSearchQuery ? "검색 결과가 없습니다." : TEXT.newsEmpty)}</p>`;
+          const emptyText = liveNewsPromise
+            ? (newsSearchQuery ? "뉴스를 검색하는 중입니다." : "뉴스를 불러오는 중입니다.")
+            : (newsSearchQuery ? "검색 결과가 없습니다." : TEXT.newsEmpty);
+          newsPanel.innerHTML = `${statusHtml}${searchHtml}${metaHtml}<p class="news-empty">${escapeHtml(emptyText)}</p>`;
           return;
         }
         newsPanel.innerHTML = `
@@ -5802,6 +5814,7 @@
         setServerAuthToken("");
         localStorage.removeItem(LOCK_AUTH_UNTIL_KEY);
         localStorage.removeItem(LOCK_EXTEND_COUNT_KEY);
+        localStorage.removeItem(LAST_GOOD_DATA_KEY);
         adminServerPassword = "";
         freeBoardAdminMode = false;
         freeBoardAdminPassword = "";
@@ -7828,9 +7841,10 @@
           newsSearchQuery = String(formData.get("newsQuery") || "").trim().slice(0, 80);
           data.news = { items: [], query: newsSearchQuery, total: 0, storedCount: 0, hasMore: false, nextOffset: 0 };
           liveNewsFetchedAtMs = 0;
+          const refreshPromise = refreshLiveNews(true);
           renderNewsPanel();
           try {
-            await refreshLiveNews(true);
+            await refreshPromise;
           } catch (error) {
             console.error(error);
           }
@@ -8050,9 +8064,10 @@
           newsSearchQuery = "";
           data.news = { items: [], query: "", total: 0, storedCount: 0, hasMore: false, nextOffset: 0 };
           liveNewsFetchedAtMs = 0;
+          const refreshPromise = refreshLiveNews(true);
           renderNewsPanel();
           try {
-            await refreshLiveNews(true);
+            await refreshPromise;
           } catch (error) {
             console.error(error);
           }
