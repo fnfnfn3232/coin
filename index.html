@@ -1528,10 +1528,41 @@
 
       .free-board-detail-actions .free-board-list-btn,
       .free-board-detail-actions .free-board-submit,
-      .free-board-detail-actions .free-board-delete {
+      .free-board-detail-actions .free-board-delete,
+      .free-board-detail-actions .free-board-detail-btn {
         min-width: 88px;
         border-radius: 3px;
         padding: 10px 16px;
+      }
+
+      .free-board-detail-btn {
+        font-weight: 850;
+        line-height: 1.2;
+        transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+      }
+
+      .free-board-detail-manage-btn {
+        border-color: rgba(84, 104, 255, 0.58);
+        background: rgba(46, 58, 130, 0.52);
+        color: #e8f4ff;
+      }
+
+      .free-board-detail-manage-btn:hover {
+        border-color: rgba(103, 119, 255, 0.9);
+        background: rgba(70, 84, 180, 0.78);
+        color: #ffffff;
+      }
+
+      .free-board-detail-write-btn {
+        border-color: rgba(117, 221, 255, 0.36);
+        background: rgba(0, 86, 112, 0.28);
+        color: #dff7ff;
+      }
+
+      .free-board-detail-write-btn:hover {
+        border-color: rgba(117, 221, 255, 0.58);
+        background: rgba(0, 106, 136, 0.42);
+        color: #ffffff;
       }
 
       .free-board-title {
@@ -2443,7 +2474,8 @@
 
         .free-board-detail-actions .free-board-list-btn,
         .free-board-detail-actions .free-board-submit,
-        .free-board-detail-actions .free-board-delete {
+        .free-board-detail-actions .free-board-delete,
+        .free-board-detail-actions .free-board-detail-btn {
           width: 100%;
           min-width: 0;
         }
@@ -4908,9 +4940,9 @@
                   <button class="free-board-list-btn" type="button" data-free-board-list>전체글</button>
                 </div>
                 <div class="free-board-detail-actions-right">
-                  <button class="free-board-list-btn" type="button" data-free-board-edit="${escapeAttr(selectedPost.id)}">수정</button>
-                  <button class="free-board-delete" type="button" data-free-board-delete="${escapeAttr(selectedPost.id)}">삭제</button>
-                  <button class="free-board-submit" type="button" data-free-board-write>글쓰기</button>
+                  <button class="free-board-detail-btn free-board-detail-manage-btn" type="button" data-free-board-edit="${escapeAttr(selectedPost.id)}">수정</button>
+                  <button class="free-board-detail-btn free-board-detail-manage-btn" type="button" data-free-board-delete="${escapeAttr(selectedPost.id)}">삭제</button>
+                  <button class="free-board-detail-btn free-board-detail-write-btn" type="button" data-free-board-write>글쓰기</button>
                 </div>
               </div>
             </div>
@@ -5709,6 +5741,7 @@
         }
         try {
           deleteAuthError.textContent = "비밀번호 확인 중입니다...";
+          deleteAuthSubmitBtn.disabled = true;
           if (pendingDeleteType === "comment") {
             await deleteFreeBoardCommentById(postId, pendingDeleteCommentId, password, adminPassword);
           } else {
@@ -5717,12 +5750,19 @@
           closeDeleteAuthModal();
         } catch (error) {
           const message = String(error?.message || "");
-          deleteAuthError.textContent = message.includes("server_auth_failed") || message.includes("401")
-            ? "비밀번호가 맞지 않습니다."
-            : "서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.";
+          if (message === "auth_required") {
+            deleteAuthError.textContent = "로그인이 만료되었습니다. 비밀번호를 다시 입력해 주세요.";
+          } else {
+            deleteAuthError.textContent = message === "invalid_password" || message.includes("server_auth_failed") || message.includes("401") || Number(error?.status) === 401
+              ? "비밀번호가 맞지 않습니다. 다시 입력해 주세요."
+              : "서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.";
+          }
           deleteAuthPasswordInput.value = "";
           deleteAuthAdminPasswordInput.value = "";
           deleteAuthPasswordInput.focus();
+        } finally {
+          deleteAuthSubmitBtn.disabled = false;
+          deleteAuthSubmitBtn.textContent = "삭제";
         }
       });
       adminPasswordInput.addEventListener("keydown", updateAdminCapsWarning);
