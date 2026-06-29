@@ -4029,17 +4029,22 @@
         return freeBoardPostsPromise;
       }
 
+      function shouldRenderFreeBoardAfterPostsRefresh() {
+        return state.viewMode === "board" && (freeBoardMode === "list" || freeBoardMode === "read");
+      }
+
       function requestFreeBoardPostsRefresh(force = false) {
         if (isSiteLocked()) return;
         if (!force && freeBoardServerRetryAfterMs > Date.now()) return;
-        if (!hasFreeBoardServer() || freeBoardPostsPromise) return;
-        fetchFreeBoardPosts(force)
+        if (!hasFreeBoardServer()) return;
+        const refreshPromise = freeBoardPostsPromise || fetchFreeBoardPosts(force);
+        refreshPromise
           .then(() => {
-            if (state.viewMode === "board" && freeBoardMode === "list") renderFreeBoard();
+            if (shouldRenderFreeBoardAfterPostsRefresh()) renderFreeBoard();
           })
           .catch((error) => {
             console.error(error);
-            if (state.viewMode === "board" && freeBoardMode === "list") renderFreeBoard();
+            if (shouldRenderFreeBoardAfterPostsRefresh()) renderFreeBoard();
           });
       }
 
@@ -4800,7 +4805,8 @@
         return `<div class="free-board-pagination">${pages.join("")}</div>`;
       }
 
-      function renderFreeBoardPosts(posts, totalCount, offset) {
+      function renderFreeBoardPosts(posts, totalCount, offset, loading = false) {
+        const emptyText = loading ? "서버 게시글을 불러오는 중입니다." : "아직 등록된 글이 없습니다.";
         const mobilePosts = posts.length ? posts.map((post, index) => {
           const commentCount = Math.max(0, Math.floor(Number(post.commentCount) || 0));
           return `
@@ -4815,7 +4821,7 @@
               </span>
             </button>
           `;
-        }).join("") : `<div class="free-board-mobile-empty">아직 등록된 글이 없습니다.</div>`;
+        }).join("") : `<div class="free-board-mobile-empty">${escapeHtml(emptyText)}</div>`;
         return `
           <div class="free-board-table-wrap">
             <table class="free-board-table">
@@ -4841,7 +4847,7 @@
                   </tr>
                 `).join("") : `
                   <tr class="free-board-empty-row">
-                    <td colspan="6">아직 등록된 글이 없습니다.</td>
+                    <td colspan="6">${escapeHtml(emptyText)}</td>
                   </tr>
                 `}
               </tbody>
@@ -5037,7 +5043,16 @@
       }
 
       function renderFreeBoard() {
+        const shouldLoadServerPosts = hasFreeBoardServer()
+          && !isSiteLocked()
+          && !freeBoardPostsLoaded
+          && !freeBoardPostsPromise
+          && freeBoardServerRetryAfterMs <= Date.now();
+        if (shouldLoadServerPosts) {
+          requestFreeBoardPostsRefresh(true);
+        }
         const posts = loadFreeBoardPosts();
+        const boardPostsLoading = hasFreeBoardServer() && !freeBoardPostsLoaded && !freeBoardServerError;
         const filteredPosts = getFilteredFreeBoardPosts(posts);
         const totalPages = Math.max(1, Math.ceil(filteredPosts.length / FREE_BOARD_PAGE_SIZE));
         if (freeBoardPage > totalPages) freeBoardPage = 1;
@@ -5176,7 +5191,7 @@
             <section class="free-board-card">
               <div class="free-board-list">
                 ${renderFreeBoardServerStatus()}
-                ${renderFreeBoardPosts(pagePosts, filteredPosts.length, pageOffset)}
+                ${renderFreeBoardPosts(pagePosts, filteredPosts.length, pageOffset, boardPostsLoading)}
                 <div class="free-board-bottom">
                   <div></div>
                   <button class="free-board-write-btn" type="button" data-free-board-write>글쓰기</button>
@@ -5777,6 +5792,9 @@
             hideSiteLock();
             renderLockTtl();
             lockPasswordInput.value = "";
+            if (state.viewMode === "board") {
+              requestFreeBoardPostsRefresh(true);
+            }
             fetchLatestBoardData().catch((error) => {
               console.error(error);
               manualRefreshHint.textContent = "\uB85C\uADF8\uC778\uC740 \uC644\uB8CC\uB410\uC9C0\uB9CC \uB370\uC774\uD130\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. \uC218\uB3D9 \uAC31\uC2E0\uC744 \uB20C\uB7EC \uB2E4\uC2DC \uC2DC\uB3C4\uD574 \uC8FC\uC138\uC694.";
@@ -7351,7 +7369,7 @@
         if (isNewsMode) {
           requestLiveNewsRefresh(true);
         }
-        if (isBoardMode && freeBoardMode === "list") {
+        if (isBoardMode && (freeBoardMode === "list" || freeBoardMode === "read")) {
           requestFreeBoardPostsRefresh(true);
         }
         if (options.writeHistory !== false) {
