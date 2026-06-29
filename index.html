@@ -3887,11 +3887,40 @@
       async function updateServerFreeBoardPost(postId, post, postPassword = "", adminPassword = "") {
         const payload = await fetchServerAuth(`/api/board/posts/${encodeURIComponent(postId)}`, {
           method: "PUT",
-          body: JSON.stringify({ ...post, postPassword, adminPassword }),
+          body: JSON.stringify({
+            category: post?.category,
+            title: post?.title,
+            author: post?.author,
+            body: post?.body,
+            htmlEnabled: Boolean(post?.htmlEnabled),
+            postPassword,
+            adminPassword,
+          }),
         });
         applyServerFreeBoardPosts(payload?.posts || []);
         if (adminPassword) await refreshFreeBoardAdminLogsSilently(adminPassword);
         return payload?.post || null;
+      }
+
+      function getFreeBoardSaveErrorMessage(error) {
+        const message = String(error?.message || "");
+        const status = Math.max(0, Math.floor(Number(error?.status) || 0));
+        if (message.includes("server_auth_failed") || status === 401) {
+          return "비밀번호가 맞지 않습니다. 글 비밀번호 또는 관리자 비밀번호를 확인해 주세요.";
+        }
+        if (message === "not_found" || status === 404) {
+          return "수정할 글을 서버에서 찾지 못했습니다. 새로고침 후 다시 시도해 주세요.";
+        }
+        if (message === "invalid_post" || status === 400) {
+          return "서버가 글 형식을 받아들이지 못했습니다. 제목과 내용을 확인한 뒤 다시 저장해 주세요.";
+        }
+        if (error?.name === "AbortError") {
+          return "서버 응답이 늦어 저장이 중단됐습니다. 잠시 후 다시 시도해 주세요.";
+        }
+        if (status >= 500) {
+          return "서버 내부 오류로 저장하지 못했습니다. 잠시 후 다시 시도해 주세요.";
+        }
+        return "서버 저장에 실패했습니다. 입력 내용은 유지되니 잠시 후 다시 시도해 주세요.";
       }
 
       async function deleteServerFreeBoardPost(postId, postPassword = "", adminPassword = "") {
@@ -7625,13 +7654,7 @@
           writeAppHistoryState();
         } catch (error) {
           console.error(error);
-          const message = String(error?.message || "");
-          showFreeBoardMessage(
-            message.includes("server_auth_failed") || message.includes("401")
-              ? "비밀번호가 맞지 않습니다. 글 비밀번호 또는 관리자 비밀번호를 확인해 주세요."
-              : "서버 저장에 실패했습니다. 입력 내용은 유지되니 잠시 후 다시 시도해 주세요.",
-            true
-          );
+          showFreeBoardMessage(getFreeBoardSaveErrorMessage(error), true);
         }
       });
 

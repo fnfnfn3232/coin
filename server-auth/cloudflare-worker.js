@@ -1216,6 +1216,15 @@ export class BoardStore {
     return this.writeAdminLogs(logs);
   }
 
+  async tryAddAdminLog(log) {
+    try {
+      return await this.addAdminLog(log);
+    } catch (error) {
+      console.error("board_admin_log_failed", error);
+      return this.readAdminLogs();
+    }
+  }
+
   async readUsageStats() {
     return normalizeUsageStats(await this.state.storage.get(USAGE_STATS_KEY));
   }
@@ -1775,7 +1784,7 @@ export class BoardStore {
       target.comments = comments.filter((item) => item.id !== commentId);
       target.updatedAt = Date.now();
       const savedPosts = await this.writePosts(posts);
-      await this.addAdminLog({
+      await this.tryAddAdminLog({
         action: "comment_delete",
         actor: adminMode ? "admin" : "comment_password",
         postId: target.id,
@@ -1821,7 +1830,7 @@ export class BoardStore {
       if (!changes.length) changes.push("기타");
       posts[index] = updated;
       const savedPosts = await this.writePosts(posts);
-      await this.addAdminLog({
+      await this.tryAddAdminLog({
         action: "post_update",
         actor: adminMode ? "admin" : "post_password",
         postId: updated.id,
@@ -1844,7 +1853,7 @@ export class BoardStore {
       const adminMode = await isAdminPassword(body?.adminPassword || "", this.env);
       const nextPosts = posts.filter((post) => post.id !== postId);
       const savedPosts = await this.writePosts(nextPosts);
-      await this.addAdminLog({
+      await this.tryAddAdminLog({
         action: "post_delete",
         actor: adminMode ? "admin" : "post_password",
         postId: target.id,
