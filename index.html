@@ -1581,6 +1581,53 @@
         white-space: nowrap;
       }
 
+      .free-board-comment-delete-auth {
+        grid-column: 2 / -1;
+        justify-self: start;
+        display: grid;
+        grid-template-columns: minmax(160px, 240px) minmax(64px, auto) 44px;
+        align-items: stretch;
+        gap: 0;
+        border: 1px solid rgba(103, 119, 255, 0.86);
+        background: #181b1c;
+      }
+
+      .free-board-comment-delete-auth input {
+        width: 100%;
+        min-width: 0;
+        min-height: 42px;
+        border: 0;
+        border-radius: 0;
+        background: rgba(255, 255, 255, 0.035);
+        color: #e8f4ff;
+      }
+
+      .free-board-comment-delete-auth button {
+        min-width: 0;
+        min-height: 42px;
+        border: 0;
+        border-left: 1px solid rgba(103, 119, 255, 0.42);
+        border-radius: 0;
+        background: rgba(70, 84, 180, 0.72);
+        color: #ffffff;
+        font-weight: 850;
+      }
+
+      .free-board-comment-delete-close {
+        font-size: 24px;
+        line-height: 1;
+        background: rgba(42, 45, 60, 0.74) !important;
+      }
+
+      .free-board-comment-delete-auth-error {
+        grid-column: 1 / -1;
+        padding: 7px 9px 8px;
+        border-top: 1px solid rgba(103, 119, 255, 0.28);
+        color: #ffadad;
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
       .free-board-comment-fields {
         display: grid;
         gap: 8px;
@@ -2542,6 +2589,17 @@
 
         .free-board-comment-delete {
           justify-self: start;
+        }
+
+        .free-board-comment-delete-auth {
+          grid-column: 1 / -1;
+          grid-template-columns: minmax(0, 1fr) minmax(58px, auto) 42px;
+          width: min(360px, 100%);
+        }
+
+        .free-board-comment-delete-auth input,
+        .free-board-comment-delete-auth button {
+          min-height: 40px;
         }
 
         .free-board-comment-form {
@@ -3872,6 +3930,9 @@
       let freeBoardSelectedId = "";
       let freeBoardCommentsCollapsed = false;
       let freeBoardCommentSubmitting = false;
+      let freeBoardCommentDeleteAuthId = "";
+      let freeBoardCommentDeleteAuthError = "";
+      let freeBoardCommentDeleteSubmitting = false;
       let freeBoardComposeMediaTokens = [];
       let freeBoardServerPosts = [];
       let freeBoardPostsLoaded = false;
@@ -4947,16 +5008,28 @@
       function renderFreeBoardComments(post) {
         const comments = Array.isArray(post.comments) ? post.comments : [];
         const commentItems = comments.length
-          ? comments.map((comment) => `
-              <div class="free-board-comment">
+          ? comments.map((comment) => {
+            const commentId = String(comment.id || "");
+            const showDeleteAuth = commentId && freeBoardCommentDeleteAuthId === commentId;
+            return `
+              <div class="free-board-comment${showDeleteAuth ? " is-delete-auth-open" : ""}">
                 <div class="free-board-comment-head">
                   <span class="free-board-comment-author">${escapeHtml(comment.author || "익명")}</span>
                   <span class="free-board-comment-time">${escapeHtml(formatFreeBoardDetailTime(comment.createdAt))}</span>
                 </div>
                 <div class="free-board-comment-body">${escapeHtml(comment.body)}</div>
-                <button class="free-board-delete free-board-comment-delete" type="button" data-free-board-comment-delete="${escapeAttr(comment.id)}">삭제</button>
+                <button class="free-board-delete free-board-comment-delete" type="button" data-free-board-comment-delete="${escapeAttr(commentId)}">삭제</button>
+                ${showDeleteAuth ? `
+                  <form class="free-board-comment-delete-auth" data-free-board-comment-delete-auth-form="${escapeAttr(commentId)}">
+                    <input name="password" type="password" autocomplete="off" placeholder="비밀번호" ${freeBoardCommentDeleteSubmitting ? "disabled" : ""} />
+                    <button type="submit" ${freeBoardCommentDeleteSubmitting ? "disabled" : ""}>확인</button>
+                    <button class="free-board-comment-delete-close" type="button" data-free-board-comment-delete-cancel aria-label="닫기">×</button>
+                    ${freeBoardCommentDeleteAuthError ? `<div class="free-board-comment-delete-auth-error">${escapeHtml(freeBoardCommentDeleteAuthError)}</div>` : ""}
+                  </form>
+                ` : ""}
               </div>
-            `).join("")
+            `;
+          }).join("")
           : `<div class="free-board-empty">아직 댓글이 없습니다.</div>`;
         return `
           <section class="free-board-comments${freeBoardCommentsCollapsed ? " is-collapsed" : ""}" data-free-board-comments-section>
@@ -7765,6 +7838,45 @@
           return;
         }
 
+        const commentDeleteAuthForm = event.target.closest("[data-free-board-comment-delete-auth-form]");
+        if (commentDeleteAuthForm) {
+          event.preventDefault();
+          const postId = freeBoardSelectedId;
+          const commentId = String(commentDeleteAuthForm.dataset.freeBoardCommentDeleteAuthForm || "");
+          const password = String(new FormData(commentDeleteAuthForm).get("password") || "");
+          if (!postId || !commentId || freeBoardMode !== "read") return;
+          if (!password) {
+            freeBoardCommentDeleteAuthId = commentId;
+            freeBoardCommentDeleteAuthError = "비밀번호를 입력해 주세요.";
+            renderFreeBoardCommentsSection({ preserveScroll: true });
+            window.setTimeout(() => newsPanel.querySelector("[data-free-board-comment-delete-auth-form] input")?.focus(), 0);
+            return;
+          }
+          if (freeBoardCommentDeleteSubmitting) return;
+          freeBoardCommentDeleteSubmitting = true;
+          freeBoardCommentDeleteAuthError = "";
+          commentDeleteAuthForm.querySelectorAll("input, button").forEach((node) => {
+            node.disabled = true;
+          });
+          try {
+            await deleteFreeBoardCommentById(postId, commentId, password, password);
+            freeBoardCommentDeleteAuthId = "";
+            freeBoardCommentDeleteAuthError = "";
+          } catch (error) {
+            console.error(error);
+            const message = String(error?.message || "");
+            freeBoardCommentDeleteAuthId = commentId;
+            freeBoardCommentDeleteAuthError = message === "invalid_password" || message.includes("server_auth_failed") || message.includes("401") || Number(error?.status) === 401
+              ? "비밀번호가 맞지 않습니다."
+              : "댓글 삭제에 실패했습니다. 잠시 후 다시 시도해 주세요.";
+            renderFreeBoardCommentsSection({ preserveScroll: true });
+            window.setTimeout(() => newsPanel.querySelector("[data-free-board-comment-delete-auth-form] input")?.focus(), 0);
+          } finally {
+            freeBoardCommentDeleteSubmitting = false;
+          }
+          return;
+        }
+
         const commentForm = event.target.closest("#freeBoardCommentForm");
         if (commentForm) {
           event.preventDefault();
@@ -7965,11 +8077,15 @@
 
         if (clickTarget.closest("[data-free-board-comments-toggle]")) {
           freeBoardCommentsCollapsed = !freeBoardCommentsCollapsed;
+          freeBoardCommentDeleteAuthId = "";
+          freeBoardCommentDeleteAuthError = "";
           renderFreeBoardCommentsSection({ preserveScroll: true });
           return;
         }
 
         if (clickTarget.closest("[data-free-board-comments-refresh]")) {
+          freeBoardCommentDeleteAuthId = "";
+          freeBoardCommentDeleteAuthError = "";
           if (!hasFreeBoardServer()) {
             renderFreeBoardCommentsSection({ preserveScroll: true });
             return;
@@ -7982,6 +8098,13 @@
             console.error(error);
             showFreeBoardMessage("댓글을 새로고침하지 못했습니다. 잠시 후 다시 시도해 주세요.", true);
           }
+          renderFreeBoardCommentsSection({ preserveScroll: true });
+          return;
+        }
+
+        if (clickTarget.closest("[data-free-board-comment-delete-cancel]")) {
+          freeBoardCommentDeleteAuthId = "";
+          freeBoardCommentDeleteAuthError = "";
           renderFreeBoardCommentsSection({ preserveScroll: true });
           return;
         }
@@ -8140,6 +8263,8 @@
             freeBoardSelectedId = id;
             freeBoardMode = "read";
             freeBoardCommentsCollapsed = false;
+            freeBoardCommentDeleteAuthId = "";
+            freeBoardCommentDeleteAuthError = "";
             freeBoardEditAuthPostPassword = "";
             freeBoardEditAuthAdminPassword = "";
             renderFreeBoard();
@@ -8150,6 +8275,8 @@
 
         if (clickTarget.closest("[data-free-board-write]")) {
           freeBoardMode = "write";
+          freeBoardCommentDeleteAuthId = "";
+          freeBoardCommentDeleteAuthError = "";
           freeBoardEditAuthPostPassword = "";
           freeBoardEditAuthAdminPassword = "";
           showFreeBoardMessage("", false);
@@ -8161,6 +8288,8 @@
         if (clickTarget.closest("[data-free-board-list]")) {
           freeBoardMode = "list";
           freeBoardSelectedId = "";
+          freeBoardCommentDeleteAuthId = "";
+          freeBoardCommentDeleteAuthError = "";
           freeBoardEditAuthPostPassword = "";
           freeBoardEditAuthAdminPassword = "";
           renderFreeBoard();
@@ -8187,7 +8316,10 @@
                 showFreeBoardMessage("댓글을 삭제하지 못했습니다. 관리자모드를 다시 확인해 주세요.", true);
               });
           } else {
-            showDeleteAuthModal(freeBoardSelectedId, "comment", commentId);
+            freeBoardCommentDeleteAuthId = commentId;
+            freeBoardCommentDeleteAuthError = "";
+            renderFreeBoardCommentsSection({ preserveScroll: true });
+            window.setTimeout(() => newsPanel.querySelector("[data-free-board-comment-delete-auth-form] input")?.focus(), 0);
           }
           return;
         }
