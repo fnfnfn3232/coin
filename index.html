@@ -6418,30 +6418,17 @@
         event.preventDefault();
         const value = String(adminPasswordInput.value || "");
         if (hasServerAuth()) {
-          try {
-            adminError.textContent = "서버에서 확인 중입니다...";
-            adminServerPassword = value;
-            await verifyAdminPasswordAndFetchStats(value);
-            adminError.textContent = "";
-            showAdminDashboard();
-          } catch (error) {
-            const message = String(error?.message || "");
-            const status = Math.max(0, Math.floor(Number(error?.status) || 0));
-            const definitePasswordFailure = message === "invalid_password" || status === 401 || status === 429;
-            if (definitePasswordFailure) {
-              adminServerPassword = "";
-              adminError.textContent = getAdminAuthErrorMessage(error);
-              adminPasswordInput.value = "";
-              adminPasswordInput.focus();
-              return;
-            }
-            console.warn(error);
-            adminServerPassword = value;
-            serverUsageError = "인증 서버 연결이 불안정해 운영 통계 없이 관리자 모드를 엽니다.";
-            adminError.textContent = "";
-            adminPasswordInput.value = "";
-            showAdminDashboard();
-          }
+          adminServerPassword = value;
+          adminError.textContent = "";
+          adminPasswordInput.value = "";
+          showAdminDashboard();
+          verifyAdminPasswordAndFetchStats(value)
+            .then(() => renderAdminDashboard())
+            .catch((error) => {
+              console.warn(error);
+              serverUsageError = "운영 통계 확인에 실패했습니다. 관리자 기능은 계속 사용할 수 있습니다.";
+              renderAdminDashboard();
+            });
           return;
         }
         if (SITE_PASSWORD && value === SITE_PASSWORD) {
