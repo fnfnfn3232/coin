@@ -5912,7 +5912,14 @@
               return null;
             }
           } catch (loginError) {
-            throw loginError?.status ? loginError : statsError;
+            if (loginError?.status) {
+              throw loginError;
+            }
+            console.warn(statsError);
+            console.warn(loginError);
+            serverUsageError = "인증 서버 연결이 불안정해 운영 통계 없이 관리자 모드를 엽니다.";
+            updateAdminUsageSummary();
+            return null;
           }
         }
       }
