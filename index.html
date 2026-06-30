@@ -1431,10 +1431,20 @@
         align-items: center;
         justify-content: space-between;
         gap: 10px;
+        width: 100%;
         min-width: 0;
         padding: 8px 0;
+        border: 0;
+        background: transparent;
         color: #dff7ff;
+        font: inherit;
+        text-align: left;
         text-decoration: none;
+        cursor: pointer;
+      }
+
+      .free-board-attachment-link:hover {
+        color: #71e6ff;
       }
 
       .free-board-attachment-name {
@@ -2097,13 +2107,22 @@
       .free-board-file-link {
         display: grid;
         gap: 5px;
+        width: 100%;
         min-height: 82px;
         padding: 12px;
         border: 1px solid rgba(151, 183, 198, 0.18);
         border-radius: 12px;
         background: rgba(2, 11, 16, 0.78);
         color: #dff7ff;
+        font: inherit;
+        text-align: left;
         text-decoration: none;
+        cursor: pointer;
+      }
+
+      .free-board-file-link:hover {
+        border-color: rgba(117, 221, 255, 0.34);
+        color: #71e6ff;
       }
 
       .free-board-file-name {
@@ -4816,7 +4835,7 @@
           const fileName = String(meta?.name || "첨부파일").trim() || "첨부파일";
           const size = Math.max(0, Math.floor(Number(meta?.size) || 0));
           const sizeText = size ? ` · ${formatBytes(size)}` : "";
-          return `<a class="free-board-file-link" href="${escapeAttr(url)}" data-protected-board-download="${escapeAttr(url)}" data-protected-board-file-name="${escapeAttr(fileName)}" target="_blank" rel="noopener noreferrer" download><span class="free-board-file-name">${escapeHtml(fileName)}</span><span class="free-board-file-meta">첨부파일${escapeHtml(sizeText)}</span></a>`;
+          return `<button class="free-board-file-link" type="button" data-protected-board-download="${escapeAttr(url)}" data-protected-board-file-name="${escapeAttr(fileName)}"><span class="free-board-file-name">${escapeHtml(fileName)}</span><span class="free-board-file-meta">첨부파일${escapeHtml(sizeText)}</span></button>`;
         }
         const kind = getSafeMediaKind(url);
         if (!kind || (preferredKind && preferredKind !== kind)) return "";
@@ -4867,10 +4886,10 @@
             const size = Math.max(0, Math.floor(Number(token.meta?.size) || 0));
             const sizeHtml = size ? `<span class="free-board-attachment-size">${escapeHtml(formatBytes(size))}</span>` : "";
             return `
-              <a class="free-board-attachment-link" href="${escapeAttr(token.url)}" data-protected-board-download="${escapeAttr(token.url)}" data-protected-board-file-name="${escapeAttr(fileName)}" target="_blank" rel="noopener noreferrer" download>
+              <button class="free-board-attachment-link" type="button" data-protected-board-download="${escapeAttr(token.url)}" data-protected-board-file-name="${escapeAttr(fileName)}">
                 <span class="free-board-attachment-name">${escapeHtml(fileName)}</span>
                 ${sizeHtml}
-              </a>
+              </button>
             `;
           });
         if (!items.length) return "";
@@ -8506,11 +8525,10 @@
         const clickTarget = event.target instanceof Element ? event.target : event.target?.parentElement;
         if (!clickTarget) return;
 
-        const protectedDownloadLink = clickTarget.closest("[data-protected-board-download], a[href]");
+        const protectedDownloadLink = clickTarget.closest("[data-protected-board-download]");
         if (protectedDownloadLink) {
-          const downloadUrl = protectedDownloadLink.dataset.protectedBoardDownload || protectedDownloadLink.getAttribute("href") || "";
+          const downloadUrl = protectedDownloadLink.dataset.protectedBoardDownload || "";
           const fileName = protectedDownloadLink.dataset.protectedBoardFileName
-            || protectedDownloadLink.getAttribute("download")
             || protectedDownloadLink.textContent
             || downloadUrl.split("/").pop()
             || "attachment";
