@@ -3251,7 +3251,7 @@
   </script>
   <script>
     const SITE_PASSWORD = "";
-    const ADMIN_BUILD_VERSION = "admin-login-safe-2026-06-30-2247";
+    const ADMIN_BUILD_VERSION = "admin-verify-2026-06-30-2318";
     const LOCK_AUTH_UNTIL_KEY = "fdv_lock_until_server_v1";
     const LOCK_EXTEND_COUNT_KEY = "fdv_lock_extend_count_server_v1";
     const SERVER_AUTH_TOKEN_KEY = "fdv_server_auth_token_v1";
@@ -5894,6 +5894,39 @@
         return serverUsageStats;
       }
 
+      async function verifyServerAdminPassword(password) {
+        if (!hasServerAuth()) return true;
+        const supportsAbortController = typeof AbortController === "function";
+        const controller = supportsAbortController ? new AbortController() : null;
+        const timeoutId = controller ? window.setTimeout(() => controller.abort(), 8000) : 0;
+        let response;
+        try {
+          response = await fetch(`${SERVER_AUTH_API_BASE}/api/admin/verify`, {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "text/plain" },
+            body: String(password || ""),
+            ...(controller ? { signal: controller.signal } : {}),
+          });
+        } finally {
+          if (timeoutId) window.clearTimeout(timeoutId);
+        }
+        let payload = null;
+        try {
+          payload = await response.json();
+        } catch (_error) {
+          payload = null;
+        }
+        if (!response.ok) {
+          const message = payload?.error || `server_auth_failed:${response.status}`;
+          const error = new Error(message);
+          error.status = response.status;
+          error.payload = payload;
+          throw error;
+        }
+        return true;
+      }
+
       async function verifyAdminPasswordAndFetchStats(password) {
         try {
           return await fetchServerUsageStatsWithPassword(password);
@@ -6433,17 +6466,34 @@
         event.preventDefault();
         const value = String(adminPasswordInput.value || "");
         if (hasServerAuth()) {
-          adminServerPassword = value;
-          adminError.textContent = "";
-          adminPasswordInput.value = "";
-          showAdminDashboard();
-          verifyAdminPasswordAndFetchStats(value)
-            .then(() => renderAdminDashboard())
-            .catch((error) => {
-              console.warn(error);
-              serverUsageError = "운영 통계 확인에 실패했습니다. 관리자 기능은 계속 사용할 수 있습니다.";
-              renderAdminDashboard();
-            });
+          const submitButton = adminForm.querySelector('button[type="submit"]');
+          if (!value) {
+            adminError.textContent = "관리자 비밀번호를 입력해 주세요.";
+            adminPasswordInput.focus();
+            return;
+          }
+          try {
+            adminError.textContent = "관리자 비밀번호 확인 중입니다...";
+            if (submitButton) {
+              submitButton.disabled = true;
+              submitButton.textContent = "확인 중";
+            }
+            await verifyServerAdminPassword(value);
+            adminServerPassword = value;
+            adminError.textContent = "";
+            adminPasswordInput.value = "";
+            showAdminDashboard();
+          } catch (error) {
+            adminServerPassword = "";
+            adminError.textContent = getAdminAuthErrorMessage(error);
+            adminPasswordInput.value = "";
+            adminPasswordInput.focus();
+          } finally {
+            if (submitButton) {
+              submitButton.disabled = false;
+              submitButton.textContent = "확인";
+            }
+          }
           return;
         }
         if (SITE_PASSWORD && value === SITE_PASSWORD) {
