@@ -5898,13 +5898,20 @@
         try {
           return await fetchServerUsageStatsWithPassword(password);
         } catch (statsError) {
+          if (String(statsError?.message || "") === "invalid_password") {
+            throw statsError;
+          }
           try {
             await loginWithServerPassword(password);
-            return await fetchServerUsageStats("");
-          } catch (loginError) {
-            if (String(statsError?.message || "") === "invalid_password") {
-              throw statsError;
+            try {
+              return await fetchServerUsageStats("");
+            } catch (usageError) {
+              console.warn(usageError);
+              serverUsageError = "서버 트래픽 추정치를 불러오지 못했습니다.";
+              updateAdminUsageSummary();
+              return null;
             }
+          } catch (loginError) {
             throw loginError?.status ? loginError : statsError;
           }
         }
