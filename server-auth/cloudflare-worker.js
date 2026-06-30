@@ -2076,6 +2076,17 @@ export default {
     if (url.pathname === "/api/session" && request.method === "GET") {
       return handleSession(request, env);
     }
+    if (url.pathname === "/api/admin/verify" && request.method === "POST") {
+      const body = await parseJsonOrPlainPasswordBody(request);
+      const providedPassword = body?.adminPassword || body?.password || "";
+      if (!providedPassword) {
+        return jsonResponse({ error: "auth_required" }, 401, env);
+      }
+      if (!await isAdminPassword(providedPassword, env)) {
+        return jsonResponse({ error: "invalid_password" }, 401, env);
+      }
+      return jsonResponse({ ok: true }, 200, env);
+    }
     if (url.pathname === "/api/usage/stats" && request.method === "POST") {
       if (!env.BOARD_STORE) return jsonResponse({ error: "usage_storage_not_configured" }, 500, env);
       const id = env.BOARD_STORE.idFromName("free-board");
