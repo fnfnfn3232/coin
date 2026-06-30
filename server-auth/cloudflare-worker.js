@@ -1792,6 +1792,19 @@ export class BoardStore {
       return this.writeMarketData(request);
     }
 
+    if (request.method === "POST" && url.pathname === "/api/usage/stats") {
+      const body = await parseJsonBody(request);
+      const authenticated = await isAuthenticated(request, this.env);
+      const providedPassword = body?.adminPassword || body?.password || "";
+      if (!authenticated && !providedPassword) {
+        return jsonResponse({ error: "auth_required" }, 401, this.env);
+      }
+      if (providedPassword && !await isAdminPassword(providedPassword, this.env)) {
+        return jsonResponse({ error: "invalid_password" }, 401, this.env);
+      }
+      return jsonResponse({ usage: publicUsageStats(await this.readUsageStats()) }, 200, this.env);
+    }
+
     if (isProtectedContentPath(url)) {
       const authResponse = await requireAuth(request, this.env);
       if (authResponse) return authResponse;
@@ -1809,15 +1822,6 @@ export class BoardStore {
       const body = await parseJsonBody(request);
       const stats = await this.recordUsageBeacon(body);
       return jsonResponse({ ok: true, usage: publicUsageStats(stats) }, 200, this.env);
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/usage/stats") {
-      const body = await parseJsonBody(request);
-      const providedPassword = body?.adminPassword || body?.password || "";
-      if (providedPassword && !await isAdminPassword(providedPassword, this.env)) {
-        return jsonResponse({ error: "invalid_password" }, 401, this.env);
-      }
-      return jsonResponse({ usage: publicUsageStats(await this.readUsageStats()) }, 200, this.env);
     }
 
     if (request.method === "POST" && url.pathname === "/api/board/logs") {
@@ -2063,6 +2067,11 @@ export default {
     }
     if (url.pathname === "/api/session" && request.method === "GET") {
       return handleSession(request, env);
+    }
+    if (url.pathname === "/api/usage/stats" && request.method === "POST") {
+      if (!env.BOARD_STORE) return jsonResponse({ error: "usage_storage_not_configured" }, 500, env);
+      const id = env.BOARD_STORE.idFromName("free-board");
+      return env.BOARD_STORE.get(id).fetch(request);
     }
     if (isProtectedContentPath(url)) {
       const authResponse = await requireAuth(request, env);

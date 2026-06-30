@@ -5940,26 +5940,6 @@
         adminPasswordInput.value = "";
         adminError.textContent = "";
         setAdminCapsWarning(false);
-        if (hasServerAuth() && !isLocalPreview() && !isSiteLocked()) {
-          adminError.textContent = "로그인 세션을 확인 중입니다...";
-          verifyServerSession()
-            .then(() => {
-              adminServerPassword = "";
-              adminError.textContent = "";
-              showAdminDashboard();
-            })
-            .catch((error) => {
-              console.error(error);
-              if (isServerAuthExpiredError(error)) {
-                closeAdminModal();
-                handleServerAuthExpired();
-                return;
-              }
-              adminError.textContent = "세션 확인에 실패했습니다. 비밀번호를 입력해 주세요.";
-              window.setTimeout(() => adminPasswordInput.focus(), 0);
-            });
-          return;
-        }
         window.setTimeout(() => adminPasswordInput.focus(), 0);
       }
 
@@ -6347,11 +6327,12 @@
         if (hasServerAuth()) {
           try {
             adminError.textContent = "서버에서 확인 중입니다...";
-            await loginWithServerPassword(value);
             adminServerPassword = value;
+            await fetchServerUsageStats(value);
             adminError.textContent = "";
             showAdminDashboard();
           } catch (error) {
+            adminServerPassword = "";
             adminError.textContent = getLoginErrorMessage(error);
             adminPasswordInput.value = "";
             adminPasswordInput.focus();
