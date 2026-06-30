@@ -9,6 +9,10 @@ NEWS_STORE_LIMIT = "1000"
 NEWS_BODY_MODE = "preview"
 NEWS_CACHE_SECONDS = "600"
 
+[[r2_buckets]]
+binding = "BOARD_MEDIA_BUCKET"
+bucket_name = "coin-board-media"
+
 # Set these as secrets, not plain vars:
 # wrangler secret put SITE_PASSWORD_SHA256
 # wrangler secret put SESSION_SECRET

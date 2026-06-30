@@ -37,10 +37,22 @@ jobs:
           name = "BOARD_STORE"
           class_name = "BoardStore"
 
+          [[r2_buckets]]
+          binding = "BOARD_MEDIA_BUCKET"
+          bucket_name = "coin-board-media"
+
           [[migrations]]
           tag = "v1"
           new_sqlite_classes = ["BoardStore"]
           EOF
+
+      - name: Ensure R2 media bucket
+        working-directory: server-auth
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx --yes wrangler@3 r2 bucket create coin-board-media || true
 
       - name: Deploy Worker
         uses: cloudflare/wrangler-action@v3

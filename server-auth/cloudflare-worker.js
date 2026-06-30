@@ -17,6 +17,9 @@ const NEWS_PAGE_MAX_ITEMS = 40;
 const BOARD_MEDIA_KEY_PREFIX = "free-board-media:";
 const BOARD_MEDIA_MAX_BYTES = 200 * 1024 * 1024;
 const BOARD_MEDIA_CHUNK_BYTES = 1024 * 1024;
+const BOARD_MEDIA_R2_CHUNK_BYTES = 8 * 1024 * 1024;
+const BOARD_MEDIA_R2_PARALLEL_CHUNKS = 4;
+const BOARD_MEDIA_R2_KEY_PREFIX = "free-board-media";
 const BOARD_MEDIA_UPLOAD_KEY_PREFIX = `${BOARD_MEDIA_KEY_PREFIX}upload:`;
 const BOARD_MEDIA_UPLOAD_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 const MARKET_DATA_MAX_BYTES = 8 * 1024 * 1024;
@@ -664,6 +667,21 @@ function getBoardMediaUploadChunkKey(uploadId, index) {
   return `${getBoardMediaUploadKey(uploadId)}:chunk:${index}`;
 }
 
+function hasBoardMediaR2(env) {
+  return Boolean(env?.BOARD_MEDIA_BUCKET && typeof env.BOARD_MEDIA_BUCKET.put === "function");
+}
+
+function getBoardMediaR2ChunkKey(id, index) {
+  return `${BOARD_MEDIA_R2_KEY_PREFIX}/${id}/chunks/${index}`;
+}
+
+async function readBoardMediaR2Chunk(env, id, index) {
+  if (!hasBoardMediaR2(env)) return null;
+  const object = await env.BOARD_MEDIA_BUCKET.get(getBoardMediaR2ChunkKey(id, index));
+  if (!object) return null;
+  return object.arrayBuffer();
+}
+
 function normalizeBoardMediaContentType(value) {
   const contentType = String(value || "").split(";")[0].trim().toLowerCase();
   return /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i.test(contentType)
@@ -692,6 +710,10 @@ function isSafeBoardMediaUploadId(uploadId) {
   return /^upload-\d+-[a-z0-9-]{8,40}$/i.test(String(uploadId || ""));
 }
 
+function isSafeBoardMediaId(id) {
+  return /^media-\d+-[a-z0-9-]{8,40}$/i.test(String(id || ""));
+}
+
 function parseBoardMediaUploadRoute(url) {
   const chunkMatch = url.pathname.match(/^\/api\/board\/media\/uploads\/([^/]+)\/chunks\/(\d+)$/);
   if (chunkMatch) {
@@ -716,6 +738,15 @@ async function readBoardMediaFromKv(env, id) {
   const metadata = await env.BOARD_POSTS.get(`${getBoardMediaKey(id)}:meta`, { type: "json" });
   if (!metadata) return null;
   const contentType = String(metadata.contentType || "application/octet-stream");
+  if (metadata?.storage === "r2" && hasBoardMediaR2(env)) {
+    return {
+      contentType,
+      fileName: metadata.fileName,
+      size: metadata.size,
+      chunkCount: Math.max(0, Math.floor(Number(metadata.chunkCount) || 0)),
+      readChunk: (index) => readBoardMediaR2Chunk(env, id, index),
+    };
+  }
   if (metadata?.chunkCount) {
     return {
       contentType,
@@ -1437,6 +1468,15 @@ export class BoardStore {
   async readMedia(id) {
     const media = await this.state.storage.get(getBoardMediaKey(id));
     if (!media || !media.contentType) return null;
+    if (media.storage === "r2" && hasBoardMediaR2(this.env)) {
+      return {
+        contentType: String(media.contentType || "application/octet-stream"),
+        fileName: media.fileName,
+        size: media.size,
+        chunkCount: Math.max(0, Math.floor(Number(media.chunkCount) || 0)),
+        readChunk: (index) => readBoardMediaR2Chunk(this.env, id, index),
+      };
+    }
     if (media.chunkCount) {
       return {
         contentType: String(media.contentType || "application/octet-stream"),
@@ -1506,18 +1546,31 @@ export class BoardStore {
       chunkSize: Math.max(1, Math.floor(Number(meta.chunkSize) || BOARD_MEDIA_CHUNK_BYTES)),
       chunkCount: Math.max(0, Math.floor(Number(meta.chunkCount) || 0)),
       createdAt: Math.max(0, Math.floor(Number(meta.createdAt) || 0)),
+      storage: meta.storage === "r2" ? "r2" : "durable_object",
+      mediaId: isSafeBoardMediaId(meta.mediaId) ? meta.mediaId : "",
       uploadedChunks: Array.isArray(meta.uploadedChunks) ? meta.uploadedChunks : [],
     };
   }
 
-  async deleteMediaUpload(uploadId, meta) {
+  async deleteMediaUpload(uploadId, meta, options = {}) {
     const safeMeta = meta || await this.readMediaUpload(uploadId);
+    const deleteChunks = options.deleteChunks !== false;
     const chunkCount = Math.max(0, Math.floor(Number(safeMeta?.chunkCount) || 0));
-    const deleteKeys = [getBoardMediaUploadKey(uploadId)];
-    for (let index = 0; index < chunkCount; index += 1) {
-      deleteKeys.push(getBoardMediaUploadChunkKey(uploadId, index));
+    const stateDeleteKeys = [getBoardMediaUploadKey(uploadId)];
+    if (safeMeta?.storage !== "r2" && deleteChunks) {
+      for (let index = 0; index < chunkCount; index += 1) {
+        stateDeleteKeys.push(getBoardMediaUploadChunkKey(uploadId, index));
+      }
     }
-    await this.state.storage.delete(deleteKeys);
+    await this.state.storage.delete(stateDeleteKeys);
+    if (safeMeta?.storage === "r2" && deleteChunks && hasBoardMediaR2(this.env)) {
+      const mediaId = safeMeta.mediaId || "";
+      const r2DeleteKeys = [];
+      for (let index = 0; mediaId && index < chunkCount; index += 1) {
+        r2DeleteKeys.push(getBoardMediaR2ChunkKey(mediaId, index));
+      }
+      await Promise.all(r2DeleteKeys.map((key) => this.env.BOARD_MEDIA_BUCKET.delete(key)));
+    }
   }
 
   expectedMediaUploadChunkSize(meta, index) {
@@ -1534,20 +1587,31 @@ export class BoardStore {
       return jsonResponse({ error: "media_too_large" }, 413, this.env);
     }
     const uploadId = `upload-${Date.now()}-${crypto.randomUUID().slice(0, 12)}`;
-    const chunkSize = BOARD_MEDIA_CHUNK_BYTES;
+    const mediaId = `media-${Date.now()}-${crypto.randomUUID().slice(0, 12)}`;
+    const useR2 = hasBoardMediaR2(this.env);
+    const chunkSize = useR2 ? BOARD_MEDIA_R2_CHUNK_BYTES : BOARD_MEDIA_CHUNK_BYTES;
     const chunkCount = Math.ceil(size / chunkSize);
     const meta = {
       uploadId,
+      mediaId,
       fileName: cleanBoardMediaFileName(body?.fileName || "attachment"),
       contentType: normalizeBoardMediaContentType(body?.contentType),
       size,
       chunkSize,
       chunkCount,
+      storage: useR2 ? "r2" : "durable_object",
       createdAt: Date.now(),
       uploadedChunks: [],
     };
     await this.state.storage.put(getBoardMediaUploadKey(uploadId), meta);
-    return jsonResponse({ uploadId, chunkSize, chunkCount, size }, 201, this.env);
+    return jsonResponse({
+      uploadId,
+      chunkSize,
+      chunkCount,
+      size,
+      storage: meta.storage,
+      parallelChunks: useR2 ? BOARD_MEDIA_R2_PARALLEL_CHUNKS : 8,
+    }, 201, this.env);
   }
 
   async writeMediaUploadChunk(request, uploadId, index) {
@@ -1565,7 +1629,14 @@ export class BoardStore {
     if (!bytes.byteLength || bytes.byteLength !== expectedSize) {
       return jsonResponse({ error: "invalid_chunk_size", expectedSize, actualSize: bytes.byteLength }, 400, this.env);
     }
-    await this.state.storage.put(getBoardMediaUploadChunkKey(uploadId, index), bytes);
+    if (meta.storage === "r2") {
+      if (!hasBoardMediaR2(this.env) || !meta.mediaId) {
+        return jsonResponse({ error: "r2_storage_not_configured" }, 500, this.env);
+      }
+      await this.env.BOARD_MEDIA_BUCKET.put(getBoardMediaR2ChunkKey(meta.mediaId, index), bytes);
+    } else {
+      await this.state.storage.put(getBoardMediaUploadChunkKey(uploadId, index), bytes);
+    }
     const uploadedSet = new Set(meta.uploadedChunks.map((value) => Math.floor(Number(value))).filter((value) => Number.isInteger(value)));
     uploadedSet.add(index);
     const uploadedChunks = [...uploadedSet].sort((left, right) => left - right);
@@ -1580,28 +1651,36 @@ export class BoardStore {
       await this.deleteMediaUpload(uploadId, meta);
       return jsonResponse({ error: "upload_expired" }, 410, this.env);
     }
+    if (meta.storage === "r2" && (!hasBoardMediaR2(this.env) || !meta.mediaId)) {
+      return jsonResponse({ error: "r2_storage_not_configured" }, 500, this.env);
+    }
     for (let index = 0; index < meta.chunkCount; index += 1) {
-      const chunk = await this.state.storage.get(getBoardMediaUploadChunkKey(uploadId, index));
-      const actualSize = chunk?.byteLength || 0;
+      const actualSize = meta.storage === "r2"
+        ? Math.max(0, Math.floor(Number((await this.env.BOARD_MEDIA_BUCKET.head(getBoardMediaR2ChunkKey(meta.mediaId, index)))?.size) || 0))
+        : ((await this.state.storage.get(getBoardMediaUploadChunkKey(uploadId, index)))?.byteLength || 0);
       const expectedSize = this.expectedMediaUploadChunkSize(meta, index);
       if (actualSize !== expectedSize) {
         return jsonResponse({ error: "missing_media_chunk", index, expectedSize, actualSize }, 400, this.env);
       }
     }
 
-    const id = `media-${Date.now()}-${crypto.randomUUID().slice(0, 12)}`;
-    for (let index = 0; index < meta.chunkCount; index += 1) {
-      const chunk = await this.state.storage.get(getBoardMediaUploadChunkKey(uploadId, index));
-      await this.state.storage.put(getBoardMediaChunkKey(id, index), chunk);
+    const id = meta.mediaId || `media-${Date.now()}-${crypto.randomUUID().slice(0, 12)}`;
+    if (meta.storage !== "r2") {
+      for (let index = 0; index < meta.chunkCount; index += 1) {
+        const chunk = await this.state.storage.get(getBoardMediaUploadChunkKey(uploadId, index));
+        await this.state.storage.put(getBoardMediaChunkKey(id, index), chunk);
+      }
     }
     await this.state.storage.put(getBoardMediaKey(id), {
       contentType: meta.contentType,
       fileName: meta.fileName,
       createdAt: Date.now(),
       size: meta.size,
+      chunkSize: meta.chunkSize,
       chunkCount: meta.chunkCount,
+      storage: meta.storage,
     });
-    await this.deleteMediaUpload(uploadId, meta);
+    await this.deleteMediaUpload(uploadId, meta, { deleteChunks: false });
     const url = new URL(request.url);
     url.pathname = `/api/board/media/${id}`;
     url.search = "";
