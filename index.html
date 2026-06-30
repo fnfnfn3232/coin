@@ -5855,15 +5855,57 @@
         return serverUsageStats;
       }
 
+      async function fetchServerUsageStatsWithPassword(password) {
+        if (!hasServerAuth()) return null;
+        const supportsAbortController = typeof AbortController === "function";
+        const controller = supportsAbortController ? new AbortController() : null;
+        const timeoutId = controller ? window.setTimeout(() => controller.abort(), 12000) : 0;
+        let response;
+        try {
+          response = await fetch(`${SERVER_AUTH_API_BASE}/api/usage/stats`, {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "text/plain" },
+            body: String(password || ""),
+            ...(controller ? { signal: controller.signal } : {}),
+          });
+        } finally {
+          if (timeoutId) window.clearTimeout(timeoutId);
+        }
+        let payload = null;
+        try {
+          payload = await response.json();
+        } catch (_error) {
+          payload = null;
+        }
+        if (!response.ok) {
+          const message = payload?.error || `server_auth_failed:${response.status}`;
+          const error = new Error(message);
+          error.status = response.status;
+          error.payload = payload;
+          throw error;
+        }
+        if (payload?.token) {
+          setServerAuthToken(payload.token);
+        }
+        serverUsageStats = payload?.usage || null;
+        serverUsageError = "";
+        updateAdminUsageSummary();
+        return serverUsageStats;
+      }
+
       async function verifyAdminPasswordAndFetchStats(password) {
         try {
-          return await fetchServerUsageStats(password);
+          return await fetchServerUsageStatsWithPassword(password);
         } catch (statsError) {
           try {
             await loginWithServerPassword(password);
             return await fetchServerUsageStats("");
-          } catch (_loginError) {
-            throw statsError;
+          } catch (loginError) {
+            if (String(statsError?.message || "") === "invalid_password") {
+              throw statsError;
+            }
+            throw loginError?.status ? loginError : statsError;
           }
         }
       }
@@ -5871,6 +5913,9 @@
       function getAdminAuthErrorMessage(error) {
         const message = String(error?.message || "");
         const status = Math.max(0, Math.floor(Number(error?.status) || 0));
+        if (error?.name === "AbortError") {
+          return "인증 서버 응답이 너무 늦어 중단됐습니다. 잠시 후 다시 시도해 주세요.";
+        }
         if (message === "invalid_password") {
           return "관리자 비밀번호가 맞지 않습니다. 첫 화면 로그인 비밀번호와 같은 비밀번호를 입력해 주세요. (서버 응답: invalid_password)";
         }
