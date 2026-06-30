@@ -34,16 +34,38 @@ const GITHUB_OIDC_JWKS_URL = `${GITHUB_OIDC_ISSUER}/.well-known/jwks`;
 const GITHUB_OIDC_REPOSITORY = "fnfnfn3232/coin";
 const GITHUB_OIDC_AUDIENCE = "coin-board-auth-market-data";
 
+function securityHeaders() {
+  return {
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+  };
+}
+
+function applySecurityHeaders(headers) {
+  const target = headers instanceof Headers ? headers : new Headers(headers || {});
+  Object.entries(securityHeaders()).forEach(([key, value]) => {
+    if (!target.has(key)) target.set(key, value);
+  });
+  return target;
+}
+
+function isAllowedOrigin(request, env) {
+  return Boolean(env.FRONTEND_ORIGIN && request.headers.get("Origin") === env.FRONTEND_ORIGIN);
+}
+
 function jsonResponse(body, status = 200, env = {}) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: {
+    headers: applySecurityHeaders({
       "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "no-store",
       "Access-Control-Allow-Origin": env.FRONTEND_ORIGIN || "",
       "Access-Control-Allow-Credentials": "true",
       "Vary": "Origin",
-    },
+    }),
   });
 }
 
@@ -56,16 +78,16 @@ function mediaHeaders(media, env = {}) {
   const disposition = /^image\/|^video\//i.test(String(media.contentType || ""))
     ? "inline"
     : encodeContentDispositionFilename(media.fileName);
-  const headers = {
+  const headers = applySecurityHeaders({
     "Content-Type": media.contentType,
     "Content-Disposition": disposition,
     "Cache-Control": "private, no-store",
     "Access-Control-Allow-Origin": env.FRONTEND_ORIGIN || "",
     "Access-Control-Allow-Credentials": "true",
     "Vary": "Origin",
-  };
+  });
   const size = Math.max(0, Math.floor(Number(media.size) || 0));
-  if (size) headers["Content-Length"] = String(size);
+  if (size) headers.set("Content-Length", String(size));
   return headers;
 }
 
@@ -92,17 +114,32 @@ function mediaResponse(media, status = 200, env = {}) {
   return new Response(media.bytes, { status, headers: mediaHeaders(media, env) });
 }
 
-function optionsResponse(env) {
+function originNotAllowedResponse(env) {
+  return jsonResponse({ error: "origin_not_allowed" }, 403, env);
+}
+
+function optionsResponse(request, env) {
+  if (!isAllowedOrigin(request, env)) {
+    return new Response(null, {
+      status: 403,
+      headers: applySecurityHeaders({
+        "Cache-Control": "no-store",
+        "Access-Control-Allow-Origin": env.FRONTEND_ORIGIN || "",
+        "Access-Control-Allow-Credentials": "true",
+        "Vary": "Origin",
+      }),
+    });
+  }
   return new Response(null, {
     status: 204,
-    headers: {
+    headers: applySecurityHeaders({
       "Access-Control-Allow-Origin": env.FRONTEND_ORIGIN || "",
       "Access-Control-Allow-Credentials": "true",
       "Access-Control-Allow-Headers": "Authorization, Content-Type, X-File-Name",
       "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
       "Access-Control-Max-Age": "86400",
       "Vary": "Origin",
-    },
+    }),
   });
 }
 
@@ -1971,7 +2008,7 @@ export class BoardStore {
 
 export default {
   async fetch(request, env) {
-    if (request.method === "OPTIONS") return optionsResponse(env);
+    if (request.method === "OPTIONS") return optionsResponse(request, env);
 
     const url = new URL(request.url);
     if (url.pathname === "/api/market-data" && request.method === "POST") {
@@ -1989,13 +2026,14 @@ export default {
     }
 
     if (request.method === "GET" && url.pathname.startsWith("/api/board/media/")) {
+      if (!isAllowedOrigin(request, env)) return originNotAllowedResponse(env);
       const authResponse = await requireAuth(request, env);
       if (authResponse) return authResponse;
       return handleBoardMedia(request, env, url);
     }
 
-    if (!env.FRONTEND_ORIGIN || request.headers.get("Origin") !== env.FRONTEND_ORIGIN) {
-      return jsonResponse({ error: "origin_not_allowed" }, 403, env);
+    if (!isAllowedOrigin(request, env)) {
+      return originNotAllowedResponse(env);
     }
 
     if (url.pathname === "/api/login" && request.method === "POST") {

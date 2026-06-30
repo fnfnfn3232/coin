@@ -3816,12 +3816,12 @@
 
       async function logoutServerSession() {
         if (!hasServerAuth() || isLocalPreview()) return;
-        await fetchServerAuth("/api/logout", { method: "POST", timeoutMs: 3000 });
+        await fetchServerAuth("/api/logout", { method: "POST", timeoutMs: 8000 });
       }
 
       async function verifyServerSession() {
         if (!hasServerAuth() || isLocalPreview()) return true;
-        await fetchServerAuth("/api/session", { method: "GET", timeoutMs: 3000 });
+        await fetchServerAuth("/api/session", { method: "GET", timeoutMs: 8000 });
         return true;
       }
 
@@ -4209,7 +4209,7 @@
         if (!force && freeBoardServerRetryAfterMs > Date.now()) return loadFreeBoardPosts();
         if (!force && freeBoardPostsLoaded) return freeBoardServerPosts;
         if (freeBoardPostsPromise) return freeBoardPostsPromise;
-        freeBoardPostsPromise = fetchServerAuth("/api/board/posts", { method: "GET", timeoutMs: 4000 })
+        freeBoardPostsPromise = fetchServerAuth("/api/board/posts", { method: "GET", timeoutMs: 10000 })
           .then((payload) => {
             applyServerFreeBoardPosts(payload?.posts || []);
             return freeBoardServerPosts;
