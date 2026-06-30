@@ -1142,10 +1142,45 @@
         text-align: center;
       }
 
-      .free-board-table td:nth-child(3) {
+      .free-board-title-cell {
         width: 46%;
         text-align: left;
         white-space: normal;
+      }
+
+      .free-board-admin-select-col {
+        width: 42px;
+      }
+
+      .free-board-admin-checkbox {
+        width: 18px;
+        height: 18px;
+        accent-color: #6477ff;
+        cursor: pointer;
+      }
+
+      .free-board-admin-bulk {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 9px 0 12px;
+        color: #dff7ff;
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      .free-board-admin-bulk-left,
+      .free-board-admin-bulk-right {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .free-board-admin-bulk-delete:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
       }
 
       .free-board-mobile-posts {
@@ -1168,6 +1203,17 @@
 
       .free-board-mobile-post:active {
         background: rgba(255, 255, 255, 0.04);
+      }
+
+      .free-board-mobile-admin-post {
+        display: grid;
+        grid-template-columns: 34px minmax(0, 1fr);
+        align-items: center;
+        border-bottom: 1px solid rgba(151, 183, 198, 0.2);
+      }
+
+      .free-board-mobile-admin-post .free-board-mobile-post {
+        border-bottom: 0;
       }
 
       .free-board-mobile-category {
@@ -2503,6 +2549,11 @@
 
         input, select {
           width: 100%;
+        }
+
+        .free-board-admin-checkbox {
+          width: 18px !important;
+          height: 18px;
         }
 
         .free-board-board-nav {
@@ -4025,6 +4076,8 @@
       let freeBoardAdminPassword = "";
       let freeBoardAdminPanelOpen = false;
       let freeBoardAdminLoginSubmitting = false;
+      let freeBoardAdminSelectedPostIds = new Set();
+      let freeBoardAdminBulkDeleting = false;
       let freeBoardAdminLogs = [];
       let freeBoardAdminLogsLoaded = false;
       let freeBoardAdminLogsError = "";
@@ -4147,6 +4200,7 @@
         freeBoardPostsLoaded = true;
         freeBoardServerError = "";
         freeBoardServerRetryAfterMs = 0;
+        syncFreeBoardAdminSelectedPosts(freeBoardServerPosts);
       }
 
       async function fetchFreeBoardPosts(force = false) {
@@ -4352,6 +4406,87 @@
           passwordInput?.select();
         } finally {
           freeBoardAdminLoginSubmitting = false;
+        }
+      }
+
+      function syncFreeBoardAdminSelectedPosts(posts = loadFreeBoardPosts()) {
+        const validIds = new Set((posts || []).map((post) => String(post.id || "")).filter(Boolean));
+        [...freeBoardAdminSelectedPostIds].forEach((id) => {
+          if (!validIds.has(id)) freeBoardAdminSelectedPostIds.delete(id);
+        });
+        return [...freeBoardAdminSelectedPostIds];
+      }
+
+      function getFreeBoardAdminSelectedIds() {
+        return syncFreeBoardAdminSelectedPosts();
+      }
+
+      function renderFreeBoardAdminBulkActions(visiblePosts = []) {
+        if (!freeBoardAdminMode) return "";
+        const selectedIds = getFreeBoardAdminSelectedIds();
+        const visibleIds = (visiblePosts || []).map((post) => String(post.id || "")).filter(Boolean);
+        const allVisibleSelected = Boolean(visibleIds.length) && visibleIds.every((id) => freeBoardAdminSelectedPostIds.has(id));
+        return `
+          <div class="free-board-admin-bulk">
+            <div class="free-board-admin-bulk-left">
+              <label class="free-board-meta">
+                <input class="free-board-admin-checkbox" type="checkbox" data-free-board-admin-select-page ${allVisibleSelected ? " checked" : ""} ${freeBoardAdminBulkDeleting ? " disabled" : ""} />
+                현재 페이지 전체 선택
+              </label>
+              <span class="free-board-meta">선택 ${formatNumber(selectedIds.length, 0)}개</span>
+            </div>
+            <div class="free-board-admin-bulk-right">
+              <button class="free-board-delete free-board-admin-bulk-delete" type="button" data-free-board-admin-bulk-delete ${selectedIds.length && !freeBoardAdminBulkDeleting ? "" : "disabled"}>
+                ${freeBoardAdminBulkDeleting ? "삭제 중" : "선택 삭제"}
+              </button>
+            </div>
+          </div>
+        `;
+      }
+
+      async function deleteFreeBoardAdminSelectedPosts() {
+        if (!freeBoardAdminMode || !freeBoardAdminPassword) {
+          showFreeBoardMessage("관리자모드를 먼저 켜 주세요.", true);
+          return;
+        }
+        const selectedIds = getFreeBoardAdminSelectedIds();
+        if (!selectedIds.length) {
+          showFreeBoardMessage("삭제할 글을 선택해 주세요.", true);
+          return;
+        }
+        if (!window.confirm(`선택한 글 ${selectedIds.length}개를 삭제할까요?`)) return;
+        freeBoardAdminBulkDeleting = true;
+        try {
+          showFreeBoardMessage(`선택한 글 ${selectedIds.length}개를 삭제 중입니다...`, false);
+          let latestPosts = null;
+          if (hasFreeBoardServer()) {
+            for (const id of selectedIds) {
+              const payload = await fetchServerAuth(`/api/board/posts/${encodeURIComponent(id)}`, {
+                method: "DELETE",
+                timeoutMs: 20000,
+                body: JSON.stringify({ adminPassword: freeBoardAdminPassword }),
+              });
+              if (Array.isArray(payload?.posts)) latestPosts = payload.posts;
+            }
+            if (latestPosts) applyServerFreeBoardPosts(latestPosts);
+          } else {
+            const selectedSet = new Set(selectedIds);
+            saveFreeBoardPosts(loadFreeBoardPosts().filter((post) => !selectedSet.has(String(post.id || ""))));
+          }
+          selectedIds.forEach((id) => freeBoardAdminSelectedPostIds.delete(id));
+          freeBoardMode = "list";
+          freeBoardSelectedId = "";
+          showFreeBoardMessage(`선택한 글 ${selectedIds.length}개를 삭제했습니다.`, false);
+          freeBoardAdminBulkDeleting = false;
+          renderFreeBoard();
+          writeAppHistoryState(true);
+        } catch (error) {
+          console.error(error);
+          showFreeBoardMessage("선택한 글을 삭제하지 못했습니다. 관리자모드를 다시 확인해 주세요.", true);
+          freeBoardAdminBulkDeleting = false;
+          renderFreeBoard();
+        } finally {
+          freeBoardAdminBulkDeleting = false;
         }
       }
 
@@ -5011,10 +5146,14 @@
 
       function renderFreeBoardPosts(posts, totalCount, offset, loading = false) {
         const emptyText = loading ? "서버 게시글을 불러오는 중입니다." : "아직 등록된 글이 없습니다.";
+        const adminMode = Boolean(freeBoardAdminMode);
         const mobilePosts = posts.length ? posts.map((post, index) => {
           const commentCount = Math.max(0, Math.floor(Number(post.commentCount) || 0));
-          return `
-            <button class="free-board-mobile-post" type="button" data-free-board-open="${escapeAttr(post.id)}">
+          const postId = String(post.id || "");
+          const checked = freeBoardAdminSelectedPostIds.has(postId) ? " checked" : "";
+          const disabled = freeBoardAdminBulkDeleting ? " disabled" : "";
+          const mobileButton = `
+            <button class="free-board-mobile-post" type="button" data-free-board-open="${escapeAttr(postId)}">
               <span class="free-board-mobile-title">${escapeHtml(post.title)}</span>
               <span class="free-board-mobile-comments">${formatNumber(commentCount, 0)}</span>
               <span class="free-board-mobile-meta">
@@ -5025,12 +5164,26 @@
               </span>
             </button>
           `;
+          if (adminMode) {
+            return `
+              <div class="free-board-mobile-admin-post">
+                <input class="free-board-admin-checkbox" type="checkbox" aria-label="글 선택" data-free-board-admin-select-post="${escapeAttr(postId)}"${checked}${disabled} />
+                ${mobileButton}
+              </div>
+            `;
+          }
+          return `
+            ${mobileButton}
+          `;
         }).join("") : `<div class="free-board-mobile-empty">${escapeHtml(emptyText)}</div>`;
+        const visibleIds = posts.map((post) => String(post.id || "")).filter(Boolean);
+        const allVisibleSelected = Boolean(visibleIds.length) && visibleIds.every((id) => freeBoardAdminSelectedPostIds.has(id));
         return `
           <div class="free-board-table-wrap">
             <table class="free-board-table">
               <thead>
                 <tr>
+                  ${adminMode ? `<th class="free-board-admin-select-col"><input class="free-board-admin-checkbox" type="checkbox" aria-label="현재 페이지 전체 선택" data-free-board-admin-select-page ${allVisibleSelected ? " checked" : ""} ${freeBoardAdminBulkDeleting ? " disabled" : ""} /></th>` : ""}
                   <th>번호</th>
                   <th>게시판</th>
                   <th>제목</th>
@@ -5040,18 +5193,23 @@
                 </tr>
               </thead>
               <tbody>
-                ${posts.length ? posts.map((post, index) => `
+                ${posts.length ? posts.map((post, index) => {
+                  const postId = String(post.id || "");
+                  const checked = freeBoardAdminSelectedPostIds.has(postId) ? " checked" : "";
+                  const disabled = freeBoardAdminBulkDeleting ? " disabled" : "";
+                  return `
                   <tr>
+                    ${adminMode ? `<td class="free-board-admin-select-col"><input class="free-board-admin-checkbox" type="checkbox" aria-label="글 선택" data-free-board-admin-select-post="${escapeAttr(postId)}"${checked}${disabled} /></td>` : ""}
                     <td>${escapeHtml(String(totalCount - offset - index))}</td>
                     <td>${escapeHtml(freeBoardCategoryLabel(post.category))}</td>
-                    <td><button class="free-board-title-btn" type="button" data-free-board-open="${escapeAttr(post.id)}">${escapeHtml(post.title)}${post.commentCount ? ` <span class="free-board-meta">[${formatNumber(post.commentCount, 0)}]</span>` : ""}</button></td>
+                    <td class="free-board-title-cell"><button class="free-board-title-btn" type="button" data-free-board-open="${escapeAttr(postId)}">${escapeHtml(post.title)}${post.commentCount ? ` <span class="free-board-meta">[${formatNumber(post.commentCount, 0)}]</span>` : ""}</button></td>
                     <td>${escapeHtml(post.author || "익명")}</td>
                     <td>${escapeHtml(formatFreeBoardShortTime(post.createdAt))}</td>
                     <td>${formatNumber(post.views, 0)}</td>
                   </tr>
-                `).join("") : `
+                `}).join("") : `
                   <tr class="free-board-empty-row">
-                    <td colspan="6">${escapeHtml(emptyText)}</td>
+                    <td colspan="${adminMode ? 7 : 6}">${escapeHtml(emptyText)}</td>
                   </tr>
                 `}
               </tbody>
@@ -5330,6 +5488,7 @@
             ? normalizeFreeBoardCategory(editingPost.category)
             : (freeBoardFilter !== "all" ? normalizeFreeBoardCategory(freeBoardFilter) : "free");
           const composeBodyParts = splitFreeBoardBodyAndMediaTokens(editingPost?.body || "");
+          const adminEditing = freeBoardMode === "edit" && freeBoardAdminMode;
           freeBoardComposeMediaTokens = mergeComposeMediaTokens(composeBodyParts.tokens);
           newsPanel.innerHTML = `
             <div class="free-board-shell">
@@ -5337,7 +5496,7 @@
                 <form class="free-board-form" id="freeBoardForm">
                   <div>
                     <h2 class="free-board-title">${freeBoardMode === "edit" ? "글 수정" : "글쓰기"}</h2>
-                    <p class="free-board-desc">${freeBoardMode === "edit" ? "작성 시 정한 글 비밀번호 또는 관리자 비밀번호로 수정합니다." : "글 등록용 비밀번호를 따로 정합니다. 이 비밀번호로 나중에 수정/삭제할 수 있습니다."}</p>
+                    <p class="free-board-desc">${freeBoardMode === "edit" ? (adminEditing ? "관리자모드로 비밀번호 입력 없이 수정합니다." : "작성 시 정한 글 비밀번호 또는 관리자 비밀번호로 수정합니다.") : "글 등록용 비밀번호를 따로 정합니다. 이 비밀번호로 나중에 수정/삭제할 수 있습니다."}</p>
                   </div>
                   <div class="free-board-compose-top">
                     <div class="free-board-field">
@@ -5349,11 +5508,11 @@
                           .join("")}
                       </select>
                     </div>
-                    <div class="free-board-field">
+                    ${adminEditing ? "" : `<div class="free-board-field">
                       <label for="freeBoardPassword">${freeBoardMode === "edit" ? "글 비밀번호" : "글 등록 비밀번호"}</label>
                       <input id="freeBoardPassword" name="postPassword" type="password" autocomplete="off" placeholder="${freeBoardMode === "edit" ? "글 비밀번호로 수정" : "수정/삭제에 사용할 비밀번호"}" value="${freeBoardMode === "edit" ? escapeAttr(freeBoardEditAuthPostPassword) : ""}"${freeBoardMode === "edit" ? "" : " required"} />
-                    </div>
-                    ${freeBoardMode === "edit" ? `
+                    </div>`}
+                    ${freeBoardMode === "edit" && !adminEditing ? `
                       <div class="free-board-field">
                         <label for="freeBoardEditAdminPassword">관리자 비밀번호</label>
                         <input id="freeBoardEditAdminPassword" name="adminPassword" type="password" autocomplete="off" placeholder="관리자 비밀번호로 수정" value="${escapeAttr(freeBoardEditAuthAdminPassword)}" />
@@ -5403,10 +5562,10 @@
             <div class="free-board-board-nav">
               ${renderFreeBoardTabs()}
             </div>
-            ${renderFreeBoardAdminLogs()}
             <section class="free-board-card">
               <div class="free-board-list">
                 ${renderFreeBoardServerStatus()}
+                ${renderFreeBoardAdminBulkActions(pagePosts)}
                 ${renderFreeBoardPosts(pagePosts, filteredPosts.length, pageOffset, boardPostsLoading)}
                 <div class="free-board-bottom">
                   <div></div>
@@ -5953,6 +6112,7 @@
         adminServerPassword = "";
         freeBoardAdminMode = false;
         freeBoardAdminPassword = "";
+        freeBoardAdminSelectedPostIds.clear();
         freeBoardAdminLogs = [];
       }
 
@@ -7605,6 +7765,7 @@
         freeBoardQuery = "";
         freeBoardFilter = "all";
         freeBoardAdminPanelOpen = false;
+        freeBoardAdminSelectedPostIds.clear();
       }
 
       function goHomeView() {
@@ -8362,11 +8523,17 @@
           freeBoardAdminMode = false;
           freeBoardAdminPassword = "";
           freeBoardAdminPanelOpen = false;
+          freeBoardAdminSelectedPostIds.clear();
           freeBoardAdminLogs = [];
           freeBoardAdminLogsLoaded = false;
           freeBoardAdminLogsError = "";
           showFreeBoardMessage("관리자모드를 껐습니다.", false);
           renderFreeBoard();
+          return;
+        }
+
+        if (clickTarget.closest("[data-free-board-admin-bulk-delete]")) {
+          await deleteFreeBoardAdminSelectedPosts();
           return;
         }
 
@@ -8429,7 +8596,15 @@
         if (editButton) {
           const postId = String(editButton.dataset.freeBoardEdit || "");
           freeBoardEditAuthPostPassword = "";
-          freeBoardEditAuthAdminPassword = "";
+          freeBoardEditAuthAdminPassword = freeBoardAdminMode ? freeBoardAdminPassword : "";
+          if (freeBoardAdminMode) {
+            freeBoardSelectedId = postId;
+            freeBoardMode = "edit";
+            showFreeBoardMessage("", false);
+            renderFreeBoard();
+            writeAppHistoryState();
+            return;
+          }
           showDeleteAuthModal(postId, "post", "", "edit");
           return;
         }
@@ -8479,6 +8654,31 @@
 
       newsPanel.addEventListener("change", async (event) => {
         const input = event.target instanceof HTMLInputElement ? event.target : null;
+        if (input?.matches("[data-free-board-admin-select-page]")) {
+          const checkboxes = [...newsPanel.querySelectorAll("[data-free-board-admin-select-post]")]
+            .filter((node) => node instanceof HTMLInputElement);
+          checkboxes.forEach((checkbox) => {
+            const id = String(checkbox.dataset.freeBoardAdminSelectPost || "");
+            if (!id) return;
+            if (input.checked) {
+              freeBoardAdminSelectedPostIds.add(id);
+            } else {
+              freeBoardAdminSelectedPostIds.delete(id);
+            }
+          });
+          renderFreeBoard();
+          return;
+        }
+        if (input?.matches("[data-free-board-admin-select-post]")) {
+          const id = String(input.dataset.freeBoardAdminSelectPost || "");
+          if (id && input.checked) {
+            freeBoardAdminSelectedPostIds.add(id);
+          } else if (id) {
+            freeBoardAdminSelectedPostIds.delete(id);
+          }
+          renderFreeBoard();
+          return;
+        }
         if (!input || input.id !== "freeBoardFileInput") return;
         const files = Array.from(input.files || []);
         input.value = "";
