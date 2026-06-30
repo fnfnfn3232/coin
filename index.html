@@ -5092,6 +5092,7 @@
           image: "이미지",
           video: "영상",
           game: "게임",
+          usemap: "유즈맵",
           info: "정보",
         };
         return map[normalized] || "자유게시판";
@@ -5099,7 +5100,7 @@
 
       function normalizeFreeBoardCategory(category) {
         const value = String(category || "").trim().toLowerCase();
-        if (["free", "image", "video", "game", "info"].includes(value)) return value;
+        if (["free", "image", "video", "game", "usemap", "info"].includes(value)) return value;
         return "free";
       }
 
@@ -5110,6 +5111,7 @@
           { value: "image", label: "이미지" },
           { value: "video", label: "영상" },
           { value: "game", label: "게임" },
+          { value: "usemap", label: "유즈맵" },
           { value: "info", label: "정보" },
         ];
       }
