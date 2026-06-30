@@ -4024,6 +4024,7 @@
       let freeBoardAdminMode = false;
       let freeBoardAdminPassword = "";
       let freeBoardAdminPanelOpen = false;
+      let freeBoardAdminLoginSubmitting = false;
       let freeBoardAdminLogs = [];
       let freeBoardAdminLogsLoaded = false;
       let freeBoardAdminLogsError = "";
@@ -4291,6 +4292,66 @@
           await fetchServerFreeBoardAdminLogs(adminPassword);
         } catch (error) {
           console.warn("free board admin log refresh failed", error);
+        }
+      }
+
+      async function verifyFreeBoardAdminPassword(password) {
+        try {
+          return await fetchServerFreeBoardAdminLogs(password);
+        } catch (error) {
+          const message = String(error?.message || error?.payload?.error || "");
+          if (message !== "auth_required") throw error;
+        }
+        await loginWithServerPassword(password);
+        setLockExtendCount(0);
+        setLockAuthFor24Hours();
+        hideSiteLock();
+        renderLockTtl();
+        return fetchServerFreeBoardAdminLogs(password);
+      }
+
+      function getFreeBoardAdminLoginErrorMessage(error) {
+        const message = String(error?.message || error?.payload?.error || "");
+        if (Number(error?.status) === 429 || message === "too_many_login_attempts") {
+          return getLoginErrorMessage(error);
+        }
+        if (message === "invalid_password" || Number(error?.status) === 401) {
+          return "서버/관리자 비밀번호가 맞지 않습니다.";
+        }
+        return "관리자 권한 확인에 실패했습니다. 잠시 후 다시 시도해 주세요.";
+      }
+
+      async function handleFreeBoardAdminLogin() {
+        if (freeBoardAdminLoginSubmitting) return;
+        const passwordInput = document.getElementById("freeBoardAdminPassword");
+        const password = String(passwordInput?.value || "");
+        if (!password) {
+          showFreeBoardMessage("관리자모드용 서버 비밀번호를 입력해 주세요.", true);
+          passwordInput?.focus();
+          return;
+        }
+        freeBoardAdminLoginSubmitting = true;
+        try {
+          showFreeBoardMessage("관리자 권한 확인 중입니다...", false);
+          await verifyFreeBoardAdminPassword(password);
+          freeBoardAdminMode = true;
+          freeBoardAdminPassword = password;
+          freeBoardAdminPanelOpen = false;
+          showFreeBoardMessage("관리자모드가 켜졌습니다.", false);
+          renderFreeBoard();
+        } catch (error) {
+          console.error(error);
+          freeBoardAdminMode = false;
+          freeBoardAdminPassword = "";
+          freeBoardAdminLogs = [];
+          freeBoardAdminLogsLoaded = false;
+          freeBoardAdminLogsError = "";
+          freeBoardAdminPanelOpen = true;
+          showFreeBoardMessage(getFreeBoardAdminLoginErrorMessage(error), true);
+          passwordInput?.focus();
+          passwordInput?.select();
+        } finally {
+          freeBoardAdminLoginSubmitting = false;
         }
       }
 
@@ -5029,11 +5090,11 @@
           `;
         }
         return `
-          <div class="free-board-admin-compact">
-            <input id="freeBoardAdminPassword" type="password" autocomplete="current-password" placeholder="서버 비밀번호" />
-            <button class="free-board-submit free-board-admin-mini" type="button" data-free-board-admin-login>확인</button>
-            <button class="free-board-delete free-board-admin-mini" type="button" data-free-board-admin-cancel>취소</button>
-          </div>
+          <form class="free-board-admin-compact" data-free-board-admin-form>
+            <input id="freeBoardAdminPassword" type="password" autocomplete="current-password" placeholder="서버/관리자 비밀번호" ${freeBoardAdminLoginSubmitting ? "disabled" : ""} />
+            <button class="free-board-submit free-board-admin-mini" type="submit" data-free-board-admin-login ${freeBoardAdminLoginSubmitting ? "disabled" : ""}>확인</button>
+            <button class="free-board-delete free-board-admin-mini" type="button" data-free-board-admin-cancel ${freeBoardAdminLoginSubmitting ? "disabled" : ""}>취소</button>
+          </form>
         `;
       }
 
@@ -7926,6 +7987,13 @@
           return;
         }
 
+        const freeBoardAdminForm = event.target.closest("[data-free-board-admin-form]");
+        if (freeBoardAdminForm) {
+          event.preventDefault();
+          await handleFreeBoardAdminLogin();
+          return;
+        }
+
         const commentDeleteAuthForm = event.target.closest("[data-free-board-comment-delete-auth-form]");
         if (commentDeleteAuthForm) {
           event.preventDefault();
@@ -8285,37 +8353,8 @@
         }
 
         if (clickTarget.closest("[data-free-board-admin-login]")) {
-          const passwordInput = document.getElementById("freeBoardAdminPassword");
-          const password = String(passwordInput?.value || "");
-          if (!password) {
-            showFreeBoardMessage("관리자모드용 서버 비밀번호를 입력해 주세요.", true);
-            passwordInput?.focus();
-            return;
-          }
-          try {
-            showFreeBoardMessage("관리자 권한 확인 중입니다...", false);
-            await verifySitePassword(password);
-            freeBoardAdminMode = true;
-            freeBoardAdminPassword = password;
-            freeBoardAdminPanelOpen = false;
-            try {
-              await fetchServerFreeBoardAdminLogs(password);
-            } catch (logError) {
-              console.error(logError);
-              freeBoardAdminLogsError = "관리 기록을 불러오지 못했습니다.";
-              freeBoardAdminLogsLoaded = true;
-            }
-            showFreeBoardMessage("관리자모드가 켜졌습니다.", false);
-            renderFreeBoard();
-          } catch (error) {
-            console.error(error);
-            freeBoardAdminMode = false;
-            freeBoardAdminPassword = "";
-            freeBoardAdminLogs = [];
-            freeBoardAdminLogsLoaded = false;
-            showFreeBoardMessage("서버 비밀번호가 맞지 않습니다.", true);
-            passwordInput?.focus();
-          }
+          event.preventDefault();
+          await handleFreeBoardAdminLogin();
           return;
         }
 
