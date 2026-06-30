@@ -5855,6 +5855,40 @@
         return serverUsageStats;
       }
 
+      async function verifyAdminPasswordAndFetchStats(password) {
+        try {
+          return await fetchServerUsageStats(password);
+        } catch (statsError) {
+          try {
+            await loginWithServerPassword(password);
+            return await fetchServerUsageStats("");
+          } catch (_loginError) {
+            throw statsError;
+          }
+        }
+      }
+
+      function getAdminAuthErrorMessage(error) {
+        const message = String(error?.message || "");
+        const status = Math.max(0, Math.floor(Number(error?.status) || 0));
+        if (message === "invalid_password") {
+          return "관리자 비밀번호가 맞지 않습니다. 첫 화면 로그인 비밀번호와 같은 비밀번호를 입력해 주세요. (서버 응답: invalid_password)";
+        }
+        if (message === "auth_required") {
+          return "비밀번호가 서버에 전달되지 않았습니다. 다시 입력해 주세요. (서버 응답: auth_required)";
+        }
+        if (message === "origin_not_allowed" || status === 403) {
+          return "현재 주소에서 인증 서버 접근이 차단됐습니다. https://fnfnfn3232.github.io/coin/ 주소로 접속해 주세요. (서버 응답: origin_not_allowed)";
+        }
+        if (status === 429 || error?.payload?.error === "too_many_login_attempts") {
+          return getLoginErrorMessage(error);
+        }
+        if (status) {
+          return `인증 서버 오류로 관리자모드에 들어가지 못했습니다. 서버 응답: ${message || String(status)}`;
+        }
+        return "인증 서버에 연결하지 못했습니다. 인터넷 연결 또는 브라우저 차단 설정을 확인해 주세요.";
+      }
+
       function renderAdminDashboard() {
         updateAdminUsageSummary();
 
@@ -6328,12 +6362,12 @@
           try {
             adminError.textContent = "서버에서 확인 중입니다...";
             adminServerPassword = value;
-            await fetchServerUsageStats(value);
+            await verifyAdminPasswordAndFetchStats(value);
             adminError.textContent = "";
             showAdminDashboard();
           } catch (error) {
             adminServerPassword = "";
-            adminError.textContent = getLoginErrorMessage(error);
+            adminError.textContent = getAdminAuthErrorMessage(error);
             adminPasswordInput.value = "";
             adminPasswordInput.focus();
           }
