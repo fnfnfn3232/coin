@@ -3251,7 +3251,7 @@
   </script>
   <script>
     const SITE_PASSWORD = "";
-    const ADMIN_BUILD_VERSION = "server-traffic-2026-06-16-0938";
+    const ADMIN_BUILD_VERSION = "admin-login-safe-2026-06-30-2247";
     const LOCK_AUTH_UNTIL_KEY = "fdv_lock_until_server_v1";
     const LOCK_EXTEND_COUNT_KEY = "fdv_lock_extend_count_server_v1";
     const SERVER_AUTH_TOKEN_KEY = "fdv_server_auth_token_v1";
@@ -6125,15 +6125,30 @@
       }
 
       function showAdminDashboard() {
-        renderAdminDashboard();
         adminAuthPanel.hidden = true;
         adminDashboard.hidden = false;
+        try {
+          renderAdminDashboard();
+        } catch (error) {
+          console.error(error);
+          serverUsageError = "관리자 화면 일부를 표시하지 못했습니다. 기본 관리자 화면은 열려 있습니다.";
+        }
         fetchServerUsageStats(adminServerPassword)
-          .then(() => renderAdminDashboard())
+          .then(() => {
+            try {
+              renderAdminDashboard();
+            } catch (error) {
+              console.error(error);
+            }
+          })
           .catch((error) => {
             console.error(error);
             serverUsageError = "서버 트래픽 추정치를 불러오지 못했습니다.";
-            renderAdminDashboard();
+            try {
+              renderAdminDashboard();
+            } catch (renderError) {
+              console.error(renderError);
+            }
           });
       }
 
