@@ -3868,9 +3868,10 @@
             reportProgress(uploadedBytes, completedChunkCount, chunkCount);
           }
         }
+        const serverParallelChunks = Math.max(1, Math.floor(Number(initPayload?.parallelChunks) || FREE_BOARD_UPLOAD_PARALLEL_CHUNKS));
         const parallelChunkCount = Math.min(
           chunkCount,
-          Math.max(1, Math.floor(Number(FREE_BOARD_UPLOAD_PARALLEL_CHUNKS) || 1)),
+          serverParallelChunks,
         );
         const uploadWorkers = Array.from({ length: parallelChunkCount }, () => uploadNextChunk());
         await Promise.all(uploadWorkers);

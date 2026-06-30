@@ -14,6 +14,7 @@ The current frontend is wired to use this API when `window.SERVER_AUTH_API_BASE`
 - Worker sets an `HttpOnly` session cookie.
 - Protected APIs, such as `/api/news`, return data only when that cookie is valid.
 - Coinness news full text should still be used carefully. Default mode returns previews only.
+- Board attachments can be stored in the private Cloudflare R2 bucket bound as `BOARD_MEDIA_BUCKET`.
 
 ## Required Cloudflare Worker environment variables
 
@@ -32,6 +33,10 @@ The current frontend is wired to use this API when `window.SERVER_AUTH_API_BASE`
   - `full` returns full Coinness text only after login, but this can still carry content-license risk.
 - `NEWS_CACHE_SECONDS`
   - Optional. Default/recommended value is `600` seconds, so Coinness is fetched at most about once every 10 minutes per active Worker isolate.
+- `BOARD_MEDIA_BUCKET`
+  - R2 bucket binding used for board attachments.
+  - Recommended bucket name: `coin-board-media`.
+  - Keep the bucket private. Downloads should continue through `/api/board/media/...`, where the Worker checks login first.
 
 ## Generate password hash
 
@@ -96,6 +101,8 @@ Add these GitHub repository secrets:
 - `CLOUDFLARE_ACCOUNT_ID`
 - `SITE_PASSWORD_SHA256`
 - `SESSION_SECRET`
+
+The deploy workflow also creates/uses the private R2 bucket named `coin-board-media`. The Cloudflare API token needs permission to deploy Workers and manage/read/write R2 buckets.
 
 Korean GitHub menu path:
 
