@@ -688,6 +688,14 @@ async function parseJsonBody(request) {
   }
 }
 
+async function parseJsonOrPlainPasswordBody(request) {
+  const contentType = String(request.headers.get("Content-Type") || "").toLowerCase();
+  if (contentType.includes("text/plain")) {
+    return { adminPassword: await request.text() };
+  }
+  return parseJsonBody(request);
+}
+
 function getBoardMediaKey(id) {
   return `${BOARD_MEDIA_KEY_PREFIX}${id}`;
 }
@@ -1793,7 +1801,7 @@ export class BoardStore {
     }
 
     if (request.method === "POST" && url.pathname === "/api/usage/stats") {
-      const body = await parseJsonBody(request);
+      const body = await parseJsonOrPlainPasswordBody(request);
       const authenticated = await isAuthenticated(request, this.env);
       const providedPassword = body?.adminPassword || body?.password || "";
       if (!authenticated && !providedPassword) {
