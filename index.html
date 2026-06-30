@@ -5844,10 +5844,10 @@
       }
 
       async function fetchServerUsageStats(password = adminServerPassword) {
-        if (!hasServerAuth() || !password) return null;
+        if (!hasServerAuth()) return null;
         const payload = await fetchServerAuth("/api/usage/stats", {
           method: "POST",
-          body: JSON.stringify({ adminPassword: password }),
+          body: JSON.stringify(password ? { adminPassword: password } : {}),
         });
         serverUsageStats = payload?.usage || null;
         serverUsageError = "";
@@ -5940,6 +5940,26 @@
         adminPasswordInput.value = "";
         adminError.textContent = "";
         setAdminCapsWarning(false);
+        if (hasServerAuth() && !isLocalPreview() && !isSiteLocked()) {
+          adminError.textContent = "로그인 세션을 확인 중입니다...";
+          verifyServerSession()
+            .then(() => {
+              adminServerPassword = "";
+              adminError.textContent = "";
+              showAdminDashboard();
+            })
+            .catch((error) => {
+              console.error(error);
+              if (isServerAuthExpiredError(error)) {
+                closeAdminModal();
+                handleServerAuthExpired();
+                return;
+              }
+              adminError.textContent = "세션 확인에 실패했습니다. 비밀번호를 입력해 주세요.";
+              window.setTimeout(() => adminPasswordInput.focus(), 0);
+            });
+          return;
+        }
         window.setTimeout(() => adminPasswordInput.focus(), 0);
       }
 
@@ -6035,15 +6055,13 @@
         renderAdminDashboard();
         adminAuthPanel.hidden = true;
         adminDashboard.hidden = false;
-        if (adminServerPassword) {
-          fetchServerUsageStats(adminServerPassword)
-            .then(() => renderAdminDashboard())
-            .catch((error) => {
-              console.error(error);
-              serverUsageError = "서버 트래픽 추정치를 불러오지 못했습니다.";
-              renderAdminDashboard();
-            });
-        }
+        fetchServerUsageStats(adminServerPassword)
+          .then(() => renderAdminDashboard())
+          .catch((error) => {
+            console.error(error);
+            serverUsageError = "서버 트래픽 추정치를 불러오지 못했습니다.";
+            renderAdminDashboard();
+          });
       }
 
       function showSiteLock() {
@@ -6126,6 +6144,12 @@
         return `${String(hours).padStart(2, "0")}시${String(minutes).padStart(2, "0")}분`;
       }
 
+      function isServerAuthExpiredError(error) {
+        const message = String(error?.message || "");
+        const status = Math.max(0, Math.floor(Number(error?.status) || 0));
+        return status === 401 && (message === "auth_required" || message.includes("server_auth_failed") || message.includes("401"));
+      }
+
       function getLoginErrorMessage(error) {
         if (Number(error?.status) === 429 || error?.payload?.error === "too_many_login_attempts") {
           const retryMs = Math.max(60, Number(error?.payload?.retryAfterSeconds) || 30 * 60) * 1000;
@@ -6155,7 +6179,10 @@
           renderLockTtl();
           verifyServerSession()
             .then(() => fetchLatestBoardData())
-            .catch((error) => console.error(error));
+            .catch((error) => {
+              console.error(error);
+              if (isServerAuthExpiredError(error)) handleServerAuthExpired();
+            });
           return;
         }
         clearSiteLoginState();
@@ -6216,15 +6243,13 @@
       adminCloseBtn.addEventListener("click", closeAdminModal);
       adminRefreshBtn.addEventListener("click", () => {
         renderAdminDashboard();
-        if (adminServerPassword) {
-          fetchServerUsageStats(adminServerPassword)
-            .then(() => renderAdminDashboard())
-            .catch((error) => {
-              console.error(error);
-              serverUsageError = "서버 트래픽 추정치를 불러오지 못했습니다.";
-              renderAdminDashboard();
-            });
-        }
+        fetchServerUsageStats(adminServerPassword)
+          .then(() => renderAdminDashboard())
+          .catch((error) => {
+            console.error(error);
+            serverUsageError = "서버 트래픽 추정치를 불러오지 못했습니다.";
+            renderAdminDashboard();
+          });
       });
       adminModal.addEventListener("click", (event) => {
         if (event.target === adminModal) {

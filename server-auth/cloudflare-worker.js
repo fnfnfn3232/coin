@@ -1813,7 +1813,8 @@ export class BoardStore {
 
     if (request.method === "POST" && url.pathname === "/api/usage/stats") {
       const body = await parseJsonBody(request);
-      if (!await isAdminPassword(body?.adminPassword || body?.password || "", this.env)) {
+      const providedPassword = body?.adminPassword || body?.password || "";
+      if (providedPassword && !await isAdminPassword(providedPassword, this.env)) {
         return jsonResponse({ error: "invalid_password" }, 401, this.env);
       }
       return jsonResponse({ usage: publicUsageStats(await this.readUsageStats()) }, 200, this.env);
