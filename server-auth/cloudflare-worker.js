@@ -1735,8 +1735,17 @@ export class BoardStore {
     const now = Date.now();
     const attemptKey = await getLoginAttemptKey(getForwardedLoginClientIp(request));
     let record = normalizeLoginAttemptRecord(await this.state.storage.get(attemptKey));
+    const passwordHash = await sha256Hex(body.password || "");
+    const passwordValid = timingSafeEqual(passwordHash, this.env.SITE_PASSWORD_SHA256);
 
     if (record.lockedUntil > now) {
+      if (passwordValid) {
+        await this.state.storage.delete(attemptKey);
+        const token = await createSessionToken(this.env);
+        const headers = new Headers(jsonResponse({ ok: true }, 200, this.env).headers);
+        headers.append("Set-Cookie", sessionCookie(token));
+        return new Response(JSON.stringify({ ok: true, token }), { status: 200, headers });
+      }
       return loginLockedResponse(record, this.env);
     }
     if (record.lockedUntil && record.lockedUntil <= now) {
@@ -1744,8 +1753,7 @@ export class BoardStore {
       await this.state.storage.delete(attemptKey);
     }
 
-    const passwordHash = await sha256Hex(body.password || "");
-    if (!timingSafeEqual(passwordHash, this.env.SITE_PASSWORD_SHA256)) {
+    if (!passwordValid) {
       const failures = Math.min(LOGIN_FAILURE_LIMIT, record.failures + 1);
       const nextRecord = {
         failures,
