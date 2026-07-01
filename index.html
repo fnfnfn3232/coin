@@ -1231,6 +1231,23 @@
         overflow-wrap: anywhere;
       }
 
+      .free-board-attachment-badge {
+        display: inline-flex;
+        align-items: center;
+        flex: 0 0 auto;
+        min-height: 18px;
+        margin-left: 6px;
+        padding: 2px 6px;
+        border: 1px solid rgba(117, 221, 255, 0.32);
+        border-radius: 999px;
+        background: rgba(4, 44, 58, 0.72);
+        color: #9feeff;
+        font-size: 11px;
+        font-weight: 900;
+        line-height: 1;
+        vertical-align: 1px;
+      }
+
       .free-board-mobile-comments {
         align-self: center;
         color: #ff8aa5;
@@ -1273,6 +1290,7 @@
         color: #f1e0bd;
         text-align: left;
         font-weight: 750;
+        line-height: 1.45;
       }
 
       .free-board-title-btn:hover {
@@ -4677,6 +4695,21 @@
         return Boolean(token?.actualKind && token.actualKind === token.requestedKind && token.url);
       }
 
+      function getFreeBoardAttachmentCount(post) {
+        const tokenCount = validateEmbeddedMediaTokens(post?.body || "").tokens.filter(isValidEmbeddedMediaToken).length;
+        const mediaUrlCount = Array.isArray(post?.mediaUrls)
+          ? post.mediaUrls.filter((url) => getSafeMediaKind(url)).length
+          : 0;
+        return tokenCount + mediaUrlCount;
+      }
+
+      function renderFreeBoardAttachmentBadge(post) {
+        const count = getFreeBoardAttachmentCount(post);
+        if (!count) return "";
+        const label = count > 1 ? `첨부 ${formatNumber(count, 0)}` : "첨부";
+        return `<span class="free-board-attachment-badge" title="첨부파일 ${escapeAttr(formatNumber(count, 0))}개">${escapeHtml(label)}</span>`;
+      }
+
       function createComposeMediaToken(kind, url, meta = {}) {
         const requestedKind = String(kind || "").toLowerCase();
         const safeUrl = String(url || "").trim();
@@ -5173,9 +5206,10 @@
           const postId = String(post.id || "");
           const checked = freeBoardAdminSelectedPostIds.has(postId) ? " checked" : "";
           const disabled = freeBoardAdminBulkDeleting ? " disabled" : "";
+          const attachmentBadge = renderFreeBoardAttachmentBadge(post);
           const mobileButton = `
             <button class="free-board-mobile-post" type="button" data-free-board-open="${escapeAttr(postId)}">
-              <span class="free-board-mobile-title">${escapeHtml(post.title)}</span>
+              <span class="free-board-mobile-title">${escapeHtml(post.title)}${attachmentBadge}</span>
               <span class="free-board-mobile-comments">${formatNumber(commentCount, 0)}</span>
               <span class="free-board-mobile-meta">
                 <span class="free-board-mobile-category">${escapeHtml(freeBoardCategoryLabel(post.category))}</span>
@@ -5218,12 +5252,13 @@
                   const postId = String(post.id || "");
                   const checked = freeBoardAdminSelectedPostIds.has(postId) ? " checked" : "";
                   const disabled = freeBoardAdminBulkDeleting ? " disabled" : "";
+                  const attachmentBadge = renderFreeBoardAttachmentBadge(post);
                   return `
                   <tr>
                     ${adminMode ? `<td class="free-board-admin-select-col"><input class="free-board-admin-checkbox" type="checkbox" aria-label="글 선택" data-free-board-admin-select-post="${escapeAttr(postId)}"${checked}${disabled} /></td>` : ""}
                     <td>${escapeHtml(String(totalCount - offset - index))}</td>
                     <td>${escapeHtml(freeBoardCategoryLabel(post.category))}</td>
-                    <td class="free-board-title-cell"><button class="free-board-title-btn" type="button" data-free-board-open="${escapeAttr(postId)}">${escapeHtml(post.title)}${post.commentCount ? ` <span class="free-board-meta">[${formatNumber(post.commentCount, 0)}]</span>` : ""}</button></td>
+                    <td class="free-board-title-cell"><button class="free-board-title-btn" type="button" data-free-board-open="${escapeAttr(postId)}">${escapeHtml(post.title)}${attachmentBadge}${post.commentCount ? ` <span class="free-board-meta">[${formatNumber(post.commentCount, 0)}]</span>` : ""}</button></td>
                     <td>${escapeHtml(post.author || "익명")}</td>
                     <td>${escapeHtml(formatFreeBoardShortTime(post.createdAt))}</td>
                     <td>${formatNumber(post.views, 0)}</td>
