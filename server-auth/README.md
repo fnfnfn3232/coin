@@ -13,7 +13,7 @@ The current frontend is wired to use this API when `window.SERVER_AUTH_API_BASE`
 - Worker validates it against a secret hash stored in Cloudflare environment variables.
 - Worker sets an `HttpOnly` session cookie.
 - Protected APIs, such as `/api/news`, return data only when that cookie is valid.
-- Coinness news full text should still be used carefully. Default mode returns previews only.
+- Coinness news is stored and returned as preview-only data. Full original text is intentionally not stored.
 - Board attachments can be stored in the private Cloudflare R2 bucket bound as `BOARD_MEDIA_BUCKET`.
 
 ## Required Cloudflare Worker environment variables
@@ -28,9 +28,6 @@ The current frontend is wired to use this API when `window.SERVER_AUTH_API_BASE`
   - Optional. Coinness currently accepts up to 40 per fetch; keep this at `40`.
 - `NEWS_STORE_LIMIT`
   - Optional. The Worker keeps up to 1000 merged Coinness items for paging and search.
-- `NEWS_BODY_MODE`
-  - Optional. Use `preview` by default.
-  - `full` returns full Coinness text only after login, but this can still carry content-license risk.
 - `NEWS_CACHE_SECONDS`
   - Optional. Default/recommended value is `600` seconds, so Coinness is fetched at most about once every 10 minutes per active Worker isolate.
 - `BOARD_MEDIA_BUCKET`

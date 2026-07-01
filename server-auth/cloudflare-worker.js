@@ -946,7 +946,7 @@ function parsePublishAt(value) {
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : 0;
 }
 
-function normalizeNewsItem(entry, includeFullText) {
+function normalizeNewsItem(entry) {
   const id = Number(entry?.id || 0);
   const publishAt = String(entry?.publishAt || "").trim();
   const publishAtTs = parsePublishAt(publishAt);
@@ -965,9 +965,6 @@ function normalizeNewsItem(entry, includeFullText) {
     originUrl: entry?.link ? String(entry.link).trim() : "",
     originTitle: entry?.linkTitle ? String(entry.linkTitle).trim() : "",
   };
-  if (includeFullText) {
-    item.content = content;
-  }
   return item;
 }
 
@@ -989,7 +986,6 @@ function normalizeStoredNewsItem(entry) {
     originUrl: cleanBoardText(entry?.originUrl || entry?.sourceUrl || "", 1000),
     originTitle: cleanNewsText(entry?.originTitle || entry?.linkTitle || "").slice(0, 200),
   };
-  if (entry?.content) item.content = cleanNewsText(entry.content).slice(0, 5000);
   return item;
 }
 
@@ -1034,7 +1030,6 @@ function filterNewsItems(items, query) {
     const haystack = [
       item.headline,
       item.summary,
-      item.content,
       item.originTitle,
       item.sourceName,
     ].join(" ").toLowerCase();
@@ -1051,7 +1046,7 @@ function newsPageResponse(store, requestUrl, env, extra = {}) {
   const pageItems = filteredItems.slice(offset, offset + limit);
   return jsonResponse({
     source: "coinness",
-    mode: String(env.NEWS_BODY_MODE || "preview").toLowerCase() === "full" ? "full" : "preview",
+    mode: "preview",
     fetchedAt: Math.floor(Number(store?.fetchedAt || 0) / 1000) || Math.floor(Date.now() / 1000),
     cached: Boolean(extra.cached),
     stale: Boolean(extra.stale),
@@ -1161,7 +1156,6 @@ function getNewsCacheMs(env) {
 
 async function fetchCoinnessNews(env) {
   const limit = Math.min(Math.max(Number(env.NEWS_LIMIT || NEWS_PAGE_MAX_ITEMS), 1), NEWS_PAGE_MAX_ITEMS);
-  const includeFullText = String(env.NEWS_BODY_MODE || "preview").toLowerCase() === "full";
   const query = new URLSearchParams({ languageCode: "ko", limit: String(limit) });
   const response = await fetch(`${COINNESS_NEWS_ENDPOINT}?${query.toString()}`, {
     headers: {
@@ -1177,11 +1171,11 @@ async function fetchCoinnessNews(env) {
   }
   const payload = await response.json();
   const items = Array.isArray(payload)
-    ? payload.map((entry) => normalizeNewsItem(entry, includeFullText)).filter(Boolean)
+    ? payload.map((entry) => normalizeNewsItem(entry)).filter(Boolean)
     : [];
   return {
     source: "coinness",
-    mode: includeFullText ? "full" : "preview",
+    mode: "preview",
     fetchedAt: Math.floor(Date.now() / 1000),
     items,
   };
@@ -1215,7 +1209,7 @@ async function fetchCoinnessNewsSafely(env) {
     }
     return {
       source: "coinness",
-      mode: String(env.NEWS_BODY_MODE || "preview").toLowerCase() === "full" ? "full" : "preview",
+      mode: "preview",
       fetchedAt: Math.floor(Date.now() / 1000),
       error: error instanceof Error ? error.message : "coinness_fetch_failed",
       items: [],
@@ -1327,11 +1321,15 @@ export class BoardStore {
     const rawItems = Array.isArray(stored)
       ? stored
       : (Array.isArray(stored?.items) ? stored.items : []);
-    return {
+    const normalized = {
       fetchedAt: Math.max(0, Math.floor(Number(stored?.fetchedAt) || 0)),
       seededAt: Math.max(0, Math.floor(Number(stored?.seededAt) || 0)),
       items: sortNewsItems(rawItems).slice(0, getNewsStoreLimit(this.env)),
     };
+    if (rawItems.some((item) => item && typeof item === "object" && Object.prototype.hasOwnProperty.call(item, "content"))) {
+      await this.state.storage.put(NEWS_STORE_KEY, normalized);
+    }
+    return normalized;
   }
 
   async writeNewsStore(store) {
