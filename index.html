@@ -1234,18 +1234,24 @@
       .free-board-attachment-badge {
         display: inline-flex;
         align-items: center;
+        justify-content: center;
         flex: 0 0 auto;
-        min-height: 18px;
-        margin-left: 6px;
-        padding: 2px 6px;
+        width: 10px;
+        height: 10px;
+        margin-left: 5px;
         border: 1px solid rgba(117, 221, 255, 0.32);
-        border-radius: 999px;
+        border-radius: 2px;
         background: rgba(4, 44, 58, 0.72);
-        color: #9feeff;
-        font-size: 11px;
-        font-weight: 900;
         line-height: 1;
         vertical-align: 1px;
+      }
+
+      .free-board-attachment-badge::after {
+        content: "";
+        width: 4px;
+        height: 4px;
+        border-radius: 1px;
+        background: rgba(159, 238, 255, 0.75);
       }
 
       .free-board-mobile-comments {
@@ -4695,19 +4701,35 @@
         return Boolean(token?.actualKind && token.actualKind === token.requestedKind && token.url);
       }
 
+      function isUploadedFreeBoardAttachmentUrl(value) {
+        try {
+          if (isLocalPreview() && /^blob:/i.test(String(value || ""))) return true;
+          if (!SERVER_AUTH_API_BASE) return false;
+          const mediaUrl = new URL(String(value || ""), location.href);
+          const apiUrl = new URL(SERVER_AUTH_API_BASE);
+          if (mediaUrl.origin !== apiUrl.origin) return false;
+          return /^\/api\/board\/media\/[^/]+$/i.test(mediaUrl.pathname);
+        } catch (_error) {
+          return false;
+        }
+      }
+
       function getFreeBoardAttachmentCount(post) {
-        const tokenCount = validateEmbeddedMediaTokens(post?.body || "").tokens.filter(isValidEmbeddedMediaToken).length;
-        const mediaUrlCount = Array.isArray(post?.mediaUrls)
-          ? post.mediaUrls.filter((url) => getSafeMediaKind(url)).length
-          : 0;
-        return tokenCount + mediaUrlCount;
+        const uploadedUrls = validateEmbeddedMediaTokens(post?.body || "").tokens
+          .filter((token) => isValidEmbeddedMediaToken(token) && isUploadedFreeBoardAttachmentUrl(token.url))
+          .map((token) => String(token.url || ""));
+        if (Array.isArray(post?.mediaUrls)) {
+          post.mediaUrls
+            .filter(isUploadedFreeBoardAttachmentUrl)
+            .forEach((url) => uploadedUrls.push(String(url || "")));
+        }
+        return new Set(uploadedUrls.filter(Boolean)).size;
       }
 
       function renderFreeBoardAttachmentBadge(post) {
         const count = getFreeBoardAttachmentCount(post);
         if (!count) return "";
-        const label = count > 1 ? `첨부 ${formatNumber(count, 0)}` : "첨부";
-        return `<span class="free-board-attachment-badge" title="첨부파일 ${escapeAttr(formatNumber(count, 0))}개">${escapeHtml(label)}</span>`;
+        return `<span class="free-board-attachment-badge" title="직접 업로드한 첨부파일 ${escapeAttr(formatNumber(count, 0))}개" aria-label="직접 업로드한 첨부파일 ${escapeAttr(formatNumber(count, 0))}개"></span>`;
       }
 
       function createComposeMediaToken(kind, url, meta = {}) {
