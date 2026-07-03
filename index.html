@@ -2035,6 +2035,21 @@
         white-space: pre-wrap;
       }
 
+      .free-board-text a,
+      .free-board-comment-body a {
+        color: #8eeaff;
+        font-weight: 800;
+        text-decoration: underline;
+        text-decoration-thickness: 1px;
+        text-underline-offset: 3px;
+        overflow-wrap: anywhere;
+      }
+
+      .free-board-text a:hover,
+      .free-board-comment-body a:hover {
+        color: #dffaff;
+      }
+
       .free-board-html {
         display: block;
       }
@@ -4956,6 +4971,36 @@
         `;
       }
 
+      function renderTextWithAutoLinks(value) {
+        const text = String(value || "");
+        const urlPattern = /(?:https?:\/\/|www\.)[^\s<>"'`]+/gi;
+        const parts = [];
+        let lastIndex = 0;
+        let match;
+        while ((match = urlPattern.exec(text))) {
+          const raw = match[0] || "";
+          const before = text.slice(lastIndex, match.index);
+          if (before) parts.push(escapeHtml(before));
+
+          const trailingMatch = raw.match(/[)\].,;:!?]+$/);
+          const trailing = trailingMatch ? trailingMatch[0] : "";
+          const visibleUrl = trailing ? raw.slice(0, -trailing.length) : raw;
+          const href = /^www\./i.test(visibleUrl) ? `https://${visibleUrl}` : visibleUrl;
+
+          if (/^https?:\/\//i.test(href) && isSafeHttpUrl(href)) {
+            parts.push(`<a href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(visibleUrl)}</a>`);
+          } else {
+            parts.push(escapeHtml(visibleUrl));
+          }
+          if (trailing) parts.push(escapeHtml(trailing));
+          lastIndex = match.index + raw.length;
+        }
+
+        const after = text.slice(lastIndex);
+        if (after) parts.push(escapeHtml(after));
+        return parts.join("");
+      }
+
       function renderTextWithMediaTokens(value) {
         const pattern = /\[(image|video|file):([^\]\r\n]+)\]/gi;
         const text = String(value || "");
@@ -4964,7 +5009,7 @@
         let match;
         while ((match = pattern.exec(text))) {
           const before = text.slice(lastIndex, match.index);
-          if (before) parts.push(escapeHtml(before));
+          if (before) parts.push(renderTextWithAutoLinks(before));
           const kind = String(match[1] || "").toLowerCase();
           const { url, meta } = parseMediaTokenPayload(match[2]);
           if (kind === "file") {
@@ -4976,7 +5021,7 @@
           lastIndex = pattern.lastIndex;
         }
         const after = text.slice(lastIndex);
-        if (after) parts.push(escapeHtml(after));
+        if (after) parts.push(renderTextWithAutoLinks(after));
         return parts.join("");
       }
 
@@ -5396,7 +5441,7 @@
                   <span class="free-board-comment-author">${escapeHtml(comment.author || "익명")}</span>
                   <span class="free-board-comment-time">${escapeHtml(formatFreeBoardDetailTime(comment.createdAt))}</span>
                 </div>
-                <div class="free-board-comment-body">${escapeHtml(comment.body)}</div>
+                <div class="free-board-comment-body">${renderTextWithAutoLinks(comment.body)}</div>
                 <button class="free-board-delete free-board-comment-delete" type="button" data-free-board-comment-delete="${escapeAttr(commentId)}">삭제</button>
                 ${showDeleteAuth ? `
                   <form class="free-board-comment-delete-auth" data-free-board-comment-delete-auth-form="${escapeAttr(commentId)}">
