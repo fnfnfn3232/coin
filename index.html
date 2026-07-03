@@ -2447,9 +2447,37 @@
     }
 
     .coin-info-section h3 {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
       margin: 0 0 12px;
       color: #dff6ff;
       font-size: 17px;
+    }
+
+    .coin-info-snapshot-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 7px;
+      border: 1px solid rgba(255, 205, 116, 0.36);
+      border-radius: 999px;
+      background: rgba(255, 184, 77, 0.08);
+      color: #ffe0a8;
+      font-size: 11px;
+      font-weight: 850;
+      line-height: 1.2;
+    }
+
+    .coin-info-snapshot-notice {
+      margin: -2px 0 12px;
+      padding: 9px 10px;
+      border: 1px solid rgba(255, 205, 116, 0.2);
+      border-radius: 12px;
+      background: rgba(255, 184, 77, 0.055);
+      color: #dfc89f;
+      font-size: 12px;
+      line-height: 1.55;
     }
 
     .coin-info-grid {
@@ -7055,11 +7083,26 @@
         return `<div class="coin-info-grid">${rows.join("")}</div>`;
       }
 
-      function renderCoinInfoSection(title, innerHtml) {
+      function renderCoinInfoSnapshotNotice(snapshot) {
+        if (!snapshot || snapshot.preserved !== true) return "";
+        const fromGeneratedAt = Number(snapshot.fromGeneratedAt);
+        const lastSeen = Number.isFinite(fromGeneratedAt) && fromGeneratedAt > 0
+          ? ` 마지막 확보: ${formatDateTime(fromGeneratedAt)}`
+          : "";
+        return `<div class="coin-info-snapshot-notice">새 갱신에서 이 정보가 비어 와서 이전 스냅샷을 표시 중입니다.${escapeHtml(lastSeen)}</div>`;
+      }
+
+      function renderCoinInfoSection(title, innerHtml, options = {}) {
         if (!innerHtml) return "";
+        const snapshot = options.snapshot || null;
+        const snapshotBadge = snapshot?.preserved === true
+          ? `<span class="coin-info-snapshot-badge" title="새 갱신에서 비어 와서 이전 저장값을 표시 중입니다.">스냅샷</span>`
+          : "";
+        const snapshotNotice = renderCoinInfoSnapshotNotice(snapshot);
         return `
           <section class="coin-info-section">
-            <h3>${escapeHtml(title)}</h3>
+            <h3><span>${escapeHtml(title)}</span>${snapshotBadge}</h3>
+            ${snapshotNotice}
             ${innerHtml}
           </section>
         `;
@@ -7112,7 +7155,8 @@
               bithumb.description ? `<p class="coin-info-text">${escapeHtml(bithumb.description)}</p>` : "",
               renderCoinInfoGrid(bithumbFields),
               renderCoinInfoLinks(bithumb.links),
-            ].filter(Boolean).join("")
+            ].filter(Boolean).join(""),
+            { snapshot: bithumb._snapshot }
           ),
           renderCoinInfoSection(
             "업비트 정보",
@@ -7120,7 +7164,8 @@
               upbit.mainnetFeature ? `<p class="coin-info-text">${escapeHtml(upbit.mainnetFeature)}</p>` : "",
               renderCoinInfoGrid(upbitFields),
               renderCoinInfoLinks(upbit.links),
-            ].filter(Boolean).join("")
+            ].filter(Boolean).join(""),
+            { snapshot: upbit._snapshot }
           ),
           renderCoinInfoSection("거래소 링크", renderCoinInfoLinks(listingLinks)),
         ].filter(Boolean);
