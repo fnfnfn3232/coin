@@ -2258,7 +2258,96 @@ def exchange_listing_url(board_name: str, row: dict) -> str:
     return ""
 
 
-def build_coin_info(boards: dict[str, list[dict]]) -> dict[str, dict]:
+def clone_json_value(value: object) -> object:
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False))
+    except (TypeError, ValueError):
+        return value
+
+
+def has_coin_info_value(value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(keep_info_text(value))
+    if isinstance(value, list):
+        return bool(value)
+    if isinstance(value, dict):
+        return bool(value)
+    return True
+
+
+def merge_coin_info_links(current_links: object, previous_links: object) -> list[dict]:
+    merged: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for source_links in (current_links, previous_links):
+        if not isinstance(source_links, list):
+            continue
+        for link in source_links:
+            if not isinstance(link, dict):
+                continue
+            label = keep_info_text(link.get("label")) or "링크"
+            url = keep_info_text(link.get("url"))
+            if not url.startswith(("http://", "https://")):
+                continue
+            key = (label, url)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append({"label": label, "url": url})
+    return merged
+
+
+def merge_coin_source_info(current_info: object, previous_info: object) -> dict:
+    current = clone_json_value(current_info) if isinstance(current_info, dict) else {}
+    previous = previous_info if isinstance(previous_info, dict) else {}
+    if not isinstance(current, dict):
+        current = {}
+    for key, previous_value in previous.items():
+        if key == "links":
+            links = merge_coin_info_links(current.get("links"), previous_value)
+            if links:
+                current["links"] = links
+            continue
+        if not has_coin_info_value(current.get(key)) and has_coin_info_value(previous_value):
+            current[key] = clone_json_value(previous_value)
+    return current
+
+
+def merge_previous_coin_info_snapshot(coin_info: dict[str, dict], previous_payload: dict | None) -> dict[str, dict]:
+    previous_coin_info = (previous_payload or {}).get("coinInfo")
+    if not isinstance(previous_coin_info, dict):
+        return coin_info
+
+    for symbol, entry in coin_info.items():
+        previous_entry = previous_coin_info.get(symbol)
+        if not isinstance(previous_entry, dict):
+            continue
+
+        if not entry.get("koreanName") and has_coin_info_value(previous_entry.get("koreanName")):
+            entry["koreanName"] = clone_json_value(previous_entry.get("koreanName"))
+        if not entry.get("englishName") and has_coin_info_value(previous_entry.get("englishName")):
+            entry["englishName"] = clone_json_value(previous_entry.get("englishName"))
+
+        previous_sources = previous_entry.get("sources")
+        if not isinstance(previous_sources, dict):
+            continue
+        sources = entry.setdefault("sources", {})
+        if not isinstance(sources, dict):
+            sources = {}
+            entry["sources"] = sources
+        for source_name, previous_source_info in previous_sources.items():
+            source_key = str(source_name or "").strip()
+            if not source_key:
+                continue
+            merged_source = merge_coin_source_info(sources.get(source_key), previous_source_info)
+            if merged_source:
+                sources[source_key] = merged_source
+
+    return coin_info
+
+
+def build_coin_info(boards: dict[str, list[dict]], previous_payload: dict | None = None) -> dict[str, dict]:
     coin_info: dict[str, dict] = {}
     for board_name, rows in boards.items():
         for row in rows:
@@ -2297,6 +2386,8 @@ def build_coin_info(boards: dict[str, list[dict]]) -> dict[str, dict]:
             source_info = row.get("info")
             if isinstance(source_info, dict) and source_info:
                 entry["sources"][board_name] = source_info
+
+    merge_previous_coin_info_snapshot(coin_info, previous_payload)
 
     for symbol, entry in list(coin_info.items()):
         if not entry.get("koreanName"):
@@ -2429,7 +2520,7 @@ def make_payload(previous_payload: dict | None = None) -> dict:
         "bithumb": finalize_rows(bithumb_rows),
         "coinbase": finalize_rows(coinbase_rows),
     }
-    coin_info = build_coin_info(boards)
+    coin_info = build_coin_info(boards, previous_payload)
     for rows in boards.values():
         for row in rows:
             row.pop("info", None)
