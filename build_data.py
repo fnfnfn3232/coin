@@ -2298,19 +2298,49 @@ def merge_coin_info_links(current_links: object, previous_links: object) -> list
     return merged
 
 
-def merge_coin_source_info(current_info: object, previous_info: object) -> dict:
+def coin_info_link_keys(links: object) -> set[tuple[str, str]]:
+    keys: set[tuple[str, str]] = set()
+    if not isinstance(links, list):
+        return keys
+    for link in links:
+        if not isinstance(link, dict):
+            continue
+        label = keep_info_text(link.get("label")) or "링크"
+        url = keep_info_text(link.get("url"))
+        if url.startswith(("http://", "https://")):
+            keys.add((label, url))
+    return keys
+
+
+def merge_coin_source_info(current_info: object, previous_info: object, previous_generated_at: object = None) -> dict:
     current = clone_json_value(current_info) if isinstance(current_info, dict) else {}
     previous = previous_info if isinstance(previous_info, dict) else {}
     if not isinstance(current, dict):
         current = {}
+    preserved_fields: set[str] = set()
     for key, previous_value in previous.items():
+        if str(key).startswith("_"):
+            continue
         if key == "links":
+            current_link_keys = coin_info_link_keys(current.get("links"))
+            previous_link_keys = coin_info_link_keys(previous_value)
             links = merge_coin_info_links(current.get("links"), previous_value)
             if links:
                 current["links"] = links
+            if previous_link_keys - current_link_keys:
+                preserved_fields.add("links")
             continue
         if not has_coin_info_value(current.get(key)) and has_coin_info_value(previous_value):
             current[key] = clone_json_value(previous_value)
+            preserved_fields.add(str(key))
+    if preserved_fields:
+        snapshot = {
+            "preserved": True,
+            "fields": sorted(preserved_fields),
+        }
+        if has_coin_info_value(previous_generated_at):
+            snapshot["fromGeneratedAt"] = clone_json_value(previous_generated_at)
+        current["_snapshot"] = snapshot
     return current
 
 
@@ -2318,6 +2348,7 @@ def merge_previous_coin_info_snapshot(coin_info: dict[str, dict], previous_paylo
     previous_coin_info = (previous_payload or {}).get("coinInfo")
     if not isinstance(previous_coin_info, dict):
         return coin_info
+    previous_generated_at = (previous_payload or {}).get("generatedAt")
 
     for symbol, entry in coin_info.items():
         previous_entry = previous_coin_info.get(symbol)
@@ -2340,7 +2371,7 @@ def merge_previous_coin_info_snapshot(coin_info: dict[str, dict], previous_paylo
             source_key = str(source_name or "").strip()
             if not source_key:
                 continue
-            merged_source = merge_coin_source_info(sources.get(source_key), previous_source_info)
+            merged_source = merge_coin_source_info(sources.get(source_key), previous_source_info, previous_generated_at)
             if merged_source:
                 sources[source_key] = merged_source
 
