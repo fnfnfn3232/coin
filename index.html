@@ -674,6 +674,12 @@
         font-size: 13px;
       }
 
+      .auto-pill.stale {
+        border-color: rgba(255, 138, 138, 0.34);
+        background: rgba(255, 110, 110, 0.075);
+        color: #ffd2d2;
+      }
+
       .manual-refresh-btn {
         cursor: pointer;
         color: #def2fc;
@@ -7209,7 +7215,12 @@
         const liveMinutes = Math.max(1, Math.floor(LIVE_MARKET_REFRESH_MS / (60 * 1000)));
         const suffix = location.protocol === "file:" ? ` · ${TEXT.fileModeSource}` : "";
         autoUpdateStatus.textContent = `${TEXT.autoUpdateOn} · 서버 ${minutes}분 + 화면 ${liveMinutes}분 보정${suffix}`;
-        lastUpdatedStatus.textContent = TEXT.lastUpdated.replace("{time}", formatDateTime(data.generatedAt));
+        const generatedAt = Number(data.generatedAt);
+        const generatedAtMs = Number.isFinite(generatedAt) && generatedAt > 0 ? generatedAt * 1000 : 0;
+        const staleThresholdMs = Math.max(30 * 60 * 1000, minutes * 3 * 60 * 1000);
+        const isStale = !generatedAtMs || Date.now() - generatedAtMs > staleThresholdMs;
+        lastUpdatedStatus.textContent = `${TEXT.lastUpdated.replace("{time}", formatDateTime(data.generatedAt))}${isStale ? " · 갱신 지연" : ""}`;
+        lastUpdatedStatus.classList.toggle("stale", isStale);
         const fxRate = Number(data.fxUsdKrw);
         const fxRateText = Number.isFinite(fxRate) ? `${formatNumber(fxRate, 2)}원` : "-";
         const fxSourceText = fxSourceLabel(data.fxSource);
