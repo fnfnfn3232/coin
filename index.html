@@ -3726,6 +3726,7 @@
         viewMode: "market",
       };
       let screenSettings = loadScreenSettings();
+      state.board = getDefaultMarketBoard();
 
     function isValidBoardPayload(payload) {
       return Boolean(payload && typeof payload === "object" && payload.boards && typeof payload.boards === "object");
@@ -7555,6 +7556,26 @@
         return normalizeScreenSettings(settings).boardOrder;
       }
 
+      function getDefaultMarketBoard(settings = screenSettings) {
+        const firstBoard = orderedMarketBoards(settings)[0];
+        return MARKET_BOARDS.includes(firstBoard) ? firstBoard : "binance";
+      }
+
+      function ensureSelectedMarketBoard() {
+        if (state.board !== "triple" && !MARKET_BOARDS.includes(state.board)) {
+          state.board = getDefaultMarketBoard();
+        }
+      }
+
+      function selectDefaultMarketBoard(settings = screenSettings) {
+        state.board = getDefaultMarketBoard(settings);
+        state.page = 1;
+      }
+
+      function getBaseBoardSelectValue() {
+        return state.board === "triple" ? getDefaultMarketBoard() : state.board;
+      }
+
       function reorderBoardSelectOptions(select) {
         if (!select) return;
         const noneOption = select.querySelector('option[value=""]');
@@ -8640,8 +8661,7 @@
       }
 
       function goHomeView() {
-        state.board = "binance";
-        state.page = 1;
+        selectDefaultMarketBoard();
         state.query = "";
         state.compareBoard = "";
         state.compareBoard2 = "";
@@ -8650,7 +8670,7 @@
         state.sortDirection = "desc";
         resetFreeBoardToList();
         searchInput.value = "";
-        baseBoardSelect.value = "binance";
+        baseBoardSelect.value = state.board;
         compareBoardSelect.value = "";
         compareBoardSelect2.value = "";
         compareBoardSelect3.value = "";
@@ -8875,6 +8895,7 @@
       function render() {
         normalizeKnownAssetIdentities();
         normalizeKoreanAssetNames();
+        ensureSelectedMarketBoard();
         normalizeCompareBoards();
         const rows = getRows();
         const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
@@ -8889,7 +8910,7 @@
           button.classList.toggle("active", button.dataset.board === state.board);
         });
 
-        baseBoardSelect.value = state.board === "triple" ? "binance" : state.board;
+        baseBoardSelect.value = getBaseBoardSelectValue();
         compareBoardSelect.value = state.compareBoard === "triple" ? "" : state.compareBoard;
         compareBoardSelect2.value = state.compareBoard2 === "triple" ? "" : state.compareBoard2;
         compareBoardSelect3.value = state.compareBoard3 === "triple" ? "" : state.compareBoard3;
@@ -8939,7 +8960,7 @@
 
       baseBoardSelect.addEventListener("change", (event) => {
         setViewMode("market");
-        state.board = event.target.value || "binance";
+        state.board = event.target.value || getDefaultMarketBoard();
         state.page = 1;
         render();
       });
@@ -9726,12 +9747,13 @@
 
       if (screenSettingsOrderList) {
         screenSettingsOrderList.addEventListener("click", (event) => {
-          const button = event.target.closest("[data-order-dir]");
-          if (!button) return;
-          const item = button.closest("[data-screen-board]");
-          moveScreenSettingsBoard(item?.dataset.screenBoard || "", Number(button.dataset.orderDir) || 0);
-          commitScreenSettingsDraft("거래소 순서를 저장했습니다.");
-        });
+        const button = event.target.closest("[data-order-dir]");
+        if (!button) return;
+        const item = button.closest("[data-screen-board]");
+        moveScreenSettingsBoard(item?.dataset.screenBoard || "", Number(button.dataset.orderDir) || 0);
+        selectDefaultMarketBoard(screenSettingsDraft);
+        commitScreenSettingsDraft("거래소 순서를 저장했습니다.");
+      });
       }
       if (screenSettingsStatChecks) {
         screenSettingsStatChecks.addEventListener("click", (event) => {
@@ -9768,6 +9790,7 @@
       if (screenSettingsResetBtn) {
         screenSettingsResetBtn.addEventListener("click", () => {
           screenSettingsDraft = cloneScreenSettings(SCREEN_SETTINGS_DEFAULT);
+          selectDefaultMarketBoard(screenSettingsDraft);
           commitScreenSettingsDraft("기본값으로 되돌렸습니다.");
         });
       }
