@@ -2573,6 +2573,32 @@
       grid-column: 1 / -1;
     }
 
+    .screen-settings-preview {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .screen-settings-preview-item {
+      padding: 10px 12px;
+      border: 1px solid rgba(117, 221, 255, 0.16);
+      border-radius: 12px;
+      background: rgba(117, 221, 255, 0.045);
+      color: #dff7ff;
+      font-size: 13px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    .screen-settings-preview-label {
+      display: block;
+      margin-bottom: 4px;
+      color: #8fb4c7;
+      font-size: 11px;
+      font-weight: 850;
+    }
+
     .screen-settings-section {
       display: grid;
       gap: 10px;
@@ -2583,68 +2609,118 @@
     }
 
     .screen-settings-section h3 {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
       margin: 0;
       color: #dff6ff;
       font-size: 16px;
     }
 
-    .screen-settings-order-list,
-    .screen-settings-checks {
+    .screen-settings-section h3 small {
+      color: #85aaba;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .screen-settings-order-list {
       display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .screen-settings-checks,
+    .screen-settings-position-buttons {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 8px;
     }
 
     .screen-settings-order-item {
       display: grid;
-      grid-template-columns: 1fr auto auto;
+      grid-template-columns: 1fr;
       gap: 8px;
-      align-items: center;
-      padding: 9px 10px;
+      align-items: stretch;
+      padding: 12px;
       border: 1px solid rgba(151, 183, 198, 0.12);
       border-radius: 12px;
       background: rgba(255, 255, 255, 0.03);
     }
 
+    .screen-settings-order-rank {
+      width: fit-content;
+      padding: 3px 8px;
+      border: 1px solid rgba(117, 221, 255, 0.22);
+      border-radius: 999px;
+      color: #77e0ff;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
     .screen-settings-order-name {
       color: #dff7ff;
-      font-size: 14px;
+      font-size: 15px;
       font-weight: 850;
+      line-height: 1.35;
+    }
+
+    .screen-settings-order-controls {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
     }
 
     .screen-settings-order-btn {
-      min-width: 42px;
       min-height: 34px;
       padding: 6px 9px;
       border-radius: 10px;
     }
 
-    .screen-settings-check {
+    .screen-settings-toggle,
+    .screen-settings-position-btn {
       display: flex;
       align-items: center;
+      justify-content: space-between;
       gap: 9px;
-      color: #d7edf7;
+      min-height: 48px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border-color: rgba(151, 183, 198, 0.16);
+      background: rgba(255, 255, 255, 0.035);
       font-size: 14px;
       font-weight: 750;
+      text-align: left;
+      color: #d7edf7;
     }
 
-    .screen-settings-check input {
-      width: auto;
+    .screen-settings-toggle.is-active,
+    .screen-settings-position-btn.is-active {
+      border-color: rgba(117, 221, 255, 0.46);
+      background: rgba(117, 221, 255, 0.11);
+      color: #effbff;
+    }
+
+    .screen-settings-toggle-state {
+      flex: 0 0 auto;
+      min-width: 42px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: rgba(151, 183, 198, 0.12);
+      color: #a9c2ce;
+      font-size: 11px;
+      text-align: center;
+    }
+
+    .screen-settings-toggle.is-active .screen-settings-toggle-state,
+    .screen-settings-position-btn.is-active .screen-settings-toggle-state {
+      background: rgba(75, 236, 169, 0.16);
+      color: #91ffd4;
+    }
+
+    .screen-settings-toggle-label {
       min-width: 0;
-    }
-
-    .screen-settings-field {
-      display: grid;
-      gap: 7px;
-    }
-
-    .screen-settings-field label {
-      color: #bdd4df;
-      font-size: 13px;
-      font-weight: 800;
-    }
-
-    .screen-settings-field select {
-      width: min(360px, 100%);
+      overflow-wrap: anywhere;
     }
 
     .screen-settings-actions {
@@ -2672,6 +2748,15 @@
       font-size: 12px;
       font-weight: 750;
       text-align: right;
+    }
+
+    @media (max-width: 900px) {
+      .screen-settings-preview,
+      .screen-settings-order-list,
+      .screen-settings-checks,
+      .screen-settings-position-buttons {
+        grid-template-columns: 1fr;
+      }
     }
 
     @media (max-width: 1200px) {
@@ -3420,27 +3505,23 @@
           </section>
           <section class="admin-section admin-screen-settings-section">
             <h3 class="admin-section-title">화면 편집</h3>
-            <p class="screen-settings-desc">거래소 순서와 상단 상태 표시를 이 브라우저에 저장합니다.</p>
+            <p class="screen-settings-desc">버튼을 누르면 바로 화면에 적용되고 이 브라우저에 저장됩니다.</p>
+            <div class="screen-settings-preview" id="screenSettingsPreview"></div>
             <div class="screen-settings-body">
               <section class="screen-settings-section">
-                <h3>거래소 순서</h3>
+                <h3><span>거래소 순서</span><small>위/아래 버튼으로 이동</small></h3>
                 <div class="screen-settings-order-list" id="screenSettingsOrderList"></div>
               </section>
               <section class="screen-settings-section">
-                <h3>통계 카드 표시</h3>
+                <h3><span>통계 카드 표시</span><small>누르면 표시/숨김 전환</small></h3>
                 <div class="screen-settings-checks" id="screenSettingsStatChecks"></div>
               </section>
               <section class="screen-settings-section">
-                <h3>상태 표시</h3>
-                <div class="screen-settings-field">
-                  <label for="screenSettingsStatusPosition">상태줄 위치</label>
-                  <select id="screenSettingsStatusPosition">
-                    <option value="summary">통계 카드 아래</option>
-                    <option value="title">제목 아래</option>
-                    <option value="controls">거래소 탭 위</option>
-                    <option value="hidden">숨김</option>
-                  </select>
-                </div>
+                <h3><span>상태줄 위치</span><small>자동갱신/환율 표시 위치</small></h3>
+                <div class="screen-settings-position-buttons" id="screenSettingsStatusPosition" role="group" aria-label="상태줄 위치"></div>
+              </section>
+              <section class="screen-settings-section">
+                <h3><span>상태 표시 항목</span><small>필요 없는 항목은 숨김</small></h3>
                 <div class="screen-settings-checks" id="screenSettingsStatusChecks"></div>
               </section>
               <div class="screen-settings-actions">
@@ -3751,6 +3832,7 @@
       const screenSettingsStatusChecks = document.getElementById("screenSettingsStatusChecks");
       const screenSettingsStatusPosition = document.getElementById("screenSettingsStatusPosition");
       const screenSettingsMessage = document.getElementById("screenSettingsMessage");
+      const screenSettingsPreview = document.getElementById("screenSettingsPreview");
       const newsPanel = document.getElementById("newsPanel");
       const siteLock = document.getElementById("siteLock");
       const lockTtl = document.getElementById("lockTtl");
@@ -6521,10 +6603,15 @@
         adminDashboard.hidden = false;
         try {
           renderAdminDashboard();
-          resetScreenSettingsDraft();
         } catch (error) {
           console.error(error);
           serverUsageError = "관리자 화면 일부를 표시하지 못했습니다. 기본 관리자 화면은 열려 있습니다.";
+        }
+        try {
+          resetScreenSettingsDraft();
+        } catch (error) {
+          console.error(error);
+          setScreenSettingsMessage("화면 편집을 표시하지 못했습니다. 새로고침 후 다시 열어 주세요.");
         }
         fetchServerUsageStats(adminServerPassword)
           .then(() => {
@@ -7526,47 +7613,112 @@
         if (screenSettingsMessage) screenSettingsMessage.textContent = message;
       }
 
+      function getScreenStatusPositionLabel(position) {
+        const labels = {
+          summary: "통계 카드 아래",
+          title: "제목 아래",
+          controls: "거래소 탭 위",
+          hidden: "숨김",
+        };
+        return labels[position] || labels.summary;
+      }
+
+      function commitScreenSettingsDraft(message = "적용했습니다.") {
+        screenSettings = normalizeScreenSettings(screenSettingsDraft || screenSettings);
+        saveScreenSettings();
+        applyScreenSettings();
+        render();
+        renderScreenSettingsEditor();
+        setScreenSettingsMessage(message);
+      }
+
       function renderScreenSettingsEditor() {
         if (!screenSettingsOrderList || !screenSettingsStatChecks || !screenSettingsStatusChecks || !screenSettingsStatusPosition) return;
-        const draft = normalizeScreenSettings(screenSettingsDraft || screenSettings);
-        screenSettingsDraft = draft;
-        const order = orderedMarketBoards(draft);
+        try {
+          const draft = normalizeScreenSettings(screenSettingsDraft || screenSettings);
+          screenSettingsDraft = draft;
+          const order = orderedMarketBoards(draft);
+          const visibleStatsCount = order.filter((board) => draft.visibleStats[board] !== false).length;
+          const visibleStatusCount = Object.values(draft.visibleStatus).filter(Boolean).length;
 
-        screenSettingsOrderList.innerHTML = order
-          .map((board, index) => `
-            <div class="screen-settings-order-item" data-screen-board="${escapeAttr(board)}">
-              <div class="screen-settings-order-name">${escapeHtml(boardLabel(board))}</div>
-              <button class="screen-settings-order-btn" type="button" data-order-dir="-1" ${index === 0 ? "disabled" : ""}>위</button>
-              <button class="screen-settings-order-btn" type="button" data-order-dir="1" ${index === order.length - 1 ? "disabled" : ""}>아래</button>
-            </div>
-          `)
-          .join("");
+          if (screenSettingsPreview) {
+            screenSettingsPreview.innerHTML = `
+              <div class="screen-settings-preview-item">
+                <span class="screen-settings-preview-label">거래소 순서</span>
+                ${escapeHtml(order.map(boardLabel).join(" → "))}
+              </div>
+              <div class="screen-settings-preview-item">
+                <span class="screen-settings-preview-label">상태 표시</span>
+                ${escapeHtml(getScreenStatusPositionLabel(draft.statusPosition))} · 통계 ${visibleStatsCount}개 · 상태 ${visibleStatusCount}개
+              </div>
+            `;
+          }
 
-        screenSettingsStatChecks.innerHTML = order
-          .map((board) => `
-            <label class="screen-settings-check">
-              <input type="checkbox" data-screen-stat="${escapeAttr(board)}" ${draft.visibleStats[board] !== false ? "checked" : ""}>
-              <span>${escapeHtml(boardLabel(board))} 통계 카드</span>
-            </label>
-          `)
-          .join("");
+          screenSettingsOrderList.innerHTML = order
+            .map((board, index) => `
+              <div class="screen-settings-order-item" data-screen-board="${escapeAttr(board)}">
+                <div class="screen-settings-order-rank">${index + 1}</div>
+                <div class="screen-settings-order-name">${escapeHtml(boardLabel(board))}</div>
+                <div class="screen-settings-order-controls">
+                  <button class="screen-settings-order-btn" type="button" data-order-dir="-1" ${index === 0 ? "disabled" : ""}>위로</button>
+                  <button class="screen-settings-order-btn" type="button" data-order-dir="1" ${index === order.length - 1 ? "disabled" : ""}>아래로</button>
+                </div>
+              </div>
+            `)
+            .join("");
 
-        const statusItems = [
-          ["auto", "자동 갱신 상태"],
-          ["lastUpdated", "마지막 데이터 갱신"],
-          ["fx", "USDT 환율"],
-          ["manual", "수동 갱신 버튼"],
-          ["manualHint", "수동 갱신 가능 표시"],
-        ];
-        screenSettingsStatusChecks.innerHTML = statusItems
-          .map(([key, label]) => `
-            <label class="screen-settings-check">
-              <input type="checkbox" data-screen-status="${escapeAttr(key)}" ${draft.visibleStatus[key] !== false ? "checked" : ""}>
-              <span>${escapeHtml(label)}</span>
-            </label>
-          `)
-          .join("");
-        screenSettingsStatusPosition.value = draft.statusPosition;
+          screenSettingsStatChecks.innerHTML = order
+            .map((board) => {
+              const isActive = draft.visibleStats[board] !== false;
+              return `
+                <button class="screen-settings-toggle ${isActive ? "is-active" : ""}" type="button" data-screen-stat="${escapeAttr(board)}" aria-pressed="${isActive ? "true" : "false"}">
+                  <span class="screen-settings-toggle-label">${escapeHtml(boardLabel(board))}</span>
+                  <span class="screen-settings-toggle-state">${isActive ? "표시" : "숨김"}</span>
+                </button>
+              `;
+            })
+            .join("");
+
+          const positionItems = [
+            ["summary", "통계 카드 아래"],
+            ["title", "제목 아래"],
+            ["controls", "거래소 탭 위"],
+            ["hidden", "숨김"],
+          ];
+          screenSettingsStatusPosition.innerHTML = positionItems
+            .map(([key, label]) => {
+              const isActive = draft.statusPosition === key;
+              return `
+                <button class="screen-settings-position-btn ${isActive ? "is-active" : ""}" type="button" data-screen-position="${escapeAttr(key)}" aria-pressed="${isActive ? "true" : "false"}">
+                  <span class="screen-settings-toggle-label">${escapeHtml(label)}</span>
+                  <span class="screen-settings-toggle-state">${isActive ? "선택" : "변경"}</span>
+                </button>
+              `;
+            })
+            .join("");
+
+          const statusItems = [
+            ["auto", "자동 갱신 상태"],
+            ["lastUpdated", "마지막 데이터 갱신"],
+            ["fx", "USDT 환율"],
+            ["manual", "수동 갱신 버튼"],
+            ["manualHint", "수동 갱신 가능 표시"],
+          ];
+          screenSettingsStatusChecks.innerHTML = statusItems
+            .map(([key, label]) => {
+              const isActive = draft.visibleStatus[key] !== false;
+              return `
+                <button class="screen-settings-toggle ${isActive ? "is-active" : ""}" type="button" data-screen-status="${escapeAttr(key)}" aria-pressed="${isActive ? "true" : "false"}">
+                  <span class="screen-settings-toggle-label">${escapeHtml(label)}</span>
+                  <span class="screen-settings-toggle-state">${isActive ? "표시" : "숨김"}</span>
+                </button>
+              `;
+            })
+            .join("");
+        } catch (error) {
+          console.error(error);
+          setScreenSettingsMessage("화면 편집 항목을 표시하지 못했습니다. 새로고침 후 다시 열어 주세요.");
+        }
       }
 
       function resetScreenSettingsDraft() {
@@ -9578,52 +9730,50 @@
           if (!button) return;
           const item = button.closest("[data-screen-board]");
           moveScreenSettingsBoard(item?.dataset.screenBoard || "", Number(button.dataset.orderDir) || 0);
-          setScreenSettingsMessage("");
+          commitScreenSettingsDraft("거래소 순서를 저장했습니다.");
         });
       }
       if (screenSettingsStatChecks) {
-        screenSettingsStatChecks.addEventListener("change", (event) => {
+        screenSettingsStatChecks.addEventListener("click", (event) => {
           const input = event.target.closest("[data-screen-stat]");
           if (!input) return;
           const draft = normalizeScreenSettings(screenSettingsDraft || screenSettings);
-          draft.visibleStats[input.dataset.screenStat] = input.checked;
+          const key = input.dataset.screenStat;
+          draft.visibleStats[key] = draft.visibleStats[key] === false;
           screenSettingsDraft = draft;
-          setScreenSettingsMessage("");
+          commitScreenSettingsDraft("통계 카드 표시를 저장했습니다.");
         });
       }
       if (screenSettingsStatusChecks) {
-        screenSettingsStatusChecks.addEventListener("change", (event) => {
+        screenSettingsStatusChecks.addEventListener("click", (event) => {
           const input = event.target.closest("[data-screen-status]");
           if (!input) return;
           const draft = normalizeScreenSettings(screenSettingsDraft || screenSettings);
-          draft.visibleStatus[input.dataset.screenStatus] = input.checked;
+          const key = input.dataset.screenStatus;
+          draft.visibleStatus[key] = draft.visibleStatus[key] === false;
           screenSettingsDraft = draft;
-          setScreenSettingsMessage("");
+          commitScreenSettingsDraft("상태 표시 항목을 저장했습니다.");
         });
       }
       if (screenSettingsStatusPosition) {
-        screenSettingsStatusPosition.addEventListener("change", () => {
+        screenSettingsStatusPosition.addEventListener("click", (event) => {
+          const button = event.target.closest("[data-screen-position]");
+          if (!button) return;
           const draft = normalizeScreenSettings(screenSettingsDraft || screenSettings);
-          draft.statusPosition = screenSettingsStatusPosition.value;
+          draft.statusPosition = button.dataset.screenPosition;
           screenSettingsDraft = draft;
-          setScreenSettingsMessage("");
+          commitScreenSettingsDraft("상태줄 위치를 저장했습니다.");
         });
       }
       if (screenSettingsResetBtn) {
         screenSettingsResetBtn.addEventListener("click", () => {
           screenSettingsDraft = cloneScreenSettings(SCREEN_SETTINGS_DEFAULT);
-          renderScreenSettingsEditor();
-          setScreenSettingsMessage("기본값으로 돌렸습니다. 저장을 누르면 적용됩니다.");
+          commitScreenSettingsDraft("기본값으로 되돌렸습니다.");
         });
       }
       if (screenSettingsSaveBtn) {
         screenSettingsSaveBtn.addEventListener("click", () => {
-          screenSettings = normalizeScreenSettings(screenSettingsDraft || screenSettings);
-          saveScreenSettings();
-          applyScreenSettings();
-          render();
-          renderScreenSettingsEditor();
-          setScreenSettingsMessage("저장했습니다.");
+          commitScreenSettingsDraft("현재 화면 설정을 저장했습니다.");
         });
       }
 
