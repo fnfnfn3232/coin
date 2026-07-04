@@ -182,7 +182,7 @@
     }
 
     .admin-card {
-      width: min(860px, calc(100vw - 32px));
+      width: min(1120px, calc(100vw - 32px));
       max-height: calc(100vh - 40px);
       overflow: auto;
       border: 1px solid rgba(151, 183, 198, 0.28);
@@ -598,26 +598,6 @@
 
     .title-left {
       min-width: 0;
-    }
-
-    .screen-settings-btn {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      margin-top: 10px;
-      min-height: 38px;
-      padding: 8px 13px;
-      border-radius: 999px;
-      border: 1px solid rgba(117, 221, 255, 0.22);
-      background: rgba(117, 221, 255, 0.07);
-      color: #dff7ff;
-      font-size: 13px;
-      font-weight: 850;
-    }
-
-    .screen-settings-btn:hover {
-      border-color: rgba(117, 221, 255, 0.48);
-      background: rgba(117, 221, 255, 0.12);
     }
 
     .view-switch {
@@ -2577,57 +2557,20 @@
       color: #e9fbff;
     }
 
-    .screen-settings-modal {
-      position: fixed;
-      inset: 0;
-      z-index: 85;
-      display: grid;
-      place-items: center;
-      padding: 22px;
-      background: rgba(0, 8, 13, 0.72);
-      backdrop-filter: blur(10px);
-    }
-
-    .screen-settings-modal.hidden {
-      display: none;
-    }
-
-    .screen-settings-card {
-      width: min(820px, 100%);
-      max-height: min(88vh, 820px);
-      overflow: auto;
-      border: 1px solid rgba(117, 221, 255, 0.22);
-      border-radius: 24px;
-      background: linear-gradient(180deg, #071923 0%, #040d13 100%);
-      box-shadow: 0 30px 90px rgba(0, 0, 0, 0.5);
-    }
-
-    .screen-settings-head {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 14px;
-      padding: 22px 24px 16px;
-      border-bottom: 1px solid rgba(151, 183, 198, 0.14);
-    }
-
-    .screen-settings-title {
-      margin: 0;
-      color: #e9f9ff;
-      font-size: 26px;
-      line-height: 1.15;
-    }
-
     .screen-settings-desc {
-      margin-top: 7px;
+      margin: -3px 0 12px;
       color: #a9c2ce;
       font-size: 13px;
+      line-height: 1.55;
     }
 
     .screen-settings-body {
       display: grid;
       gap: 14px;
-      padding: 18px 24px 24px;
+    }
+
+    .admin-screen-settings-section {
+      grid-column: 1 / -1;
     }
 
     .screen-settings-section {
@@ -2721,6 +2664,14 @@
       border-color: rgba(255, 205, 116, 0.28);
       background: rgba(255, 184, 77, 0.06);
       color: #ffe0a8;
+    }
+
+    .screen-settings-message {
+      min-height: 18px;
+      color: #71f0b3;
+      font-size: 12px;
+      font-weight: 750;
+      text-align: right;
     }
 
     @media (max-width: 1200px) {
@@ -3242,7 +3193,6 @@
             <button class="view-link" id="newsToggleBtn" type="button"></button>
             <button class="view-link" id="boardToggleBtn" type="button"></button>
           </div>
-          <button class="screen-settings-btn market-only" id="screenSettingsBtn" type="button">화면 편집</button>
           <div class="auto-strip-slot title-status-slot market-only" id="titleStatusSlot"></div>
         </div>
       </div>
@@ -3415,8 +3365,8 @@
       <div class="admin-dashboard" id="adminDashboard" hidden>
         <div class="admin-head">
           <div>
-            <h2 class="admin-title">관리자 통계</h2>
-            <p class="admin-desc">사이트 상태, 데이터 갱신, 서버 저장 트래픽 추정치를 한눈에 확인합니다.</p>
+            <h2 class="admin-title">관리자</h2>
+            <p class="admin-desc">사이트 상태, 데이터 갱신, 서버 저장 트래픽 추정치와 화면 편집을 한곳에서 관리합니다.</p>
           </div>
           <div class="admin-actions">
             <button class="admin-refresh" id="adminRefreshBtn" type="button">새로고침</button>
@@ -3468,6 +3418,38 @@
             <h3 class="admin-section-title">서버/호스팅</h3>
             <div class="admin-list" id="adminServerStats"></div>
           </section>
+          <section class="admin-section admin-screen-settings-section">
+            <h3 class="admin-section-title">화면 편집</h3>
+            <p class="screen-settings-desc">거래소 순서와 상단 상태 표시를 이 브라우저에 저장합니다.</p>
+            <div class="screen-settings-body">
+              <section class="screen-settings-section">
+                <h3>거래소 순서</h3>
+                <div class="screen-settings-order-list" id="screenSettingsOrderList"></div>
+              </section>
+              <section class="screen-settings-section">
+                <h3>통계 카드 표시</h3>
+                <div class="screen-settings-checks" id="screenSettingsStatChecks"></div>
+              </section>
+              <section class="screen-settings-section">
+                <h3>상태 표시</h3>
+                <div class="screen-settings-field">
+                  <label for="screenSettingsStatusPosition">상태줄 위치</label>
+                  <select id="screenSettingsStatusPosition">
+                    <option value="summary">통계 카드 아래</option>
+                    <option value="title">제목 아래</option>
+                    <option value="controls">거래소 탭 위</option>
+                    <option value="hidden">숨김</option>
+                  </select>
+                </div>
+                <div class="screen-settings-checks" id="screenSettingsStatusChecks"></div>
+              </section>
+              <div class="screen-settings-actions">
+                <button class="screen-settings-reset" id="screenSettingsResetBtn" type="button">기본값</button>
+                <button class="screen-settings-save" id="screenSettingsSaveBtn" type="button">저장</button>
+              </div>
+              <div class="screen-settings-message" id="screenSettingsMessage" aria-live="polite"></div>
+            </div>
+          </section>
         </div>
       </div>
     </section>
@@ -3498,46 +3480,6 @@
           </div>
           <div class="admin-error" id="deleteAuthError"></div>
         </form>
-      </div>
-    </section>
-  </div>
-
-  <div class="screen-settings-modal hidden" id="screenSettingsModal" aria-modal="true" role="dialog" aria-labelledby="screenSettingsTitle">
-    <section class="screen-settings-card">
-      <div class="screen-settings-head">
-        <div>
-          <h2 class="screen-settings-title" id="screenSettingsTitle">화면 편집</h2>
-          <p class="screen-settings-desc">거래소 순서와 상단 상태 표시를 이 브라우저에 저장합니다.</p>
-        </div>
-        <button class="coin-info-close" id="screenSettingsCloseBtn" type="button">닫기</button>
-      </div>
-      <div class="screen-settings-body">
-        <section class="screen-settings-section">
-          <h3>거래소 순서</h3>
-          <div class="screen-settings-order-list" id="screenSettingsOrderList"></div>
-        </section>
-        <section class="screen-settings-section">
-          <h3>통계 카드 표시</h3>
-          <div class="screen-settings-checks" id="screenSettingsStatChecks"></div>
-        </section>
-        <section class="screen-settings-section">
-          <h3>상태 표시</h3>
-          <div class="screen-settings-field">
-            <label for="screenSettingsStatusPosition">상태줄 위치</label>
-            <select id="screenSettingsStatusPosition">
-              <option value="summary">통계 카드 아래</option>
-              <option value="title">제목 아래</option>
-              <option value="controls">거래소 탭 위</option>
-              <option value="hidden">숨김</option>
-            </select>
-          </div>
-          <div class="screen-settings-checks" id="screenSettingsStatusChecks"></div>
-        </section>
-        <div class="screen-settings-actions">
-          <button class="screen-settings-reset" id="screenSettingsResetBtn" type="button">기본값</button>
-          <button id="screenSettingsCancelBtn" type="button">취소</button>
-          <button class="screen-settings-save" id="screenSettingsSaveBtn" type="button">저장</button>
-        </div>
       </div>
     </section>
   </div>
@@ -3802,16 +3744,13 @@
       const titleHeading = document.getElementById("title");
       const newsToggleBtn = document.getElementById("newsToggleBtn");
       const boardToggleBtn = document.getElementById("boardToggleBtn");
-      const screenSettingsBtn = document.getElementById("screenSettingsBtn");
-      const screenSettingsModal = document.getElementById("screenSettingsModal");
-      const screenSettingsCloseBtn = document.getElementById("screenSettingsCloseBtn");
-      const screenSettingsCancelBtn = document.getElementById("screenSettingsCancelBtn");
       const screenSettingsSaveBtn = document.getElementById("screenSettingsSaveBtn");
       const screenSettingsResetBtn = document.getElementById("screenSettingsResetBtn");
       const screenSettingsOrderList = document.getElementById("screenSettingsOrderList");
       const screenSettingsStatChecks = document.getElementById("screenSettingsStatChecks");
       const screenSettingsStatusChecks = document.getElementById("screenSettingsStatusChecks");
       const screenSettingsStatusPosition = document.getElementById("screenSettingsStatusPosition");
+      const screenSettingsMessage = document.getElementById("screenSettingsMessage");
       const newsPanel = document.getElementById("newsPanel");
       const siteLock = document.getElementById("siteLock");
       const lockTtl = document.getElementById("lockTtl");
@@ -6582,6 +6521,7 @@
         adminDashboard.hidden = false;
         try {
           renderAdminDashboard();
+          resetScreenSettingsDraft();
         } catch (error) {
           console.error(error);
           serverUsageError = "관리자 화면 일부를 표시하지 못했습니다. 기본 관리자 화면은 열려 있습니다.";
@@ -7582,7 +7522,12 @@
 
       let screenSettingsDraft = null;
 
+      function setScreenSettingsMessage(message = "") {
+        if (screenSettingsMessage) screenSettingsMessage.textContent = message;
+      }
+
       function renderScreenSettingsEditor() {
+        if (!screenSettingsOrderList || !screenSettingsStatChecks || !screenSettingsStatusChecks || !screenSettingsStatusPosition) return;
         const draft = normalizeScreenSettings(screenSettingsDraft || screenSettings);
         screenSettingsDraft = draft;
         const order = orderedMarketBoards(draft);
@@ -7624,16 +7569,10 @@
         screenSettingsStatusPosition.value = draft.statusPosition;
       }
 
-      function openScreenSettings() {
+      function resetScreenSettingsDraft() {
         screenSettingsDraft = cloneScreenSettings(screenSettings);
         renderScreenSettingsEditor();
-        screenSettingsModal.classList.remove("hidden");
-        screenSettingsSaveBtn.focus();
-      }
-
-      function closeScreenSettings() {
-        screenSettingsModal.classList.add("hidden");
-        screenSettingsDraft = null;
+        setScreenSettingsMessage("");
       }
 
       function moveScreenSettingsBoard(board, direction) {
@@ -9633,48 +9572,60 @@
       updateScrollControls();
       sendUsageBeacon();
 
-      screenSettingsBtn.addEventListener("click", openScreenSettings);
-      screenSettingsCloseBtn.addEventListener("click", closeScreenSettings);
-      screenSettingsCancelBtn.addEventListener("click", closeScreenSettings);
-      screenSettingsModal.addEventListener("click", (event) => {
-        if (event.target === screenSettingsModal) closeScreenSettings();
-      });
-      screenSettingsOrderList.addEventListener("click", (event) => {
-        const button = event.target.closest("[data-order-dir]");
-        if (!button) return;
-        const item = button.closest("[data-screen-board]");
-        moveScreenSettingsBoard(item?.dataset.screenBoard || "", Number(button.dataset.orderDir) || 0);
-      });
-      screenSettingsStatChecks.addEventListener("change", (event) => {
-        const input = event.target.closest("[data-screen-stat]");
-        if (!input) return;
-        const draft = normalizeScreenSettings(screenSettingsDraft || screenSettings);
-        draft.visibleStats[input.dataset.screenStat] = input.checked;
-        screenSettingsDraft = draft;
-      });
-      screenSettingsStatusChecks.addEventListener("change", (event) => {
-        const input = event.target.closest("[data-screen-status]");
-        if (!input) return;
-        const draft = normalizeScreenSettings(screenSettingsDraft || screenSettings);
-        draft.visibleStatus[input.dataset.screenStatus] = input.checked;
-        screenSettingsDraft = draft;
-      });
-      screenSettingsStatusPosition.addEventListener("change", () => {
-        const draft = normalizeScreenSettings(screenSettingsDraft || screenSettings);
-        draft.statusPosition = screenSettingsStatusPosition.value;
-        screenSettingsDraft = draft;
-      });
-      screenSettingsResetBtn.addEventListener("click", () => {
-        screenSettingsDraft = cloneScreenSettings(SCREEN_SETTINGS_DEFAULT);
-        renderScreenSettingsEditor();
-      });
-      screenSettingsSaveBtn.addEventListener("click", () => {
-        screenSettings = normalizeScreenSettings(screenSettingsDraft || screenSettings);
-        saveScreenSettings();
-        applyScreenSettings();
-        render();
-        closeScreenSettings();
-      });
+      if (screenSettingsOrderList) {
+        screenSettingsOrderList.addEventListener("click", (event) => {
+          const button = event.target.closest("[data-order-dir]");
+          if (!button) return;
+          const item = button.closest("[data-screen-board]");
+          moveScreenSettingsBoard(item?.dataset.screenBoard || "", Number(button.dataset.orderDir) || 0);
+          setScreenSettingsMessage("");
+        });
+      }
+      if (screenSettingsStatChecks) {
+        screenSettingsStatChecks.addEventListener("change", (event) => {
+          const input = event.target.closest("[data-screen-stat]");
+          if (!input) return;
+          const draft = normalizeScreenSettings(screenSettingsDraft || screenSettings);
+          draft.visibleStats[input.dataset.screenStat] = input.checked;
+          screenSettingsDraft = draft;
+          setScreenSettingsMessage("");
+        });
+      }
+      if (screenSettingsStatusChecks) {
+        screenSettingsStatusChecks.addEventListener("change", (event) => {
+          const input = event.target.closest("[data-screen-status]");
+          if (!input) return;
+          const draft = normalizeScreenSettings(screenSettingsDraft || screenSettings);
+          draft.visibleStatus[input.dataset.screenStatus] = input.checked;
+          screenSettingsDraft = draft;
+          setScreenSettingsMessage("");
+        });
+      }
+      if (screenSettingsStatusPosition) {
+        screenSettingsStatusPosition.addEventListener("change", () => {
+          const draft = normalizeScreenSettings(screenSettingsDraft || screenSettings);
+          draft.statusPosition = screenSettingsStatusPosition.value;
+          screenSettingsDraft = draft;
+          setScreenSettingsMessage("");
+        });
+      }
+      if (screenSettingsResetBtn) {
+        screenSettingsResetBtn.addEventListener("click", () => {
+          screenSettingsDraft = cloneScreenSettings(SCREEN_SETTINGS_DEFAULT);
+          renderScreenSettingsEditor();
+          setScreenSettingsMessage("기본값으로 돌렸습니다. 저장을 누르면 적용됩니다.");
+        });
+      }
+      if (screenSettingsSaveBtn) {
+        screenSettingsSaveBtn.addEventListener("click", () => {
+          screenSettings = normalizeScreenSettings(screenSettingsDraft || screenSettings);
+          saveScreenSettings();
+          applyScreenSettings();
+          render();
+          renderScreenSettingsEditor();
+          setScreenSettingsMessage("저장했습니다.");
+        });
+      }
 
       manualRefreshBtn.addEventListener("click", async () => {
         const now = Date.now();
