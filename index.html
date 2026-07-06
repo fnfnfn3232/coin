@@ -6973,7 +6973,8 @@
         }
       });
 
-      lockExtendBtn.addEventListener("click", () => {
+      lockExtendBtn.addEventListener("click", async () => {
+        if (lockExtendBtn.disabled) return;
         const until = getLockAuthUntil();
         if (until <= Date.now()) {
           checkSiteLock();
@@ -6984,9 +6985,32 @@
           renderLockTtl();
           return;
         }
-        setLockExtendCount(used + 1);
-        setLockAuthFor24Hours();
-        renderLockTtl();
+        const previousText = lockExtendBtn.textContent;
+        lockExtendBtn.disabled = true;
+        lockExtendBtn.textContent = "연장 중...";
+        try {
+          if (hasServerAuth() && !isLocalPreview()) {
+            await verifyServerSession();
+          }
+          setLockExtendCount(used + 1);
+          setLockAuthFor24Hours();
+          renderLockTtl();
+        } catch (error) {
+          console.error(error);
+          if (isServerAuthExpiredError(error)) {
+            handleServerAuthExpired();
+            return;
+          }
+          lockExtendBtn.textContent = "연장 실패";
+          window.setTimeout(() => {
+            if (!document.body.classList.contains("locked")) renderLockTtl();
+          }, 1500);
+        } finally {
+          if (lockExtendBtn.textContent === "연장 중...") {
+            lockExtendBtn.textContent = previousText;
+            renderLockTtl();
+          }
+        }
       });
 
       lockLogoutBtn.addEventListener("click", async () => {
