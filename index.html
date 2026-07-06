@@ -6748,6 +6748,7 @@
           renderLockTtl();
           verifyServerSession()
             .then(() => fetchLatestBoardData())
+            .then(() => refreshLiveMarketData())
             .catch((error) => {
               console.error(error);
               if (isServerAuthExpiredError(error)) handleServerAuthExpired();
@@ -6774,10 +6775,12 @@
             if (state.viewMode === "board") {
               requestFreeBoardPostsRefresh(true);
             }
-            fetchLatestBoardData().catch((error) => {
-              console.error(error);
-              manualRefreshHint.textContent = "\uB85C\uADF8\uC778\uC740 \uC644\uB8CC\uB410\uC9C0\uB9CC \uB370\uC774\uD130\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. \uC218\uB3D9 \uAC31\uC2E0\uC744 \uB20C\uB7EC \uB2E4\uC2DC \uC2DC\uB3C4\uD574 \uC8FC\uC138\uC694.";
-            });
+            fetchLatestBoardData()
+              .then(() => refreshLiveMarketData())
+              .catch((error) => {
+                console.error(error);
+                manualRefreshHint.textContent = "\uB85C\uADF8\uC778\uC740 \uC644\uB8CC\uB410\uC9C0\uB9CC \uB370\uC774\uD130\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. \uC218\uB3D9 \uAC31\uC2E0\uC744 \uB20C\uB7EC \uB2E4\uC2DC \uC2DC\uB3C4\uD574 \uC8FC\uC138\uC694.";
+              });
           } catch (error) {
             lockError.textContent = getLoginErrorMessage(error);
             lockPasswordInput.value = "";
