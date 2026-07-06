@@ -24,6 +24,8 @@ const BOARD_MEDIA_UPLOAD_KEY_PREFIX = `${BOARD_MEDIA_KEY_PREFIX}upload:`;
 const BOARD_MEDIA_UPLOAD_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 const MARKET_DATA_MAX_BYTES = 8 * 1024 * 1024;
 const MARKET_DATA_CHUNK_CHARS = 256 * 1024;
+const LIVE_PRICE_FETCH_TIMEOUT_MS = 12000;
+const LIVE_PRICE_UPBIT_BATCH_SIZE = 80;
 const GITHUB_PAGES_MONTHLY_SOFT_LIMIT_BYTES = 100 * 1024 * 1024 * 1024;
 const USAGE_BEACON_MAX_BYTES = 25 * 1024 * 1024;
 const DEFAULT_NEWS_CACHE_SECONDS = 10 * 60;
@@ -145,6 +147,169 @@ function optionsResponse(request, env) {
 
 function textEncoder() {
   return new TextEncoder();
+}
+
+function toPositiveNumber(value) {
+  const number = Number(String(value ?? "").replace(/,/g, "").trim());
+  if (!Number.isFinite(number) || number <= 0) return null;
+  return number;
+}
+
+async function fetchJsonWithTimeout(url, timeoutMs = LIVE_PRICE_FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      headers: {
+        "Accept": "application/json,text/plain,*/*",
+        "User-Agent": "coin-board-worker/1.0",
+      },
+      signal: controller.signal,
+      cf: { cacheTtl: 0, cacheEverything: false },
+    });
+    if (!response.ok) throw new Error(`fetch_failed:${response.status}`);
+    return response.json();
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function collectSymbols(payload, boardName, fieldName = "symbol") {
+  const rows = payload?.boards?.[boardName];
+  if (!Array.isArray(rows)) return [];
+  return [...new Set(rows
+    .map((row) => String(row?.[fieldName] || "").trim().toUpperCase())
+    .filter(Boolean))];
+}
+
+function recordError(errors, key, error) {
+  errors[key] = error instanceof Error ? error.message : String(error || "unknown_error");
+}
+
+async function fetchLiveFxUsdKrw() {
+  const payload = await fetchJsonWithTimeout("https://api.upbit.com/v1/ticker?markets=KRW-USDT");
+  if (!Array.isArray(payload) || !payload.length) return null;
+  return toPositiveNumber(payload[0]?.trade_price);
+}
+
+async function fetchBinanceLivePriceMap() {
+  const payload = await fetchJsonWithTimeout("https://api.binance.com/api/v3/ticker/price");
+  const prices = {};
+  if (!Array.isArray(payload)) return prices;
+  for (const item of payload) {
+    const market = String(item?.symbol || "").toUpperCase();
+    const price = toPositiveNumber(item?.price);
+    if (!market.endsWith("USDT") || price === null) continue;
+    const symbol = market.slice(0, -4);
+    if (symbol) prices[symbol] = price;
+  }
+  return prices;
+}
+
+async function fetchUpbitLivePriceMap(symbols) {
+  const prices = {};
+  for (let index = 0; index < symbols.length; index += LIVE_PRICE_UPBIT_BATCH_SIZE) {
+    const group = symbols.slice(index, index + LIVE_PRICE_UPBIT_BATCH_SIZE);
+    if (!group.length) continue;
+    const query = encodeURIComponent(group.map((symbol) => `KRW-${symbol}`).join(","));
+    const payload = await fetchJsonWithTimeout(`https://api.upbit.com/v1/ticker?markets=${query}`);
+    if (!Array.isArray(payload)) continue;
+    for (const item of payload) {
+      const market = String(item?.market || "").toUpperCase();
+      const price = toPositiveNumber(item?.trade_price);
+      if (!market.startsWith("KRW-") || price === null) continue;
+      prices[market.replace("KRW-", "")] = price;
+    }
+  }
+  return prices;
+}
+
+async function fetchBithumbLivePriceAndCapMaps() {
+  const prices = {};
+  const caps = {};
+  const [tickerResult, capResult] = await Promise.allSettled([
+    fetchJsonWithTimeout("https://api.bithumb.com/public/ticker/ALL_KRW"),
+    fetchJsonWithTimeout("https://gw.bithumb.com/exchange/v1/trade/coinmarketcap"),
+  ]);
+
+  if (tickerResult.status === "fulfilled") {
+    const tickerData = tickerResult.value?.data;
+    if (tickerData && typeof tickerData === "object") {
+      for (const [symbol, item] of Object.entries(tickerData)) {
+        const symbolText = String(symbol || "").toUpperCase();
+        const price = toPositiveNumber(item?.closing_price);
+        if (!symbolText || symbolText === "DATE" || price === null) continue;
+        prices[symbolText] = price;
+      }
+    }
+  }
+
+  if (capResult.status === "fulfilled") {
+    const capData = capResult.value?.data;
+    if (capData && typeof capData === "object") {
+      for (const [coinType, capValue] of Object.entries(capData)) {
+        const cap = toPositiveNumber(capValue);
+        const key = String(coinType || "").toUpperCase();
+        if (!key || cap === null) continue;
+        caps[key] = cap;
+      }
+    }
+  }
+
+  return { prices, caps };
+}
+
+async function fetchCoinbaseLivePriceMap() {
+  const payload = await fetchJsonWithTimeout("https://api.exchange.coinbase.com/products/stats");
+  const prices = {};
+  if (!payload || typeof payload !== "object") return prices;
+  for (const [productId, stats] of Object.entries(payload)) {
+    const productIdText = String(productId || "").toUpperCase();
+    const price = toPositiveNumber(stats?.stats_24hour?.last);
+    if (!productIdText.endsWith("-USD") || price === null) continue;
+    const symbol = productIdText.replace(/-USD$/, "");
+    if (symbol) prices[symbol] = price;
+  }
+  return prices;
+}
+
+async function fetchLivePricePayload(marketPayload) {
+  const errors = {};
+  const upbitSymbols = collectSymbols(marketPayload, "upbit");
+  const [fxResult, binanceResult, upbitResult, bithumbResult, coinbaseResult] = await Promise.allSettled([
+    fetchLiveFxUsdKrw(),
+    fetchBinanceLivePriceMap(),
+    fetchUpbitLivePriceMap(upbitSymbols),
+    fetchBithumbLivePriceAndCapMaps(),
+    fetchCoinbaseLivePriceMap(),
+  ]);
+
+  const prices = { binance: {}, upbit: {}, bithumb: {}, coinbase: {} };
+  const caps = { bithumb: {} };
+  let fxUsdKrw = null;
+
+  if (fxResult.status === "fulfilled") fxUsdKrw = fxResult.value;
+  else recordError(errors, "fx", fxResult.reason);
+  if (binanceResult.status === "fulfilled") prices.binance = binanceResult.value || {};
+  else recordError(errors, "binance", binanceResult.reason);
+  if (upbitResult.status === "fulfilled") prices.upbit = upbitResult.value || {};
+  else recordError(errors, "upbit", upbitResult.reason);
+  if (bithumbResult.status === "fulfilled") {
+    prices.bithumb = bithumbResult.value?.prices || {};
+    caps.bithumb = bithumbResult.value?.caps || {};
+  } else {
+    recordError(errors, "bithumb", bithumbResult.reason);
+  }
+  if (coinbaseResult.status === "fulfilled") prices.coinbase = coinbaseResult.value || {};
+  else recordError(errors, "coinbase", coinbaseResult.reason);
+
+  return {
+    fetchedAt: Math.floor(Date.now() / 1000),
+    fxUsdKrw,
+    prices,
+    caps,
+    errors,
+  };
 }
 
 function bytesToHex(bytes) {
@@ -551,6 +716,7 @@ async function requireGithubOidc(request, env) {
 
 function isProtectedContentPath(url) {
   return url.pathname === "/api/market-data"
+    || url.pathname === "/api/live-prices"
     || url.pathname === "/api/news"
     || url.pathname === "/api/usage/beacon"
     || url.pathname === "/api/usage/stats"
@@ -1410,6 +1576,11 @@ export class BoardStore {
     return jsonResponse(payload, 200, this.env);
   }
 
+  async handleLivePricesRequest() {
+    const payload = await this.readMarketData();
+    return jsonResponse(await fetchLivePricePayload(payload), 200, this.env);
+  }
+
   async refreshNewsStore(force = false) {
     const now = Date.now();
     const cacheMs = getNewsCacheMs(this.env);
@@ -1820,6 +1991,10 @@ export class BoardStore {
       return this.handleMarketDataRequest(request, url);
     }
 
+    if (request.method === "GET" && url.pathname === "/api/live-prices") {
+      return this.handleLivePricesRequest(request, url);
+    }
+
     if (request.method === "GET" && url.pathname === "/api/news") {
       return this.handleNewsRequest(request, url);
     }
@@ -2096,6 +2271,11 @@ export default {
     }
     if (url.pathname === "/api/market-data" && request.method === "GET") {
       if (!env.BOARD_STORE) return jsonResponse({ error: "market_data_storage_not_configured" }, 500, env);
+      const id = env.BOARD_STORE.idFromName("free-board");
+      return env.BOARD_STORE.get(id).fetch(request);
+    }
+    if (url.pathname === "/api/live-prices" && request.method === "GET") {
+      if (!env.BOARD_STORE) return jsonResponse(await fetchLivePricePayload(null), 200, env);
       const id = env.BOARD_STORE.idFromName("free-board");
       return env.BOARD_STORE.get(id).fetch(request);
     }
