@@ -8396,11 +8396,181 @@
       }
 
       let liveRefreshInFlight = false;
+      function readLiveRecordNumber(record, key) {
+        if (!record || typeof record !== "object") return null;
+        return toPositiveNumber(record[String(key || "").toUpperCase()]);
+      }
+
+      function countRecordValues(record) {
+        return record && typeof record === "object" ? Object.keys(record).length : 0;
+      }
+
+      function applyLiveServerPrice(row, updates, options = {}) {
+        const before = JSON.stringify([
+          row.marketCapUsd,
+          row.marketCapKrw,
+          row.priceUsd,
+          row.priceKrw,
+          row.fdvUsd,
+          row.fdvKrw,
+          row.sortCapUsd,
+          row.priceSource,
+          row.capSource,
+          row.capSourceDetail,
+        ]);
+        const fx = toPositiveNumber(data.fxUsdKrw);
+        const priceUsd = toPositiveNumber(updates.priceUsd);
+        const priceKrw = toPositiveNumber(updates.priceKrw);
+        const marketCapKrw = toPositiveNumber(updates.marketCapKrw);
+
+        if (priceUsd !== null) {
+          row.priceUsd = priceUsd;
+          if (fx !== null) row.priceKrw = priceUsd * fx;
+        }
+        if (priceKrw !== null) {
+          row.priceKrw = priceKrw;
+          if (fx !== null) row.priceUsd = priceKrw / fx;
+        }
+        if (marketCapKrw !== null) {
+          row.marketCapKrw = marketCapKrw;
+          if (fx !== null) row.marketCapUsd = marketCapKrw / fx;
+        }
+        if (updates.priceSource) row.priceSource = updates.priceSource;
+        if (updates.capSource) row.capSource = updates.capSource;
+        if (updates.capSourceDetail) row.capSourceDetail = updates.capSourceDetail;
+        recomputeDerivedFields(row, { preferComputedCap: Boolean(options.preferComputedCap) });
+
+        const after = JSON.stringify([
+          row.marketCapUsd,
+          row.marketCapKrw,
+          row.priceUsd,
+          row.priceKrw,
+          row.fdvUsd,
+          row.fdvKrw,
+          row.sortCapUsd,
+          row.priceSource,
+          row.capSource,
+          row.capSourceDetail,
+        ]);
+        return before !== after ? 1 : 0;
+      }
+
+      async function refreshLiveMarketDataFromServer() {
+        if (!hasServerAuth() || isLocalPreview() || isSiteLocked()) {
+          return { ok: false, changed: 0, touched: 0 };
+        }
+        const payload = await fetchServerAuth(`/api/live-prices?ts=${Date.now()}`, { method: "GET", timeoutMs: 18000 });
+        const prices = payload?.prices || {};
+        const caps = payload?.caps || {};
+        const fx = toPositiveNumber(payload?.fxUsdKrw);
+        let changed = 0;
+        let touched = 0;
+
+        if (fx !== null) {
+          const prevFx = toPositiveNumber(data.fxUsdKrw);
+          data.fxUsdKrw = fx;
+          data.fxSource = "worker_live_upbit_usdt";
+          if (prevFx === null || Math.abs(prevFx - fx) >= 0.0001) {
+            changed += recomputeAllRowsUsingCurrentFx();
+          }
+        }
+
+        const boardCounts = [
+          countRecordValues(prices.binance),
+          countRecordValues(prices.upbit),
+          countRecordValues(prices.bithumb),
+          countRecordValues(prices.coinbase),
+          countRecordValues(caps.bithumb),
+        ].reduce((sum, value) => sum + value, 0);
+
+        const binanceRows = data.boards?.binance || [];
+        for (const row of binanceRows) {
+          const symbol = String(row.symbol || "").toUpperCase();
+          const priceUsd = readLiveRecordNumber(prices.binance, symbol);
+          if (priceUsd === null) continue;
+          touched += 1;
+          changed += applyLiveServerPrice(row, {
+            priceUsd,
+            priceSource: "worker_live_binance_ticker",
+          }, { preferComputedCap: true });
+        }
+        if (binanceRows.length) sortBoardRowsByCap(binanceRows);
+
+        const upbitRows = data.boards?.upbit || [];
+        for (const row of upbitRows) {
+          const symbol = String(row.symbol || "").toUpperCase();
+          const priceKrw = readLiveRecordNumber(prices.upbit, symbol);
+          if (priceKrw === null) continue;
+          touched += 1;
+          changed += applyLiveServerPrice(row, {
+            priceKrw,
+            priceSource: "worker_live_upbit_ticker",
+          }, { preferComputedCap: true });
+        }
+        if (upbitRows.length) sortBoardRowsByCap(upbitRows);
+
+        const bithumbRows = data.boards?.bithumb || [];
+        for (const row of bithumbRows) {
+          const symbol = String(row.symbol || "").toUpperCase();
+          const coinType = String(row.coinType || "").toUpperCase();
+          const priceKrw = readLiveRecordNumber(prices.bithumb, symbol);
+          const marketCapKrw = readLiveRecordNumber(caps.bithumb, coinType);
+          if (priceKrw === null && marketCapKrw === null) continue;
+          touched += 1;
+          changed += applyLiveServerPrice(row, {
+            priceKrw,
+            marketCapKrw,
+            priceSource: priceKrw !== null ? "worker_live_bithumb_ticker" : row.priceSource,
+            capSource: marketCapKrw !== null ? "worker_live_bithumb_coinmarketcap" : row.capSource,
+            capSourceDetail: marketCapKrw !== null ? "bithumb_coinmarketcap_live" : row.capSourceDetail,
+          }, { preferComputedCap: false });
+        }
+        if (bithumbRows.length) sortBoardRowsByCap(bithumbRows);
+
+        const coinbaseRows = data.boards?.coinbase || [];
+        for (const row of coinbaseRows) {
+          const symbol = String(row.symbol || "").toUpperCase();
+          const priceUsd = readLiveRecordNumber(prices.coinbase, symbol);
+          if (priceUsd === null) continue;
+          touched += 1;
+          changed += applyLiveServerPrice(row, {
+            priceUsd,
+            priceSource: "worker_live_coinbase_products",
+          }, { preferComputedCap: true });
+        }
+        if (coinbaseRows.length) sortBoardRowsByCap(coinbaseRows);
+
+        return {
+          ok: fx !== null || boardCounts > 0 || touched > 0,
+          changed,
+          touched,
+        };
+      }
+
       async function refreshLiveMarketData() {
         if (liveRefreshInFlight) return { changed: 0 };
         liveRefreshInFlight = true;
         try {
           let changed = 0;
+          try {
+            const serverLiveResult = await refreshLiveMarketDataFromServer();
+            if (serverLiveResult?.ok && (serverLiveResult.touched > 0 || serverLiveResult.changed > 0)) {
+              changed += Number(serverLiveResult.changed || 0);
+              changed += normalizeKnownAssetIdentities();
+              changed += normalizeKoreanAssetNames();
+              if (changed > 0) {
+                data.generatedAt = Math.floor(Date.now() / 1000);
+                saveLastGoodData(data);
+                renderSummaryStats();
+                renderAutoStatus();
+                renderCurrentView();
+              }
+              return { changed };
+            }
+          } catch (error) {
+            console.error(error);
+          }
+
           try {
             const fxResult = await refreshLiveFxRateFromUpbit();
             if (fxResult?.changed) {
