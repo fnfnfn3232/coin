@@ -1431,6 +1431,24 @@
         color: #dff7ff;
         font-size: 13px;
         font-weight: 850;
+        cursor: grab;
+        user-select: none;
+      }
+
+      .free-board-category-chip:active {
+        cursor: grabbing;
+      }
+
+      .free-board-category-chip.is-dragging {
+        opacity: 0.46;
+      }
+
+      .free-board-category-chip.is-drop-before {
+        box-shadow: -4px 0 0 #71e6ff;
+      }
+
+      .free-board-category-chip.is-drop-after {
+        box-shadow: 4px 0 0 #71e6ff;
       }
 
       .free-board-category-chip button {
@@ -4530,6 +4548,7 @@
       let freeBoardCategoriesLoaded = false;
       let freeBoardCategoriesPromise = null;
       let freeBoardCategorySubmitting = false;
+      let freeBoardCategoryDraggingValue = "";
       let pendingDeletePostId = "";
       let pendingDeleteCommentId = "";
       let pendingDeleteType = "post";
@@ -5113,6 +5132,56 @@
           showFreeBoardMessage("게시판 목록을 저장하지 못했습니다. 게시판관리 비밀번호를 다시 확인해 주세요.", true);
         } finally {
           freeBoardCategorySubmitting = false;
+          renderFreeBoard();
+        }
+      }
+
+      function buildReorderedFreeBoardCategories(dragValue, targetValue, position = "after") {
+        const fromIndex = freeBoardCategories.findIndex((item) => item.value === dragValue);
+        const targetIndex = freeBoardCategories.findIndex((item) => item.value === targetValue);
+        if (fromIndex < 0 || targetIndex < 0 || fromIndex === targetIndex) return null;
+        const movedItem = freeBoardCategories[fromIndex];
+        const nextCategories = freeBoardCategories.filter((item) => item.value !== dragValue);
+        const nextTargetIndex = nextCategories.findIndex((item) => item.value === targetValue);
+        if (nextTargetIndex < 0) return null;
+        const insertIndex = position === "before" ? nextTargetIndex : nextTargetIndex + 1;
+        nextCategories.splice(insertIndex, 0, movedItem);
+        return nextCategories;
+      }
+
+      function clearFreeBoardCategoryDropMarkers() {
+        newsPanel.querySelectorAll(".free-board-category-chip.is-drop-before, .free-board-category-chip.is-drop-after, .free-board-category-chip.is-dragging")
+          .forEach((chip) => {
+            chip.classList.remove("is-drop-before", "is-drop-after", "is-dragging");
+            delete chip.dataset.dropPosition;
+          });
+      }
+
+      async function saveFreeBoardCategoryOrder(dragValue, targetValue, position = "after") {
+        if (freeBoardCategorySubmitting) return;
+        if (!freeBoardAdminMode || !freeBoardAdminPassword) {
+          showFreeBoardMessage("게시판관리를 먼저 켜 주세요.", true);
+          renderFreeBoard();
+          return;
+        }
+        const nextCategories = buildReorderedFreeBoardCategories(dragValue, targetValue, position);
+        if (!nextCategories) return;
+        const previousCategories = freeBoardCategories.map((item) => ({ ...item }));
+        freeBoardCategorySubmitting = true;
+        freeBoardCategories = nextCategories;
+        freeBoardCategoryDraggingValue = "";
+        showFreeBoardMessage("게시판 순서를 저장 중입니다...", false);
+        renderFreeBoard();
+        try {
+          await saveServerFreeBoardCategories(nextCategories, freeBoardAdminPassword);
+          showFreeBoardMessage("게시판 순서를 저장했습니다.", false);
+        } catch (error) {
+          console.error(error);
+          freeBoardCategories = previousCategories;
+          showFreeBoardMessage("게시판 순서를 저장하지 못했습니다. 게시판관리 비밀번호를 다시 확인해 주세요.", true);
+        } finally {
+          freeBoardCategorySubmitting = false;
+          freeBoardCategoryDraggingValue = "";
           renderFreeBoard();
         }
       }
@@ -5912,7 +5981,7 @@
 
       function renderFreeBoardCategoryManager() {
         const categoryItems = freeBoardCategories.map((item) => `
-          <div class="free-board-category-chip">
+          <div class="free-board-category-chip${freeBoardCategoryDraggingValue === item.value ? " is-dragging" : ""}" data-free-board-category-value="${escapeAttr(item.value)}" draggable="${freeBoardCategorySubmitting ? "false" : "true"}" title="마우스로 끌어서 순서 변경">
             <span>${escapeHtml(item.label)}</span>
             ${item.value === "free" ? "" : `<button type="button" data-free-board-category-delete="${escapeAttr(item.value)}" ${freeBoardCategorySubmitting ? "disabled" : ""}>삭제</button>`}
           </div>
@@ -5929,7 +5998,7 @@
               <button class="free-board-submit free-board-admin-mini" type="submit" ${freeBoardCategorySubmitting ? "disabled" : ""}>추가</button>
             </form>
             <span class="free-board-message${freeBoardMessageIsError ? " error" : ""}" id="freeBoardMessage">${escapeHtml(freeBoardMessage)}</span>
-            <p class="free-board-meta">게시판을 목록에서 삭제해도 기존 글은 삭제되지 않고 전체게시글에서 볼 수 있습니다.</p>
+            <p class="free-board-meta">게시판 이름을 마우스로 끌어서 순서를 바꿀 수 있습니다. 목록에서 삭제해도 기존 글은 전체게시글에서 볼 수 있습니다.</p>
           </div>
         `;
       }
@@ -9703,6 +9772,65 @@
           console.error(error);
           showFreeBoardMessage(getFreeBoardSaveErrorMessage(error), true);
         }
+      });
+
+      newsPanel.addEventListener("dragstart", (event) => {
+        const dragTarget = event.target instanceof Element ? event.target : event.target?.parentElement;
+        const chip = dragTarget?.closest("[data-free-board-category-value]");
+        if (!chip || !freeBoardAdminMode || freeBoardCategorySubmitting) return;
+        if (!event.dataTransfer || dragTarget.closest("[data-free-board-category-delete]")) {
+          event.preventDefault();
+          return;
+        }
+        const value = String(chip.dataset.freeBoardCategoryValue || "");
+        if (!value) return;
+        freeBoardCategoryDraggingValue = value;
+        chip.classList.add("is-dragging");
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", value);
+      });
+
+      newsPanel.addEventListener("dragover", (event) => {
+        if (!freeBoardCategoryDraggingValue || freeBoardCategorySubmitting) return;
+        const dragTarget = event.target instanceof Element ? event.target : event.target?.parentElement;
+        const chip = dragTarget?.closest("[data-free-board-category-value]");
+        if (!chip) return;
+        const targetValue = String(chip.dataset.freeBoardCategoryValue || "");
+        if (!targetValue || targetValue === freeBoardCategoryDraggingValue) return;
+        if (!event.dataTransfer) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        const rect = chip.getBoundingClientRect();
+        const position = event.clientX < rect.left + rect.width / 2 ? "before" : "after";
+        newsPanel.querySelectorAll(".free-board-category-chip.is-drop-before, .free-board-category-chip.is-drop-after")
+          .forEach((item) => {
+            if (item !== chip) {
+              item.classList.remove("is-drop-before", "is-drop-after");
+              delete item.dataset.dropPosition;
+            }
+          });
+        chip.classList.toggle("is-drop-before", position === "before");
+        chip.classList.toggle("is-drop-after", position === "after");
+        chip.dataset.dropPosition = position;
+      });
+
+      newsPanel.addEventListener("drop", async (event) => {
+        if (!freeBoardCategoryDraggingValue || freeBoardCategorySubmitting) return;
+        const dropTarget = event.target instanceof Element ? event.target : event.target?.parentElement;
+        const chip = dropTarget?.closest("[data-free-board-category-value]");
+        if (!chip) return;
+        event.preventDefault();
+        const targetValue = String(chip.dataset.freeBoardCategoryValue || "");
+        const position = chip.dataset.dropPosition || "after";
+        const dragValue = freeBoardCategoryDraggingValue;
+        clearFreeBoardCategoryDropMarkers();
+        freeBoardCategoryDraggingValue = "";
+        await saveFreeBoardCategoryOrder(dragValue, targetValue, position);
+      });
+
+      newsPanel.addEventListener("dragend", () => {
+        freeBoardCategoryDraggingValue = "";
+        clearFreeBoardCategoryDropMarkers();
       });
 
       newsPanel.addEventListener("click", async (event) => {
