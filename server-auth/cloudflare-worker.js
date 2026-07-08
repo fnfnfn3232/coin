@@ -3,6 +3,7 @@ const COOKIE_NAME = "coin_board_session";
 const SESSION_TTL_SECONDS = 24 * 60 * 60;
 const BOARD_POSTS_KEY = "free-board-posts";
 const BOARD_ADMIN_LOGS_KEY = "free-board-admin-logs";
+const BOARD_CATEGORIES_KEY = "free-board-categories";
 const USAGE_STATS_KEY = "usage-stats-v1";
 const NEWS_STORE_KEY = "coinness-news-store-v1";
 const MARKET_DATA_KEY = "market-data-v1";
@@ -12,6 +13,15 @@ const BOARD_MAX_POSTS = 200;
 const BOARD_MAX_MEDIA = 10;
 const BOARD_MAX_COMMENTS = 100;
 const BOARD_ADMIN_LOG_LIMIT = 100;
+const BOARD_CATEGORY_LIMIT = 30;
+const DEFAULT_BOARD_CATEGORIES = [
+  { value: "free", label: "자유게시판" },
+  { value: "image", label: "이미지" },
+  { value: "video", label: "영상" },
+  { value: "game", label: "게임" },
+  { value: "usemap", label: "스타크래프트" },
+  { value: "info", label: "정보" },
+];
 const NEWS_STORE_MAX_ITEMS = 1000;
 const NEWS_PAGE_MAX_ITEMS = 40;
 const BOARD_MEDIA_KEY_PREFIX = "free-board-media:";
@@ -546,9 +556,45 @@ function normalizeBoardPost(raw, fallback = {}) {
 }
 
 function normalizeBoardCategory(category) {
-  const value = cleanBoardText(category, 40).toLowerCase();
-  if (value === "free" || value === "image" || value === "video" || value === "game" || value === "usemap" || value === "info") return value;
-  return "free";
+  return normalizeBoardCategoryValue(category) || "free";
+}
+
+function normalizeBoardCategoryValue(category) {
+  return cleanBoardText(category, 40).replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function normalizeBoardCategoryLabel(label) {
+  return cleanBoardText(label, 40).replace(/\s+/g, " ").trim();
+}
+
+function normalizeBoardCategoryItem(raw) {
+  const source = raw && typeof raw === "object" ? raw : { value: raw, label: raw };
+  const rawLabel = normalizeBoardCategoryLabel(source.label || source.name || source.title || "");
+  let value = normalizeBoardCategoryValue(source.value || source.id || source.category || rawLabel);
+  let label = rawLabel;
+  if (!value && label) value = normalizeBoardCategoryValue(label);
+  if (!value || value === "all") return null;
+  if (!label) {
+    label = DEFAULT_BOARD_CATEGORIES.find((item) => item.value === value)?.label || value;
+  }
+  return { value, label };
+}
+
+function normalizeBoardCategories(raw) {
+  const source = Array.isArray(raw) && raw.length ? raw : DEFAULT_BOARD_CATEGORIES;
+  const seen = new Set();
+  const categories = [];
+  for (const item of source) {
+    const normalized = normalizeBoardCategoryItem(item);
+    if (!normalized || seen.has(normalized.value)) continue;
+    seen.add(normalized.value);
+    categories.push(normalized);
+    if (categories.length >= BOARD_CATEGORY_LIMIT) break;
+  }
+  if (!seen.has("free")) {
+    categories.unshift({ value: "free", label: "자유게시판" });
+  }
+  return categories.slice(0, BOARD_CATEGORY_LIMIT);
 }
 
 function getKstDateKey(now = Date.now()) {
@@ -628,6 +674,28 @@ async function writeBoardPosts(env, posts) {
     .sort((a, b) => b.createdAt - a.createdAt)
     .slice(0, BOARD_MAX_POSTS);
   await env.BOARD_POSTS.put(BOARD_POSTS_KEY, JSON.stringify(normalized));
+  return normalized;
+}
+
+async function readBoardCategories(env) {
+  if (!env.BOARD_POSTS) {
+    throw new Error("board_storage_not_configured");
+  }
+  const raw = await env.BOARD_POSTS.get(BOARD_CATEGORIES_KEY);
+  if (!raw) return normalizeBoardCategories(DEFAULT_BOARD_CATEGORIES);
+  try {
+    return normalizeBoardCategories(JSON.parse(raw));
+  } catch (_error) {
+    return normalizeBoardCategories(DEFAULT_BOARD_CATEGORIES);
+  }
+}
+
+async function writeBoardCategories(env, categories) {
+  if (!env.BOARD_POSTS) {
+    throw new Error("board_storage_not_configured");
+  }
+  const normalized = normalizeBoardCategories(categories);
+  await env.BOARD_POSTS.put(BOARD_CATEGORIES_KEY, JSON.stringify(normalized));
   return normalized;
 }
 
@@ -720,6 +788,7 @@ function isProtectedContentPath(url) {
     || url.pathname === "/api/news"
     || url.pathname === "/api/usage/beacon"
     || url.pathname === "/api/usage/stats"
+    || url.pathname === "/api/board/categories"
     || url.pathname === "/api/board/logs"
     || url.pathname === "/api/board/media"
     || url.pathname.startsWith("/api/board/media/")
@@ -1024,6 +1093,28 @@ async function handleBoardMedia(request, env, url) {
     if (!media) return jsonResponse({ error: "not_found" }, 404, env);
     return mediaResponse(media, 200, env);
   }
+  return jsonResponse({ error: "not_found" }, 404, env);
+}
+
+async function handleBoardCategories(request, env) {
+  if (env.BOARD_STORE) {
+    const id = env.BOARD_STORE.idFromName("free-board");
+    return env.BOARD_STORE.get(id).fetch(request);
+  }
+
+  if (request.method === "GET") {
+    return jsonResponse({ categories: await readBoardCategories(env) }, 200, env);
+  }
+
+  if (request.method === "PUT" || request.method === "POST") {
+    const body = await parseJsonBody(request);
+    if (!await isAdminPassword(body?.adminPassword || body?.password || "", env)) {
+      return jsonResponse({ error: "invalid_password" }, 401, env);
+    }
+    const categories = await writeBoardCategories(env, body?.categories || []);
+    return jsonResponse({ categories }, 200, env);
+  }
+
   return jsonResponse({ error: "not_found" }, 404, env);
 }
 
@@ -1438,6 +1529,17 @@ export class BoardStore {
       .sort((a, b) => b.createdAt - a.createdAt)
       .slice(0, BOARD_MAX_POSTS);
     await this.state.storage.put(BOARD_POSTS_KEY, normalized);
+    return normalized;
+  }
+
+  async readCategories() {
+    const stored = await this.state.storage.get(BOARD_CATEGORIES_KEY);
+    return normalizeBoardCategories(stored);
+  }
+
+  async writeCategories(categories) {
+    const normalized = normalizeBoardCategories(categories);
+    await this.state.storage.put(BOARD_CATEGORIES_KEY, normalized);
     return normalized;
   }
 
@@ -2013,6 +2115,19 @@ export class BoardStore {
       return jsonResponse({ logs: await this.readAdminLogs() }, 200, this.env);
     }
 
+    if (url.pathname === "/api/board/categories") {
+      if (request.method === "GET") {
+        return jsonResponse({ categories: await this.readCategories() }, 200, this.env);
+      }
+      if (request.method === "PUT" || request.method === "POST") {
+        const body = await parseJsonBody(request);
+        if (!await isAdminPassword(body?.adminPassword || body?.password || "", this.env)) {
+          return jsonResponse({ error: "invalid_password" }, 401, this.env);
+        }
+        return jsonResponse({ categories: await this.writeCategories(body?.categories || []) }, 200, this.env);
+      }
+    }
+
     if (request.method === "POST" && url.pathname === "/api/board/media/uploads") {
       return this.createMediaUpload(request);
     }
@@ -2288,6 +2403,9 @@ export default {
       if (!env.BOARD_STORE) return jsonResponse({ error: "usage_storage_not_configured" }, 500, env);
       const id = env.BOARD_STORE.idFromName("free-board");
       return env.BOARD_STORE.get(id).fetch(request);
+    }
+    if (url.pathname === "/api/board/categories") {
+      return handleBoardCategories(request, env);
     }
     if (url.pathname === "/api/board/media" || url.pathname === "/api/board/media/uploads" || url.pathname.startsWith("/api/board/media/uploads/")) {
       return handleBoardMedia(request, env, url);

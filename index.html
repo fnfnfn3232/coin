@@ -1364,6 +1364,13 @@
         flex-wrap: wrap;
       }
 
+      .free-board-admin-panel {
+        flex: 1 1 100%;
+        display: grid;
+        gap: 10px;
+        min-width: 0;
+      }
+
       .free-board-admin-compact input {
         width: min(180px, 100%);
         min-height: 38px;
@@ -1389,6 +1396,57 @@
 
       .free-board-search .free-board-admin-compact input {
         width: min(180px, 100%);
+      }
+
+      .free-board-category-manager {
+        display: grid;
+        gap: 10px;
+        padding: 12px;
+        border: 1px solid rgba(117, 221, 255, 0.18);
+        border-radius: 10px;
+        background: rgba(0, 36, 50, 0.28);
+      }
+
+      .free-board-category-head,
+      .free-board-category-list,
+      .free-board-category-form {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .free-board-category-head {
+        justify-content: space-between;
+      }
+
+      .free-board-category-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-height: 32px;
+        padding: 5px 8px;
+        border: 1px solid rgba(151, 183, 198, 0.18);
+        border-radius: 999px;
+        color: #dff7ff;
+        font-size: 13px;
+        font-weight: 850;
+      }
+
+      .free-board-category-chip button {
+        min-width: 0;
+        padding: 2px 6px;
+        border: 1px solid rgba(255, 111, 111, 0.34);
+        border-radius: 999px;
+        background: rgba(80, 0, 18, 0.28);
+        color: #ffb3b3;
+        font: inherit;
+        font-size: 12px;
+        cursor: pointer;
+      }
+
+      .free-board-category-form input {
+        width: min(260px, 100%);
       }
 
       .free-board-read {
@@ -3624,6 +3682,14 @@
     const FREE_BOARD_UPLOAD_PARALLEL_CHUNKS = 8;
     const FREE_BOARD_PAGE_SIZE = 20;
     const FREE_BOARD_SERVER_ENABLED = true;
+    const FREE_BOARD_DEFAULT_CATEGORIES = [
+      { value: "free", label: "자유게시판" },
+      { value: "image", label: "이미지" },
+      { value: "video", label: "영상" },
+      { value: "game", label: "게임" },
+      { value: "usemap", label: "스타크래프트" },
+      { value: "info", label: "정보" },
+    ];
     const FREE_BOARD_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"]);
     const BOARD_MEDIA_PLACEHOLDER_SRC = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
     const GITHUB_PAGES_MONTHLY_SOFT_LIMIT_BYTES = 100 * 1024 * 1024 * 1024;
@@ -4460,6 +4526,10 @@
       let freeBoardAdminLogs = [];
       let freeBoardAdminLogsLoaded = false;
       let freeBoardAdminLogsError = "";
+      let freeBoardCategories = FREE_BOARD_DEFAULT_CATEGORIES.map((item) => ({ ...item }));
+      let freeBoardCategoriesLoaded = false;
+      let freeBoardCategoriesPromise = null;
+      let freeBoardCategorySubmitting = false;
       let pendingDeletePostId = "";
       let pendingDeleteCommentId = "";
       let pendingDeleteType = "post";
@@ -4491,6 +4561,57 @@
         if (!submitButton) return;
         submitButton.disabled = Boolean(isSubmitting);
         submitButton.textContent = isSubmitting ? "등록 중..." : "등록";
+      }
+
+      function cleanFreeBoardCategoryLabel(value) {
+        return String(value || "").replace(/\0/g, "").replace(/\s+/g, " ").trim().slice(0, 40);
+      }
+
+      function normalizeFreeBoardCategoryValue(value) {
+        return cleanFreeBoardCategoryLabel(value).toLowerCase();
+      }
+
+      function makeFreeBoardCategoryValue(label) {
+        return normalizeFreeBoardCategoryValue(label) || `board-${Date.now().toString(36)}`;
+      }
+
+      function normalizeFreeBoardCategoryItem(item) {
+        const source = item && typeof item === "object" ? item : { value: item, label: item };
+        const label = cleanFreeBoardCategoryLabel(source.label || source.name || source.title || source.value || "");
+        const value = normalizeFreeBoardCategoryValue(source.value || source.id || source.category || label);
+        if (!value || value === "all") return null;
+        return {
+          value,
+          label: label || FREE_BOARD_DEFAULT_CATEGORIES.find((defaultItem) => defaultItem.value === value)?.label || value,
+        };
+      }
+
+      function normalizeFreeBoardCategoryList(items) {
+        const source = Array.isArray(items) && items.length ? items : FREE_BOARD_DEFAULT_CATEGORIES;
+        const seen = new Set();
+        const categories = [];
+        source.forEach((item) => {
+          const normalized = normalizeFreeBoardCategoryItem(item);
+          if (!normalized || seen.has(normalized.value) || categories.length >= 30) return;
+          seen.add(normalized.value);
+          categories.push(normalized);
+        });
+        if (!seen.has("free")) {
+          categories.unshift({ value: "free", label: "자유게시판" });
+        }
+        return categories.slice(0, 30);
+      }
+
+      function applyServerFreeBoardCategories(categories) {
+        freeBoardCategories = normalizeFreeBoardCategoryList(categories);
+        freeBoardCategoriesLoaded = true;
+        if (
+          freeBoardFilter !== "all"
+          && !freeBoardCategories.some((item) => item.value === freeBoardFilter)
+        ) {
+          freeBoardFilter = "all";
+          freeBoardPage = 1;
+        }
       }
 
       function normalizeFreeBoardPost(post) {
@@ -4623,6 +4744,47 @@
             console.error(error);
             if (shouldRenderFreeBoardAfterPostsRefresh()) renderFreeBoard();
           });
+      }
+
+      async function fetchFreeBoardCategories(force = false) {
+        if (!hasFreeBoardServer()) return freeBoardCategories;
+        if (isSiteLocked()) return freeBoardCategories;
+        if (!force && freeBoardCategoriesLoaded) return freeBoardCategories;
+        if (freeBoardCategoriesPromise) return freeBoardCategoriesPromise;
+        freeBoardCategoriesPromise = fetchServerAuth("/api/board/categories", { method: "GET", timeoutMs: 10000 })
+          .then((payload) => {
+            applyServerFreeBoardCategories(payload?.categories || []);
+            return freeBoardCategories;
+          })
+          .catch((error) => {
+            console.warn("free board categories refresh failed", error);
+            return freeBoardCategories;
+          })
+          .finally(() => {
+            freeBoardCategoriesPromise = null;
+          });
+        return freeBoardCategoriesPromise;
+      }
+
+      function requestFreeBoardCategoriesRefresh(force = false) {
+        if (isSiteLocked() || !hasFreeBoardServer()) return;
+        const refreshPromise = freeBoardCategoriesPromise || fetchFreeBoardCategories(force);
+        refreshPromise
+          .then(() => {
+            if (state.viewMode === "board") renderFreeBoard();
+          })
+          .catch((error) => {
+            console.warn(error);
+          });
+      }
+
+      async function saveServerFreeBoardCategories(categories, adminPassword = freeBoardAdminPassword) {
+        const payload = await fetchServerAuth("/api/board/categories", {
+          method: "PUT",
+          body: JSON.stringify({ categories, adminPassword }),
+        });
+        applyServerFreeBoardCategories(payload?.categories || categories);
+        return freeBoardCategories;
       }
 
       async function createServerFreeBoardPost(post, postPassword = "", adminPassword = "") {
@@ -4767,6 +4929,7 @@
         try {
           showFreeBoardMessage("게시판관리 권한 확인 중입니다...", false);
           await verifyFreeBoardAdminPassword(password);
+          await fetchFreeBoardCategories(true);
           freeBoardAdminMode = true;
           freeBoardAdminPassword = password;
           freeBoardAdminPanelOpen = false;
@@ -4866,6 +5029,91 @@
           renderFreeBoard();
         } finally {
           freeBoardAdminBulkDeleting = false;
+        }
+      }
+
+      function hasFreeBoardCategoryName(label) {
+        const normalizedLabel = cleanFreeBoardCategoryLabel(label).toLowerCase();
+        return freeBoardCategories.some((item) => {
+          return item.value === normalizeFreeBoardCategoryValue(label)
+            || cleanFreeBoardCategoryLabel(item.label).toLowerCase() === normalizedLabel;
+        });
+      }
+
+      async function addFreeBoardCategory(form) {
+        if (freeBoardCategorySubmitting) return;
+        if (!freeBoardAdminMode || !freeBoardAdminPassword) {
+          showFreeBoardMessage("게시판관리를 먼저 켜 주세요.", true);
+          renderFreeBoard();
+          return;
+        }
+        const name = cleanFreeBoardCategoryLabel(new FormData(form).get("categoryName"));
+        if (!name) {
+          showFreeBoardMessage("추가할 게시판 이름을 입력해 주세요.", true);
+          renderFreeBoard();
+          window.setTimeout(() => document.getElementById("freeBoardCategoryName")?.focus(), 0);
+          return;
+        }
+        if (hasFreeBoardCategoryName(name)) {
+          showFreeBoardMessage("이미 있는 게시판 이름입니다.", true);
+          renderFreeBoard();
+          return;
+        }
+        freeBoardCategorySubmitting = true;
+        try {
+          const categoryValue = makeFreeBoardCategoryValue(name);
+          await saveServerFreeBoardCategories([
+            ...freeBoardCategories,
+            { value: categoryValue, label: name },
+          ], freeBoardAdminPassword);
+          freeBoardFilter = categoryValue;
+          freeBoardPage = 1;
+          showFreeBoardMessage(`${name} 게시판을 추가했습니다.`, false);
+        } catch (error) {
+          console.error(error);
+          showFreeBoardMessage("게시판 목록을 저장하지 못했습니다. 게시판관리 비밀번호를 다시 확인해 주세요.", true);
+        } finally {
+          freeBoardCategorySubmitting = false;
+          renderFreeBoard();
+        }
+      }
+
+      async function deleteFreeBoardCategory(value) {
+        if (freeBoardCategorySubmitting) return;
+        if (!freeBoardAdminMode || !freeBoardAdminPassword) {
+          showFreeBoardMessage("게시판관리를 먼저 켜 주세요.", true);
+          renderFreeBoard();
+          return;
+        }
+        const category = freeBoardCategories.find((item) => item.value === value);
+        if (!category) return;
+        if (category.value === "free") {
+          showFreeBoardMessage("자유게시판은 기본 게시판이라 삭제할 수 없습니다.", true);
+          renderFreeBoard();
+          return;
+        }
+        const postCount = loadFreeBoardPosts().filter((post) => normalizeFreeBoardCategory(post.category) === category.value).length;
+        const confirmText = postCount
+          ? `${category.label} 게시판을 목록에서 삭제할까요?\n이 게시판의 글 ${postCount}개는 삭제되지 않고 전체게시글에서 볼 수 있습니다.`
+          : `${category.label} 게시판을 목록에서 삭제할까요?`;
+        if (!window.confirm(confirmText)) return;
+        freeBoardCategorySubmitting = true;
+        try {
+          await saveServerFreeBoardCategories(
+            freeBoardCategories.filter((item) => item.value !== category.value),
+            freeBoardAdminPassword
+          );
+          if (freeBoardFilter === category.value) {
+            freeBoardFilter = "all";
+            freeBoardPage = 1;
+          }
+          showFreeBoardMessage(`${category.label} 게시판을 목록에서 삭제했습니다.`, false);
+        } catch (error) {
+          console.error(error);
+          showFreeBoardMessage("게시판 목록을 저장하지 못했습니다. 게시판관리 비밀번호를 다시 확인해 주세요.", true);
+        } finally {
+          freeBoardCategorySubmitting = false;
+          renderFreeBoard();
         }
       }
 
@@ -5527,32 +5775,20 @@
 
       function freeBoardCategoryLabel(category) {
         const normalized = normalizeFreeBoardCategory(category);
-        const map = {
-          free: "자유게시판",
-          image: "이미지",
-          video: "영상",
-          game: "게임",
-          usemap: "스타크래프트",
-          info: "정보",
-        };
-        return map[normalized] || "자유게시판";
+        return freeBoardCategories.find((item) => item.value === normalized)?.label
+          || FREE_BOARD_DEFAULT_CATEGORIES.find((item) => item.value === normalized)?.label
+          || normalized
+          || "자유게시판";
       }
 
       function normalizeFreeBoardCategory(category) {
-        const value = String(category || "").trim().toLowerCase();
-        if (["free", "image", "video", "game", "usemap", "info"].includes(value)) return value;
-        return "free";
+        return normalizeFreeBoardCategoryValue(category) || "free";
       }
 
       function getFreeBoardCategories() {
         return [
           { value: "all", label: "전체게시글" },
-          { value: "free", label: "자유게시판" },
-          { value: "image", label: "이미지" },
-          { value: "video", label: "영상" },
-          { value: "game", label: "게임" },
-          { value: "usemap", label: "스타크래프트" },
-          { value: "info", label: "정보" },
+          ...freeBoardCategories,
         ];
       }
 
@@ -5674,13 +5910,40 @@
         return `${loadingHtml}${errorHtml}`;
       }
 
+      function renderFreeBoardCategoryManager() {
+        const categoryItems = freeBoardCategories.map((item) => `
+          <div class="free-board-category-chip">
+            <span>${escapeHtml(item.label)}</span>
+            ${item.value === "free" ? "" : `<button type="button" data-free-board-category-delete="${escapeAttr(item.value)}" ${freeBoardCategorySubmitting ? "disabled" : ""}>삭제</button>`}
+          </div>
+        `).join("");
+        return `
+          <div class="free-board-category-manager">
+            <div class="free-board-category-head">
+              <strong>게시판 목록</strong>
+              <span class="free-board-meta">${freeBoardCategoriesLoaded ? "서버 저장됨" : "기본 목록 표시 중"}</span>
+            </div>
+            <div class="free-board-category-list">${categoryItems}</div>
+            <form class="free-board-category-form" data-free-board-category-form>
+              <input id="freeBoardCategoryName" name="categoryName" type="text" maxlength="40" autocomplete="off" placeholder="새 게시판 이름" ${freeBoardCategorySubmitting ? "disabled" : ""} />
+              <button class="free-board-submit free-board-admin-mini" type="submit" ${freeBoardCategorySubmitting ? "disabled" : ""}>추가</button>
+            </form>
+            <span class="free-board-message${freeBoardMessageIsError ? " error" : ""}" id="freeBoardMessage">${escapeHtml(freeBoardMessage)}</span>
+            <p class="free-board-meta">게시판을 목록에서 삭제해도 기존 글은 삭제되지 않고 전체게시글에서 볼 수 있습니다.</p>
+          </div>
+        `;
+      }
+
       function renderFreeBoardAdminBox() {
         if (!hasFreeBoardServer()) return "";
         if (freeBoardAdminMode) {
           return `
-            <div class="free-board-admin-compact">
-              <span class="free-board-meta">게시판관리 ON</span>
-              <button class="free-board-delete free-board-admin-mini" type="button" data-free-board-admin-logout>끄기</button>
+            <div class="free-board-admin-panel">
+              <div class="free-board-admin-compact">
+                <span class="free-board-meta">게시판관리 ON</span>
+                <button class="free-board-delete free-board-admin-mini" type="button" data-free-board-admin-logout>끄기</button>
+              </div>
+              ${renderFreeBoardCategoryManager()}
             </div>
           `;
         }
@@ -5861,6 +6124,13 @@
       }
 
       function renderFreeBoard() {
+        const shouldLoadServerCategories = hasFreeBoardServer()
+          && !isSiteLocked()
+          && !freeBoardCategoriesLoaded
+          && !freeBoardCategoriesPromise;
+        if (shouldLoadServerCategories) {
+          requestFreeBoardCategoriesRefresh(true);
+        }
         const shouldLoadServerPosts = hasFreeBoardServer()
           && !isSiteLocked()
           && !freeBoardPostsLoaded
@@ -6703,6 +6973,8 @@
         freeBoardAdminPassword = "";
         freeBoardAdminSelectedPostIds.clear();
         freeBoardAdminLogs = [];
+        freeBoardCategories = FREE_BOARD_DEFAULT_CATEGORIES.map((item) => ({ ...item }));
+        freeBoardCategoriesLoaded = false;
       }
 
       function formatRemainingLockTime(ms) {
@@ -9244,6 +9516,13 @@
           return;
         }
 
+        const freeBoardCategoryForm = event.target.closest("[data-free-board-category-form]");
+        if (freeBoardCategoryForm) {
+          event.preventDefault();
+          await addFreeBoardCategory(freeBoardCategoryForm);
+          return;
+        }
+
         const commentDeleteAuthForm = event.target.closest("[data-free-board-comment-delete-auth-form]");
         if (commentDeleteAuthForm) {
           event.preventDefault();
@@ -9622,6 +9901,13 @@
 
         if (clickTarget.closest("[data-free-board-admin-bulk-delete]")) {
           await deleteFreeBoardAdminSelectedPosts();
+          return;
+        }
+
+        const categoryDeleteButton = clickTarget.closest("[data-free-board-category-delete]");
+        if (categoryDeleteButton) {
+          const value = String(categoryDeleteButton.dataset.freeBoardCategoryDelete || "");
+          await deleteFreeBoardCategory(value);
           return;
         }
 
