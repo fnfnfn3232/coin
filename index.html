@@ -6918,6 +6918,7 @@
         }
         try {
           resetScreenSettingsDraft();
+          syncScreenSettingsForAdmin();
         } catch (error) {
           console.error(error);
           setScreenSettingsMessage("화면 편집을 표시하지 못했습니다. 새로고침 후 다시 열어 주세요.");
@@ -8063,6 +8064,21 @@
             console.error(error);
             if (sequence !== screenSettingsSaveSequence) return;
             setScreenSettingsMessage("화면에는 적용했지만 서버 저장에 실패했습니다. 관리자 비밀번호를 다시 확인해 주세요.");
+          });
+      }
+
+      function syncScreenSettingsForAdmin() {
+        if (!adminServerPassword) return;
+        requestServerScreenSettingsRefresh({ selectDefault: true })
+          .then((payload) => {
+            if (payload?.exists !== false) return;
+            return saveScreenSettingsToServer(screenSettings, adminServerPassword)
+              .then((saved) => {
+                if (saved) setScreenSettingsMessage("현재 화면 설정을 서버에 저장했습니다.");
+              });
+          })
+          .catch((error) => {
+            console.warn("screen_settings_admin_sync_failed", error);
           });
       }
 
