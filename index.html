@@ -2700,57 +2700,11 @@
       font-weight: 700;
     }
 
-    .screen-settings-order-list {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 8px;
-    }
-
     .screen-settings-checks,
     .screen-settings-position-buttons {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 8px;
-    }
-
-    .screen-settings-order-item {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 8px;
-      align-items: stretch;
-      padding: 12px;
-      border: 1px solid rgba(151, 183, 198, 0.12);
-      border-radius: 12px;
-      background: rgba(255, 255, 255, 0.03);
-    }
-
-    .screen-settings-order-rank {
-      width: fit-content;
-      padding: 3px 8px;
-      border: 1px solid rgba(117, 221, 255, 0.22);
-      border-radius: 999px;
-      color: #77e0ff;
-      font-size: 12px;
-      font-weight: 900;
-    }
-
-    .screen-settings-order-name {
-      color: #dff7ff;
-      font-size: 15px;
-      font-weight: 850;
-      line-height: 1.35;
-    }
-
-    .screen-settings-order-controls {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 6px;
-    }
-
-    .screen-settings-order-btn {
-      min-height: 34px;
-      padding: 6px 9px;
-      border-radius: 10px;
     }
 
     .screen-settings-toggle,
@@ -2849,7 +2803,6 @@
 
     @media (max-width: 900px) {
       .screen-settings-preview,
-      .screen-settings-order-list,
       .screen-settings-checks,
       .screen-settings-position-buttons {
         grid-template-columns: 1fr;
@@ -3602,15 +3555,11 @@
           </section>
           <section class="admin-section admin-screen-settings-section">
             <h3 class="admin-section-title">화면 편집</h3>
-            <p class="screen-settings-desc">버튼을 누르면 바로 화면에 적용되고 이 브라우저에 저장됩니다.</p>
+            <p class="screen-settings-desc">변경하면 바로 화면에 적용되고 서버에 저장되어 다른 브라우저에도 반영됩니다.</p>
             <div class="screen-settings-preview" id="screenSettingsPreview"></div>
             <div class="screen-settings-body">
               <section class="screen-settings-section">
-                <h3><span>거래소 순서</span><small>위/아래 버튼으로 이동</small></h3>
-                <div class="screen-settings-order-list" id="screenSettingsOrderList"></div>
-              </section>
-              <section class="screen-settings-section">
-                <h3><span>통계 카드 표시</span><small>누르면 표시/숨김 전환</small></h3>
+                <h3><span>통계 카드 표시</span><small>드래그로 순서 변경 · 누르면 표시/숨김</small></h3>
                 <div class="screen-settings-checks" id="screenSettingsStatChecks"></div>
               </section>
               <section class="screen-settings-section">
@@ -3933,7 +3882,6 @@
       const boardToggleBtn = document.getElementById("boardToggleBtn");
       const screenSettingsSaveBtn = document.getElementById("screenSettingsSaveBtn");
       const screenSettingsResetBtn = document.getElementById("screenSettingsResetBtn");
-      const screenSettingsOrderList = document.getElementById("screenSettingsOrderList");
       const screenSettingsStatChecks = document.getElementById("screenSettingsStatChecks");
       const screenSettingsStatusChecks = document.getElementById("screenSettingsStatusChecks");
       const screenSettingsStatusPosition = document.getElementById("screenSettingsStatusPosition");
@@ -7109,6 +7057,7 @@
           hideSiteLock();
           renderLockTtl();
           verifyServerSession()
+            .then(() => requestServerScreenSettingsRefresh({ selectDefault: true }))
             .then(() => fetchLatestBoardData())
             .then(() => refreshLiveMarketData())
             .catch((error) => {
@@ -7134,6 +7083,7 @@
             hideSiteLock();
             renderLockTtl();
             lockPasswordInput.value = "";
+            requestServerScreenSettingsRefresh({ selectDefault: true });
             if (state.viewMode === "board") {
               requestFreeBoardPostsRefresh(true);
             }
@@ -7933,12 +7883,16 @@
         }
       }
 
-      function saveScreenSettings() {
+      function saveScreenSettingsLocal(settings = screenSettings) {
         try {
-          localStorage.setItem(SCREEN_SETTINGS_KEY, JSON.stringify(screenSettings));
+          localStorage.setItem(SCREEN_SETTINGS_KEY, JSON.stringify(normalizeScreenSettings(settings)));
         } catch (_error) {
           // 화면 설정 저장에 실패해도 사이트 사용은 계속 가능해야 합니다.
         }
+      }
+
+      function saveScreenSettings() {
+        saveScreenSettingsLocal(screenSettings);
       }
 
       function orderedMarketBoards(settings = screenSettings) {
@@ -8020,9 +7974,96 @@
       let screenSettingsDraft = null;
       let screenSettingsDraggingBoard = "";
       let screenSettingsDragClickSuppressed = false;
+      let screenSettingsServerRequest = null;
+      let screenSettingsSaveSequence = 0;
 
       function setScreenSettingsMessage(message = "") {
         if (screenSettingsMessage) screenSettingsMessage.textContent = message;
+      }
+
+      function canUseServerScreenSettings() {
+        return hasServerAuth() && !isLocalPreview() && !isSiteLocked();
+      }
+
+      function applyLoadedScreenSettings(settings, options = {}) {
+        const nextSettings = normalizeScreenSettings(settings);
+        const previousDefaultBoard = getDefaultMarketBoard();
+        const shouldSelectDefault = Boolean(options.selectDefault)
+          || (state.viewMode === "market" && state.board === previousDefaultBoard);
+        screenSettings = nextSettings;
+        saveScreenSettingsLocal(screenSettings);
+        if (shouldSelectDefault) selectDefaultMarketBoard(screenSettings);
+        applyScreenSettings();
+        if (!adminModal || adminModal.classList.contains("hidden") || adminDashboard.hidden) {
+          screenSettingsDraft = cloneScreenSettings(screenSettings);
+        }
+        renderCurrentView();
+        renderScreenSettingsEditor();
+      }
+
+      function requestServerScreenSettingsRefresh(options = {}) {
+        if (!canUseServerScreenSettings()) return Promise.resolve(null);
+        if (screenSettingsServerRequest) return screenSettingsServerRequest;
+        screenSettingsServerRequest = fetchServerAuth("/api/screen-settings", {
+          method: "GET",
+          timeoutMs: 8000,
+        })
+          .then((payload) => {
+            if (payload?.settings && payload.exists !== false) {
+              applyLoadedScreenSettings(payload.settings, options);
+            }
+            return payload;
+          })
+          .catch((error) => {
+            console.warn("screen_settings_load_failed", error);
+            return null;
+          })
+          .finally(() => {
+            screenSettingsServerRequest = null;
+          });
+        return screenSettingsServerRequest;
+      }
+
+      async function saveScreenSettingsToServer(settings, password = adminServerPassword) {
+        if (!canUseServerScreenSettings() || !password) return false;
+        const payload = await fetchServerAuth("/api/screen-settings", {
+          method: "PUT",
+          body: JSON.stringify({
+            adminPassword: password,
+            settings: normalizeScreenSettings(settings),
+          }),
+          timeoutMs: 10000,
+        });
+        if (payload?.settings) {
+          screenSettings = normalizeScreenSettings(payload.settings);
+          saveScreenSettingsLocal(screenSettings);
+          screenSettingsDraft = cloneScreenSettings(screenSettings);
+          applyScreenSettings();
+          renderCurrentView();
+          renderScreenSettingsEditor();
+        }
+        return true;
+      }
+
+      function persistScreenSettingsToServer(message = "적용했습니다.") {
+        if (!hasServerAuth() || isLocalPreview()) return;
+        if (!adminServerPassword) {
+          setScreenSettingsMessage(`${message} 현재 브라우저에만 저장되었습니다.`);
+          return;
+        }
+        const sequence = ++screenSettingsSaveSequence;
+        const settingsSnapshot = cloneScreenSettings(screenSettings);
+        setScreenSettingsMessage(`${message} 서버에 저장 중입니다...`);
+        saveScreenSettingsToServer(settingsSnapshot, adminServerPassword)
+          .then((saved) => {
+            if (sequence !== screenSettingsSaveSequence) return;
+            setScreenSettingsMessage(saved ? `${message} 다른 브라우저에도 적용됩니다.` : message);
+          })
+          .catch((error) => {
+            console.error(error);
+            if (sequence !== screenSettingsSaveSequence) return;
+            setScreenSettingsMessage("화면에는 적용했지만 서버 저장에 실패했습니다. 관리자 비밀번호를 다시 확인해 주세요.");
+          });
       }
 
       function getScreenStatusPositionLabel(position) {
@@ -8042,10 +8083,11 @@
         render();
         renderScreenSettingsEditor();
         setScreenSettingsMessage(message);
+        persistScreenSettingsToServer(message);
       }
 
       function renderScreenSettingsEditor() {
-        if (!screenSettingsOrderList || !screenSettingsStatChecks || !screenSettingsStatusChecks || !screenSettingsStatusPosition) return;
+        if (!screenSettingsStatChecks || !screenSettingsStatusChecks || !screenSettingsStatusPosition) return;
         try {
           const draft = normalizeScreenSettings(screenSettingsDraft || screenSettings);
           screenSettingsDraft = draft;
@@ -8056,7 +8098,7 @@
           if (screenSettingsPreview) {
             screenSettingsPreview.innerHTML = `
               <div class="screen-settings-preview-item">
-                <span class="screen-settings-preview-label">거래소 순서</span>
+                <span class="screen-settings-preview-label">통계 카드 순서</span>
                 ${escapeHtml(order.map(boardLabel).join(" → "))}
               </div>
               <div class="screen-settings-preview-item">
@@ -8065,19 +8107,6 @@
               </div>
             `;
           }
-
-          screenSettingsOrderList.innerHTML = order
-            .map((board, index) => `
-              <div class="screen-settings-order-item" data-screen-board="${escapeAttr(board)}">
-                <div class="screen-settings-order-rank">${index + 1}</div>
-                <div class="screen-settings-order-name">${escapeHtml(boardLabel(board))}</div>
-                <div class="screen-settings-order-controls">
-                  <button class="screen-settings-order-btn" type="button" data-order-dir="-1" ${index === 0 ? "disabled" : ""}>위로</button>
-                  <button class="screen-settings-order-btn" type="button" data-order-dir="1" ${index === order.length - 1 ? "disabled" : ""}>아래로</button>
-                </div>
-              </div>
-            `)
-            .join("");
 
           screenSettingsStatChecks.innerHTML = order
             .map((board) => {
@@ -8139,18 +8168,6 @@
         setScreenSettingsMessage("");
       }
 
-      function moveScreenSettingsBoard(board, direction) {
-        const draft = normalizeScreenSettings(screenSettingsDraft || screenSettings);
-        const order = [...draft.boardOrder];
-        const index = order.indexOf(board);
-        const nextIndex = index + direction;
-        if (index < 0 || nextIndex < 0 || nextIndex >= order.length) return;
-        [order[index], order[nextIndex]] = [order[nextIndex], order[index]];
-        draft.boardOrder = order;
-        screenSettingsDraft = draft;
-        renderScreenSettingsEditor();
-      }
-
       function buildScreenSettingsBoardOrder(dragBoard, targetBoard, position = "after") {
         const draft = normalizeScreenSettings(screenSettingsDraft || screenSettings);
         const order = [...draft.boardOrder];
@@ -8167,7 +8184,7 @@
       }
 
       function clearScreenSettingsDropMarkers() {
-        [screenSettingsStatChecks, screenSettingsOrderList].filter(Boolean).forEach((root) => {
+        [screenSettingsStatChecks].filter(Boolean).forEach((root) => {
           root.querySelectorAll(".is-drop-before, .is-drop-after, .is-dragging").forEach((item) => {
             item.classList.remove("is-drop-before", "is-drop-after", "is-dragging");
             delete item.dataset.dropPosition;
@@ -10413,16 +10430,6 @@
       updateScrollControls();
       sendUsageBeacon();
 
-      if (screenSettingsOrderList) {
-        screenSettingsOrderList.addEventListener("click", (event) => {
-        const button = event.target.closest("[data-order-dir]");
-        if (!button) return;
-        const item = button.closest("[data-screen-board]");
-        moveScreenSettingsBoard(item?.dataset.screenBoard || "", Number(button.dataset.orderDir) || 0);
-        selectDefaultMarketBoard(screenSettingsDraft);
-        commitScreenSettingsDraft("거래소 순서를 저장했습니다.");
-      });
-      }
       if (screenSettingsStatChecks) {
         screenSettingsStatChecks.addEventListener("dragstart", (event) => {
           const dragTarget = event.target instanceof Element ? event.target : event.target?.parentElement;
