@@ -891,7 +891,7 @@ def clean_news_text(value: object) -> str:
     return text.strip()
 
 
-def make_news_preview(value: object, *, max_chars: int = 140) -> str:
+def make_news_preview(value: object, *, max_chars: int = 300) -> str:
     text = re.sub(r"\s+", " ", clean_news_text(value)).strip()
     if len(text) <= max_chars:
         return text

@@ -469,7 +469,7 @@ function cleanNewsText(value) {
     .trim();
 }
 
-function makePreview(value, maxChars = 140) {
+function makePreview(value, maxChars = 300) {
   const text = cleanNewsText(value).replace(/\s+/g, " ").trim();
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars - 3).trimEnd()}...`;
@@ -1285,7 +1285,7 @@ function normalizeStoredNewsItem(entry) {
     publishAt,
     publishAtTs,
     headline: headline || "Coinness news",
-    summary: makePreview(summary || headline, 220),
+    summary: makePreview(summary || headline, 300),
     sourceName: cleanBoardText(entry?.sourceName || "Coinness", 40) || "Coinness",
     articleUrl: cleanBoardText(entry?.articleUrl || entry?.url || entry?.link || `https://coinness.com/news/${id}`, 1000),
     originUrl: cleanBoardText(entry?.originUrl || entry?.sourceUrl || "", 1000),
