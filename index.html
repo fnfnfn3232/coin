@@ -2770,6 +2770,27 @@
       color: #d7edf7;
     }
 
+    .screen-settings-toggle[data-screen-stat] {
+      cursor: grab;
+      user-select: none;
+    }
+
+    .screen-settings-toggle[data-screen-stat]:active {
+      cursor: grabbing;
+    }
+
+    .screen-settings-toggle.is-dragging {
+      opacity: 0.48;
+    }
+
+    .screen-settings-toggle.is-drop-before {
+      box-shadow: -4px 0 0 #71e6ff;
+    }
+
+    .screen-settings-toggle.is-drop-after {
+      box-shadow: 4px 0 0 #71e6ff;
+    }
+
     .screen-settings-toggle.is-active,
     .screen-settings-position-btn.is-active {
       border-color: rgba(117, 221, 255, 0.46);
@@ -7997,6 +8018,8 @@
       }
 
       let screenSettingsDraft = null;
+      let screenSettingsDraggingBoard = "";
+      let screenSettingsDragClickSuppressed = false;
 
       function setScreenSettingsMessage(message = "") {
         if (screenSettingsMessage) screenSettingsMessage.textContent = message;
@@ -8060,7 +8083,7 @@
             .map((board) => {
               const isActive = draft.visibleStats[board] !== false;
               return `
-                <button class="screen-settings-toggle ${isActive ? "is-active" : ""}" type="button" data-screen-stat="${escapeAttr(board)}" aria-pressed="${isActive ? "true" : "false"}">
+                <button class="screen-settings-toggle ${isActive ? "is-active" : ""}${screenSettingsDraggingBoard === board ? " is-dragging" : ""}" type="button" data-screen-stat="${escapeAttr(board)}" draggable="true" aria-pressed="${isActive ? "true" : "false"}" title="마우스로 끌어서 거래소 순서 변경">
                   <span class="screen-settings-toggle-label">${escapeHtml(boardLabel(board))}</span>
                   <span class="screen-settings-toggle-state">${isActive ? "표시" : "숨김"}</span>
                 </button>
@@ -8126,6 +8149,40 @@
         draft.boardOrder = order;
         screenSettingsDraft = draft;
         renderScreenSettingsEditor();
+      }
+
+      function buildScreenSettingsBoardOrder(dragBoard, targetBoard, position = "after") {
+        const draft = normalizeScreenSettings(screenSettingsDraft || screenSettings);
+        const order = [...draft.boardOrder];
+        const fromIndex = order.indexOf(dragBoard);
+        const targetIndex = order.indexOf(targetBoard);
+        if (fromIndex < 0 || targetIndex < 0 || fromIndex === targetIndex) return null;
+        const movedBoard = order[fromIndex];
+        const nextOrder = order.filter((board) => board !== dragBoard);
+        const nextTargetIndex = nextOrder.indexOf(targetBoard);
+        if (nextTargetIndex < 0) return null;
+        const insertIndex = position === "before" ? nextTargetIndex : nextTargetIndex + 1;
+        nextOrder.splice(insertIndex, 0, movedBoard);
+        return nextOrder;
+      }
+
+      function clearScreenSettingsDropMarkers() {
+        [screenSettingsStatChecks, screenSettingsOrderList].filter(Boolean).forEach((root) => {
+          root.querySelectorAll(".is-drop-before, .is-drop-after, .is-dragging").forEach((item) => {
+            item.classList.remove("is-drop-before", "is-drop-after", "is-dragging");
+            delete item.dataset.dropPosition;
+          });
+        });
+      }
+
+      function saveScreenSettingsDraggedOrder(dragBoard, targetBoard, position = "after") {
+        const nextOrder = buildScreenSettingsBoardOrder(dragBoard, targetBoard, position);
+        if (!nextOrder) return;
+        const draft = normalizeScreenSettings(screenSettingsDraft || screenSettings);
+        draft.boardOrder = nextOrder;
+        screenSettingsDraft = draft;
+        selectDefaultMarketBoard(draft);
+        commitScreenSettingsDraft("거래소 순서를 저장했습니다.");
       }
 
       function renderAutoStatus() {
@@ -10367,7 +10424,69 @@
       });
       }
       if (screenSettingsStatChecks) {
+        screenSettingsStatChecks.addEventListener("dragstart", (event) => {
+          const dragTarget = event.target instanceof Element ? event.target : event.target?.parentElement;
+          const button = dragTarget?.closest("[data-screen-stat]");
+          if (!button || !event.dataTransfer) return;
+          const board = button.dataset.screenStat;
+          if (!MARKET_BOARDS.includes(board)) return;
+          screenSettingsDraggingBoard = board;
+          button.classList.add("is-dragging");
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", board);
+        });
+
+        screenSettingsStatChecks.addEventListener("dragover", (event) => {
+          if (!screenSettingsDraggingBoard) return;
+          const dragTarget = event.target instanceof Element ? event.target : event.target?.parentElement;
+          const button = dragTarget?.closest("[data-screen-stat]");
+          if (!button || !event.dataTransfer) return;
+          const targetBoard = button.dataset.screenStat;
+          if (!MARKET_BOARDS.includes(targetBoard) || targetBoard === screenSettingsDraggingBoard) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          const rect = button.getBoundingClientRect();
+          const position = event.clientX < rect.left + rect.width / 2 ? "before" : "after";
+          screenSettingsStatChecks.querySelectorAll(".screen-settings-toggle.is-drop-before, .screen-settings-toggle.is-drop-after")
+            .forEach((item) => {
+              if (item !== button) {
+                item.classList.remove("is-drop-before", "is-drop-after");
+                delete item.dataset.dropPosition;
+              }
+            });
+          button.classList.toggle("is-drop-before", position === "before");
+          button.classList.toggle("is-drop-after", position === "after");
+          button.dataset.dropPosition = position;
+        });
+
+        screenSettingsStatChecks.addEventListener("drop", (event) => {
+          if (!screenSettingsDraggingBoard) return;
+          const dropTarget = event.target instanceof Element ? event.target : event.target?.parentElement;
+          const button = dropTarget?.closest("[data-screen-stat]");
+          if (!button) return;
+          event.preventDefault();
+          const targetBoard = button.dataset.screenStat;
+          const position = button.dataset.dropPosition || "after";
+          const dragBoard = screenSettingsDraggingBoard;
+          screenSettingsDraggingBoard = "";
+          screenSettingsDragClickSuppressed = true;
+          clearScreenSettingsDropMarkers();
+          saveScreenSettingsDraggedOrder(dragBoard, targetBoard, position);
+          window.setTimeout(() => {
+            screenSettingsDragClickSuppressed = false;
+          }, 0);
+        });
+
+        screenSettingsStatChecks.addEventListener("dragend", () => {
+          screenSettingsDraggingBoard = "";
+          clearScreenSettingsDropMarkers();
+        });
+
         screenSettingsStatChecks.addEventListener("click", (event) => {
+          if (screenSettingsDragClickSuppressed) {
+            event.preventDefault();
+            return;
+          }
           const input = event.target.closest("[data-screen-stat]");
           if (!input) return;
           const draft = normalizeScreenSettings(screenSettingsDraft || screenSettings);
