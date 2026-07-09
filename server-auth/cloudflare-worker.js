@@ -471,12 +471,7 @@ function cleanNewsText(value) {
 
 function makePreview(value, maxChars = 300) {
   const text = cleanNewsText(value).replace(/\s+/g, " ").trim();
-  if (!text) return "";
-  if (text.length <= 1) return text;
-  if (text.length <= maxChars) {
-    const previewChars = Math.max(1, Math.floor(text.length * 0.8));
-    return `${text.slice(0, previewChars).trimEnd()}...`;
-  }
+  if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars - 3).trimEnd()}...`;
 }
 
