@@ -8,6 +8,7 @@ const USAGE_STATS_KEY = "usage-stats-v1";
 const NEWS_STORE_KEY = "coinness-news-store-v1";
 const MARKET_DATA_KEY = "market-data-v1";
 const MARKET_DATA_CHUNK_PREFIX = "market-data-v1:chunk:";
+const SCREEN_SETTINGS_KEY = "screen-settings-v1";
 const LOGIN_ATTEMPT_KEY_PREFIX = "login-attempt:";
 const BOARD_MAX_POSTS = 200;
 const BOARD_MAX_MEDIA = 10;
@@ -45,6 +46,24 @@ const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
 const GITHUB_OIDC_JWKS_URL = `${GITHUB_OIDC_ISSUER}/.well-known/jwks`;
 const GITHUB_OIDC_REPOSITORY = "fnfnfn3232/coin";
 const GITHUB_OIDC_AUDIENCE = "coin-board-auth-market-data";
+const SCREEN_MARKET_BOARDS = ["binance", "upbit", "bithumb", "coinbase"];
+const DEFAULT_SCREEN_SETTINGS = {
+  boardOrder: ["binance", "upbit", "bithumb", "coinbase"],
+  statusPosition: "summary",
+  visibleStats: {
+    binance: true,
+    upbit: true,
+    bithumb: true,
+    coinbase: true,
+  },
+  visibleStatus: {
+    auto: true,
+    lastUpdated: true,
+    fx: true,
+    manual: true,
+    manualHint: true,
+  },
+};
 
 function securityHeaders() {
   return {
@@ -463,6 +482,34 @@ function cleanBoardText(value, maxChars) {
     .slice(0, maxChars);
 }
 
+function normalizeScreenSettings(raw) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  const rawOrder = Array.isArray(source.boardOrder) ? source.boardOrder : DEFAULT_SCREEN_SETTINGS.boardOrder;
+  const boardOrder = rawOrder.filter((board) => SCREEN_MARKET_BOARDS.includes(board));
+  SCREEN_MARKET_BOARDS.forEach((board) => {
+    if (!boardOrder.includes(board)) boardOrder.push(board);
+  });
+
+  const visibleStats = {};
+  SCREEN_MARKET_BOARDS.forEach((board) => {
+    visibleStats[board] = source.visibleStats?.[board] !== false;
+  });
+
+  const visibleStatus = {
+    auto: source.visibleStatus?.auto !== false,
+    lastUpdated: source.visibleStatus?.lastUpdated !== false,
+    fx: source.visibleStatus?.fx !== false,
+    manual: source.visibleStatus?.manual !== false,
+    manualHint: source.visibleStatus?.manualHint !== false,
+  };
+
+  const statusPosition = ["summary", "title", "controls", "hidden"].includes(source.statusPosition)
+    ? source.statusPosition
+    : DEFAULT_SCREEN_SETTINGS.statusPosition;
+
+  return { boardOrder, statusPosition, visibleStats, visibleStatus };
+}
+
 function getSafeMediaKind(value) {
   try {
     const url = new URL(String(value || ""));
@@ -786,6 +833,7 @@ function isProtectedContentPath(url) {
   return url.pathname === "/api/market-data"
     || url.pathname === "/api/live-prices"
     || url.pathname === "/api/news"
+    || url.pathname === "/api/screen-settings"
     || url.pathname === "/api/usage/beacon"
     || url.pathname === "/api/usage/stats"
     || url.pathname === "/api/board/categories"
@@ -1543,6 +1591,20 @@ export class BoardStore {
     return normalized;
   }
 
+  async readScreenSettingsRecord() {
+    const stored = await this.state.storage.get(SCREEN_SETTINGS_KEY);
+    return {
+      exists: Boolean(stored && typeof stored === "object"),
+      settings: normalizeScreenSettings(stored),
+    };
+  }
+
+  async writeScreenSettings(settings) {
+    const normalized = normalizeScreenSettings(settings);
+    await this.state.storage.put(SCREEN_SETTINGS_KEY, normalized);
+    return normalized;
+  }
+
   async readAdminLogs() {
     const stored = await this.state.storage.get(BOARD_ADMIN_LOGS_KEY);
     return publicBoardAdminLogs(stored);
@@ -2089,6 +2151,19 @@ export class BoardStore {
       if (authResponse) return authResponse;
     }
 
+    if (url.pathname === "/api/screen-settings") {
+      if (request.method === "GET") {
+        return jsonResponse(await this.readScreenSettingsRecord(), 200, this.env);
+      }
+      if (request.method === "PUT" || request.method === "POST") {
+        const body = await parseJsonBody(request);
+        if (!await isAdminPassword(body?.adminPassword || body?.password || "", this.env)) {
+          return jsonResponse({ error: "invalid_password" }, 401, this.env);
+        }
+        return jsonResponse({ settings: await this.writeScreenSettings(body?.settings || body) }, 200, this.env);
+      }
+    }
+
     if (request.method === "GET" && url.pathname === "/api/market-data") {
       return this.handleMarketDataRequest(request, url);
     }
@@ -2383,6 +2458,11 @@ export default {
     if (isProtectedContentPath(url)) {
       const authResponse = await requireAuth(request, env);
       if (authResponse) return authResponse;
+    }
+    if (url.pathname === "/api/screen-settings") {
+      if (!env.BOARD_STORE) return jsonResponse({ error: "screen_settings_storage_not_configured" }, 500, env);
+      const id = env.BOARD_STORE.idFromName("free-board");
+      return env.BOARD_STORE.get(id).fetch(request);
     }
     if (url.pathname === "/api/market-data" && request.method === "GET") {
       if (!env.BOARD_STORE) return jsonResponse({ error: "market_data_storage_not_configured" }, 500, env);
