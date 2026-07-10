@@ -3689,6 +3689,7 @@
     const LIVE_MARKET_REFRESH_MS = 10 * 60 * 1000;
     const BOOT_REFRESH_THROTTLE_MS = 20 * 1000;
     const BOOT_REFRESH_LAST_KEY = "fdv_boot_refresh_last_v5";
+    const MARKET_SNAPSHOT_GENERATED_AT_KEY = "fdv_market_snapshot_generated_at_v1";
     const LAST_GOOD_DATA_KEY = "fdv_last_good_data_v5";
     const UPBIT_TICKER_BATCH_SIZE = 100;
     const COINBASE_PRODUCT_STATS_URL = "https://api.exchange.coinbase.com/products/stats";
@@ -3784,6 +3785,12 @@
 
     function isValidBoardPayload(payload) {
       return Boolean(payload && typeof payload === "object" && payload.boards && typeof payload.boards === "object");
+    }
+
+    function hasUsableMarketData(payload) {
+      return ["binance", "upbit", "bithumb", "coinbase"].some(
+        (board) => Array.isArray(payload?.boards?.[board]) && payload.boards[board].length > 0
+      );
     }
 
     function loadLastGoodData() {
@@ -4214,7 +4221,7 @@
       }
 
       function sendUsageBeacon() {
-        if (!hasServerAuth() || isSiteLocked()) return;
+        if (!hasServerAuth() || isSiteLocked() || isLocalPreview()) return;
         const key = getUsageBeaconKey();
         try {
           if (sessionStorage.getItem(USAGE_BEACON_SENT_KEY) === key) return;
@@ -7005,6 +7012,7 @@
         setServerAuthToken("");
         localStorage.removeItem(LOCK_AUTH_UNTIL_KEY);
         localStorage.removeItem(LOCK_EXTEND_COUNT_KEY);
+        localStorage.removeItem(MARKET_SNAPSHOT_GENERATED_AT_KEY);
         localStorage.removeItem(LAST_GOOD_DATA_KEY);
         clearProtectedBoardMediaCache();
         adminServerPassword = "";
@@ -8253,6 +8261,28 @@
         localStorage.setItem(BOOT_REFRESH_LAST_KEY, String(Math.max(0, Math.floor(ts))));
       }
 
+      function getMarketSnapshotGeneratedAt() {
+        try {
+          const raw = Number(localStorage.getItem(MARKET_SNAPSHOT_GENERATED_AT_KEY));
+          return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+        } catch (_error) {
+          return 0;
+        }
+      }
+
+      function setMarketSnapshotGeneratedAt(value) {
+        const generatedAt = Math.max(0, Math.floor(Number(value) || 0));
+        try {
+          if (generatedAt > 0) {
+            localStorage.setItem(MARKET_SNAPSHOT_GENERATED_AT_KEY, String(generatedAt));
+          } else {
+            localStorage.removeItem(MARKET_SNAPSHOT_GENERATED_AT_KEY);
+          }
+        } catch (_error) {
+          // The data still loads normally when browser storage is unavailable.
+        }
+      }
+
       function formatRemainingDuration(ms) {
         const remain = Math.max(0, Math.ceil((Number(ms) || 0) / 1000));
         const minutes = Math.floor(remain / 60);
@@ -9127,14 +9157,25 @@
         if (hasServerAuth() && !isLocalPreview()) {
           if (isSiteLocked()) throw new Error("site_locked");
           const beforeGeneratedAt = Number(data.generatedAt) || 0;
-          marketDataLoadPromise = fetchServerAuth(`/api/market-data?ts=${Date.now()}`, { method: "GET", timeoutMs: 12000 })
+          const snapshotGeneratedAt = hasUsableMarketData(data) ? getMarketSnapshotGeneratedAt() : 0;
+          const query = new URLSearchParams({ ts: String(Date.now()) });
+          if (snapshotGeneratedAt > 0) query.set("since", String(snapshotGeneratedAt));
+          marketDataLoadPromise = fetchServerAuth(`/api/market-data?${query.toString()}`, { method: "GET", timeoutMs: 12000 })
             .then((parsed) => {
+              if (parsed?.notModified) {
+                marketDataLoaded = true;
+                return {
+                  changed: false,
+                  generatedAt: Math.max(0, Math.floor(Number(parsed.generatedAt) || snapshotGeneratedAt)),
+                };
+              }
               if (!isValidBoardPayload(parsed)) {
                 throw new Error(parsed?.error || "market_data_invalid");
               }
               data = parsed;
               window.BOARD_DATA = parsed;
               marketDataLoaded = true;
+              setMarketSnapshotGeneratedAt(parsed.generatedAt);
               normalizeKnownAssetIdentities();
               normalizeKoreanAssetNames(parsed);
               saveLastGoodData(data);
@@ -9181,6 +9222,7 @@
         data = parsed;
         window.BOARD_DATA = parsed;
         marketDataLoaded = true;
+        setMarketSnapshotGeneratedAt(parsed.generatedAt);
         normalizeKnownAssetIdentities();
         normalizeKoreanAssetNames(parsed);
         saveLastGoodData(data);

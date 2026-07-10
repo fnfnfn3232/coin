@@ -1042,6 +1042,21 @@ function isSafeBoardMediaId(id) {
   return /^media-\d+-[a-z0-9-]{8,40}$/i.test(String(id || ""));
 }
 
+function getPostBoardMediaIds(post) {
+  const ids = new Set();
+  const collect = (value) => {
+    const pattern = /\/api\/board\/media\/(media-\d+-[a-z0-9-]{8,40})(?:[?#\s|\]]|$)/gi;
+    const text = String(value || "");
+    let match;
+    while ((match = pattern.exec(text))) {
+      if (isSafeBoardMediaId(match[1])) ids.add(match[1]);
+    }
+  };
+  collect(post?.body);
+  (Array.isArray(post?.mediaUrls) ? post.mediaUrls : []).forEach(collect);
+  return ids;
+}
+
 function parseBoardMediaUploadRoute(url) {
   const chunkMatch = url.pathname.match(/^\/api\/board\/media\/uploads\/([^/]+)\/chunks\/(\d+)$/);
   if (chunkMatch) {
@@ -1734,7 +1749,20 @@ export class BoardStore {
     }, 200, this.env);
   }
 
-  async handleMarketDataRequest() {
+  async handleMarketDataRequest(request, url = new URL(request.url)) {
+    const since = Math.max(0, Math.floor(Number(url.searchParams.get("since")) || 0));
+    if (since > 0) {
+      const meta = await this.state.storage.get(MARKET_DATA_KEY);
+      const generatedAt = Math.max(0, Math.floor(Number(meta?.generatedAt) || 0));
+      if (generatedAt > 0 && generatedAt === since) {
+        return jsonResponse({
+          notModified: true,
+          generatedAt,
+          updatedAt: Math.max(0, Math.floor(Number(meta?.updatedAt) || 0)),
+          bytes: Math.max(0, Math.floor(Number(meta?.bytes) || 0)),
+        }, 200, this.env);
+      }
+    }
     const payload = await this.readMarketData();
     if (!payload) return jsonResponse({ error: "market_data_not_ready" }, 404, this.env);
     return jsonResponse(payload, 200, this.env);
@@ -1868,6 +1896,46 @@ export class BoardStore {
     return { bytes: media.bytes, contentType: String(media.contentType || "application/octet-stream"), fileName: media.fileName };
   }
 
+  async deleteStoredMedia(id) {
+    if (!isSafeBoardMediaId(id)) return false;
+    const key = getBoardMediaKey(id);
+    const media = await this.state.storage.get(key);
+    if (!media || typeof media !== "object") return false;
+    const chunkCount = Math.max(0, Math.floor(Number(media.chunkCount) || 0));
+    if (media.storage === "r2") {
+      if (!hasBoardMediaR2(this.env)) return false;
+      const r2Keys = [];
+      for (let index = 0; index < chunkCount; index += 1) {
+        r2Keys.push(getBoardMediaR2ChunkKey(id, index));
+      }
+      await Promise.all(r2Keys.map((r2Key) => this.env.BOARD_MEDIA_BUCKET.delete(r2Key)));
+      await this.state.storage.delete(key);
+      return true;
+    }
+    const stateKeys = [key];
+    for (let index = 0; index < chunkCount; index += 1) {
+      stateKeys.push(getBoardMediaChunkKey(id, index));
+    }
+    await this.state.storage.delete(stateKeys);
+    return true;
+  }
+
+  async cleanupUnreferencedMedia(candidateIds, posts) {
+    const candidates = new Set(Array.from(candidateIds || []).filter(isSafeBoardMediaId));
+    if (!candidates.size) return;
+    const referenced = new Set();
+    (Array.isArray(posts) ? posts : []).forEach((post) => {
+      getPostBoardMediaIds(post).forEach((id) => referenced.add(id));
+    });
+    const removals = [...candidates]
+      .filter((id) => !referenced.has(id))
+      .map((id) => this.deleteStoredMedia(id));
+    const results = await Promise.allSettled(removals);
+    results.forEach((result) => {
+      if (result.status === "rejected") console.error("board_media_cleanup_failed", result.reason);
+    });
+  }
+
   async writeMedia(request) {
     const contentType = getBoardMediaContentType(request);
     if (!contentType) return jsonResponse({ error: "unsupported_media_type" }, 415, this.env);
@@ -1894,22 +1962,18 @@ export class BoardStore {
 
   async cleanupExpiredMediaUploads(now = Date.now()) {
     const records = await this.state.storage.list({ prefix: BOARD_MEDIA_UPLOAD_KEY_PREFIX });
-    const deleteKeys = [];
+    const cleanupTasks = [];
     for (const [key, value] of records) {
       if (!key.startsWith(BOARD_MEDIA_UPLOAD_KEY_PREFIX) || key.includes(":chunk:")) continue;
       const meta = value && typeof value === "object" ? value : {};
       const createdAt = Math.max(0, Math.floor(Number(meta.createdAt) || 0));
       if (createdAt && now - createdAt <= BOARD_MEDIA_UPLOAD_MAX_AGE_MS) continue;
       const uploadId = String(meta.uploadId || key.slice(BOARD_MEDIA_UPLOAD_KEY_PREFIX.length) || "");
-      const chunkCount = Math.max(0, Math.floor(Number(meta.chunkCount) || 0));
-      deleteKeys.push(key);
       if (isSafeBoardMediaUploadId(uploadId)) {
-        for (let index = 0; index < chunkCount; index += 1) {
-          deleteKeys.push(getBoardMediaUploadChunkKey(uploadId, index));
-        }
+        cleanupTasks.push(this.deleteMediaUpload(uploadId));
       }
     }
-    if (deleteKeys.length) await this.state.storage.delete(deleteKeys);
+    if (cleanupTasks.length) await Promise.allSettled(cleanupTasks);
   }
 
   async readMediaUpload(uploadId) {
@@ -2032,10 +2096,19 @@ export class BoardStore {
     if (meta.storage === "r2" && (!hasBoardMediaR2(this.env) || !meta.mediaId)) {
       return jsonResponse({ error: "r2_storage_not_configured" }, 500, this.env);
     }
+    const readChunkSize = async (index) => (meta.storage === "r2"
+      ? Math.max(0, Math.floor(Number((await this.env.BOARD_MEDIA_BUCKET.head(getBoardMediaR2ChunkKey(meta.mediaId, index)))?.size) || 0))
+      : ((await this.state.storage.get(getBoardMediaUploadChunkKey(uploadId, index)))?.byteLength || 0));
+    const actualSizes = [];
+    if (meta.storage === "r2") {
+      actualSizes.push(...await Promise.all(Array.from({ length: meta.chunkCount }, (_, index) => readChunkSize(index))));
+    } else {
+      for (let index = 0; index < meta.chunkCount; index += 1) {
+        actualSizes.push(await readChunkSize(index));
+      }
+    }
     for (let index = 0; index < meta.chunkCount; index += 1) {
-      const actualSize = meta.storage === "r2"
-        ? Math.max(0, Math.floor(Number((await this.env.BOARD_MEDIA_BUCKET.head(getBoardMediaR2ChunkKey(meta.mediaId, index)))?.size) || 0))
-        : ((await this.state.storage.get(getBoardMediaUploadChunkKey(uploadId, index)))?.byteLength || 0);
+      const actualSize = actualSizes[index] || 0;
       const expectedSize = this.expectedMediaUploadChunkSize(meta, index);
       if (actualSize !== expectedSize) {
         return jsonResponse({ error: "missing_media_chunk", index, expectedSize, actualSize }, 400, this.env);
@@ -2353,6 +2426,7 @@ export class BoardStore {
       if (!changes.length) changes.push("기타");
       posts[index] = updated;
       const savedPosts = await this.writePosts(posts);
+      await this.cleanupUnreferencedMedia(getPostBoardMediaIds(beforePost), savedPosts);
       await this.tryAddAdminLog({
         action: "post_update",
         actor: adminMode ? "admin" : "post_password",
@@ -2376,6 +2450,7 @@ export class BoardStore {
       const adminMode = await isAdminPassword(body?.adminPassword || "", this.env);
       const nextPosts = posts.filter((post) => post.id !== postId);
       const savedPosts = await this.writePosts(nextPosts);
+      await this.cleanupUnreferencedMedia(getPostBoardMediaIds(target), savedPosts);
       await this.tryAddAdminLog({
         action: "post_delete",
         actor: adminMode ? "admin" : "post_password",
