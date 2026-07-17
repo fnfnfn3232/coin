@@ -1951,6 +1951,77 @@
         align-items: center;
       }
 
+      .free-board-rich-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+        padding: 8px;
+        border: 1px solid rgba(151, 183, 198, 0.18);
+        border-radius: 8px;
+        background: rgba(2, 11, 16, 0.86);
+      }
+
+      .free-board-rich-toolbar-group {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+
+      .free-board-rich-toolbar-group + .free-board-rich-toolbar-group {
+        padding-left: 6px;
+        border-left: 1px solid rgba(151, 183, 198, 0.16);
+      }
+
+      .free-board-rich-select {
+        width: auto;
+        min-width: 116px;
+        height: 36px;
+        padding: 6px 30px 6px 10px;
+        border-radius: 6px;
+        font-size: 13px;
+      }
+
+      .free-board-rich-select.is-size {
+        min-width: 88px;
+      }
+
+      .free-board-rich-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 36px;
+        min-width: 36px;
+        height: 36px;
+        padding: 0 8px;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.035);
+        color: #dff7ff;
+        font-size: 13px;
+        font-weight: 800;
+        cursor: pointer;
+      }
+
+      .free-board-rich-btn.is-wide {
+        width: auto;
+        min-width: 52px;
+      }
+
+      .free-board-rich-btn:hover,
+      .free-board-rich-btn:focus-visible {
+        border-color: rgba(117, 221, 255, 0.4);
+        background: rgba(117, 221, 255, 0.1);
+      }
+
+      .free-board-rich-color {
+        width: 36px !important;
+        min-width: 36px !important;
+        height: 36px;
+        padding: 4px !important;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+
       .free-board-tool-btn {
         padding: 8px 12px;
         border-radius: 999px;
@@ -1980,6 +2051,34 @@
       .free-board-compose-body {
         min-height: 360px;
         resize: vertical;
+      }
+
+      .free-board-rich-editor {
+        width: 100%;
+        min-height: 360px;
+        padding: 14px;
+        overflow: auto;
+        border: 1px solid rgba(151, 183, 198, 0.28);
+        border-radius: 8px;
+        outline: none;
+        background: rgba(3, 13, 20, 0.96);
+        color: #dff7ff;
+        font-family: "Malgun Gothic", "Noto Sans KR", sans-serif;
+        font-size: 15px;
+        line-height: 1.7;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      .free-board-rich-editor:focus {
+        border-color: rgba(117, 221, 255, 0.48);
+        box-shadow: 0 0 0 2px rgba(117, 221, 255, 0.08);
+      }
+
+      .free-board-rich-editor:empty::before {
+        content: attr(data-placeholder);
+        color: #6f8089;
+        pointer-events: none;
       }
 
       .free-board-compose-preview {
@@ -2833,7 +2932,7 @@
         }
 
         .shell {
-          width: calc(100vw - 12px);
+          width: calc(100% - 12px);
           margin: 6px auto 18px;
           padding: 8px;
           border-radius: 18px;
@@ -3114,6 +3213,33 @@
         .free-board-compose-top,
         .free-board-media {
           grid-template-columns: 1fr;
+        }
+
+        .free-board-rich-toolbar {
+          align-items: stretch;
+        }
+
+        .free-board-rich-toolbar-group {
+          flex: 1 1 100%;
+          flex-wrap: wrap;
+        }
+
+        .free-board-rich-toolbar-group + .free-board-rich-toolbar-group {
+          padding-top: 6px;
+          padding-left: 0;
+          border-top: 1px solid rgba(151, 183, 198, 0.14);
+          border-left: 0;
+        }
+
+        .free-board-rich-select {
+          flex: 1 1 120px;
+          min-width: 0;
+        }
+
+        .free-board-rich-editor {
+          min-height: 280px;
+          padding: 12px;
+          font-size: 14px;
         }
 
         .free-board-body img,
@@ -4510,6 +4636,7 @@
       let freeBoardCommentDeleteAuthError = "";
       let freeBoardCommentDeleteSubmitting = false;
       let freeBoardComposeMediaTokens = [];
+      let freeBoardRichEditorRange = null;
       let freeBoardServerPosts = [];
       let freeBoardPostsLoaded = false;
       let freeBoardPostsPromise = null;
@@ -5441,6 +5568,104 @@
         textarea.setSelectionRange(nextCursor, nextCursor);
       }
 
+      function getFreeBoardRichEditor() {
+        return document.getElementById("freeBoardRichEditor");
+      }
+
+      function saveFreeBoardRichEditorSelection(editor = getFreeBoardRichEditor()) {
+        const selection = window.getSelection();
+        if (!editor || !selection || !selection.rangeCount) return;
+        const range = selection.getRangeAt(0);
+        const container = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+          ? range.commonAncestorContainer
+          : range.commonAncestorContainer.parentElement;
+        if (container === editor || editor.contains(container)) {
+          freeBoardRichEditorRange = range.cloneRange();
+        }
+      }
+
+      function restoreFreeBoardRichEditorSelection(editor = getFreeBoardRichEditor()) {
+        if (!editor) return false;
+        editor.focus({ preventScroll: true });
+        const selection = window.getSelection();
+        if (!selection) return false;
+        selection.removeAllRanges();
+        if (freeBoardRichEditorRange?.startContainer?.isConnected && freeBoardRichEditorRange?.endContainer?.isConnected) {
+          selection.addRange(freeBoardRichEditorRange);
+          return true;
+        }
+        const range = document.createRange();
+        range.selectNodeContents(editor);
+        range.collapse(false);
+        selection.addRange(range);
+        return true;
+      }
+
+      function getFreeBoardRichEditorHtml(editor = getFreeBoardRichEditor()) {
+        if (!editor) return "";
+        const text = String(editor.textContent || "").replace(/\u200b/g, "").trim();
+        const hasStructuredContent = Boolean(editor.querySelector("hr, blockquote, ul, ol, table"));
+        return text || hasStructuredContent ? String(editor.innerHTML || "").replace(/\u200b/g, "") : "";
+      }
+
+      function syncFreeBoardRichEditor(editor = getFreeBoardRichEditor()) {
+        const textarea = document.getElementById("freeBoardBody");
+        if (!editor || !textarea) return;
+        textarea.value = getFreeBoardRichEditorHtml(editor);
+        const htmlEnabled = document.getElementById("freeBoardHtmlEnabled");
+        if (htmlEnabled) htmlEnabled.checked = true;
+      }
+
+      function runFreeBoardRichEditorCommand(command, value = null) {
+        const allowedCommands = new Set([
+          "bold", "italic", "underline", "strikeThrough", "justifyLeft", "justifyCenter", "justifyRight",
+          "insertUnorderedList", "insertOrderedList", "removeFormat", "undo", "redo", "unlink",
+          "fontName", "fontSize", "foreColor",
+        ]);
+        const editor = getFreeBoardRichEditor();
+        if (!editor || !allowedCommands.has(command)) return;
+        restoreFreeBoardRichEditorSelection(editor);
+        try {
+          document.execCommand("styleWithCSS", false, false);
+          document.execCommand(command, false, value);
+        } catch (error) {
+          console.error(error);
+        }
+        syncFreeBoardRichEditor(editor);
+        saveFreeBoardRichEditorSelection(editor);
+      }
+
+      function insertPlainTextIntoFreeBoardRichEditor(text, editor = getFreeBoardRichEditor()) {
+        if (!editor || !text) return;
+        restoreFreeBoardRichEditorSelection(editor);
+        document.execCommand("insertText", false, String(text));
+        syncFreeBoardRichEditor(editor);
+        saveFreeBoardRichEditorSelection(editor);
+      }
+
+      function insertFreeBoardRichEditorLink() {
+        const editor = getFreeBoardRichEditor();
+        if (!editor) return;
+        const rawUrl = window.prompt("연결할 주소를 입력하세요.");
+        if (rawUrl === null) return;
+        const inputUrl = String(rawUrl || "").trim();
+        const url = /^www\./i.test(inputUrl) ? `https://${inputUrl}` : inputUrl;
+        if (!isSafeHttpUrl(url)) {
+          showFreeBoardMessage("http:// 또는 https://로 시작하는 올바른 주소를 입력해 주세요.", true);
+          return;
+        }
+        restoreFreeBoardRichEditorSelection(editor);
+        const selection = window.getSelection();
+        const selectedText = String(selection?.toString() || "");
+        if (selectedText) {
+          document.execCommand("createLink", false, url);
+        } else {
+          document.execCommand("insertHTML", false, `<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a>`);
+        }
+        syncFreeBoardRichEditor(editor);
+        saveFreeBoardRichEditorSelection(editor);
+      }
+
       function getComposeAttachmentName(token) {
         const metaName = String(token?.meta?.name || "").trim();
         if (metaName) return metaName;
@@ -5666,12 +5891,31 @@
         template.innerHTML = String(value || "");
         const allowedTags = new Set([
           "A", "B", "BR", "BLOCKQUOTE", "CODE", "DIV", "EM", "H1", "H2", "H3", "H4",
-          "HR", "I", "IMG", "LI", "OL", "P", "PRE", "S", "SPAN", "STRONG", "TABLE",
+          "FONT", "HR", "I", "IMG", "LI", "OL", "P", "PRE", "S", "SPAN", "STRIKE", "STRONG", "TABLE",
           "TBODY", "TD", "TH", "THEAD", "TR", "U", "UL", "VIDEO", "SOURCE"
         ]);
+        const allowedFontFaces = new Map([
+          ["malgun gothic", "Malgun Gothic"],
+          ["arial", "Arial"],
+          ["verdana", "Verdana"],
+          ["georgia", "Georgia"],
+          ["courier new", "Courier New"],
+        ]);
+        const normalizeSafeColor = (value) => {
+          const text = String(value || "").trim().toLowerCase();
+          if (/^#[0-9a-f]{6}$/.test(text) || /^#[0-9a-f]{3}$/.test(text)) return text;
+          const rgb = text.match(/^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/);
+          if (!rgb) return "";
+          const values = rgb.slice(1).map(Number);
+          if (values.some((item) => item < 0 || item > 255)) return "";
+          return `rgb(${values.join(", ")})`;
+        };
         const allowedAttrs = {
           A: new Set(["href", "title", "target", "rel"]),
+          DIV: new Set(["style", "align"]),
+          FONT: new Set(["face", "size", "color"]),
           IMG: new Set(["src", "alt", "title"]),
+          P: new Set(["style", "align"]),
           VIDEO: new Set(["src", "controls", "preload", "playsinline", "poster"]),
           SOURCE: new Set(["src", "type"]),
           TH: new Set(["colspan", "rowspan"]),
@@ -5695,6 +5939,35 @@
               const allowed = allowedAttrs[tag]?.has(name);
               if (!allowed || name.startsWith("on")) {
                 child.removeAttribute(attr.name);
+                return;
+              }
+              if (tag === "FONT" && name === "face") {
+                const face = allowedFontFaces.get(valueText.trim().toLowerCase());
+                if (face) child.setAttribute("face", face);
+                else child.removeAttribute(attr.name);
+                return;
+              }
+              if (tag === "FONT" && name === "size") {
+                if (/^[1-7]$/.test(valueText.trim())) child.setAttribute("size", valueText.trim());
+                else child.removeAttribute(attr.name);
+                return;
+              }
+              if (tag === "FONT" && name === "color") {
+                const color = normalizeSafeColor(valueText);
+                if (color) child.setAttribute("color", color);
+                else child.removeAttribute(attr.name);
+                return;
+              }
+              if ((tag === "DIV" || tag === "P") && name === "style") {
+                const alignment = valueText.match(/(?:^|;)\s*text-align\s*:\s*(left|center|right|justify)\s*(?:;|$)/i)?.[1]?.toLowerCase();
+                if (alignment) child.setAttribute("style", `text-align: ${alignment};`);
+                else child.removeAttribute(attr.name);
+                return;
+              }
+              if ((tag === "DIV" || tag === "P") && name === "align") {
+                const alignment = valueText.trim().toLowerCase();
+                if (["left", "center", "right", "justify"].includes(alignment)) child.setAttribute("align", alignment);
+                else child.removeAttribute(attr.name);
                 return;
               }
               if ((name === "href" || name === "src" || name === "poster") && !/^https?:\/\//i.test(valueText)) {
@@ -6270,6 +6543,9 @@
             ? normalizeFreeBoardCategory(editingPost.category)
             : (freeBoardFilter !== "all" ? normalizeFreeBoardCategory(freeBoardFilter) : "free");
           const composeBodyParts = splitFreeBoardBodyAndMediaTokens(editingPost?.body || "");
+          const composeEditorHtml = editingPost?.htmlEnabled
+            ? sanitizeSafeHtml(composeBodyParts.body)
+            : escapeHtml(composeBodyParts.body).replace(/\r\n?|\n/g, "<br>");
           const adminEditing = freeBoardMode === "edit" && freeBoardAdminMode;
           freeBoardComposeMediaTokens = mergeComposeMediaTokens(composeBodyParts.tokens);
           newsPanel.innerHTML = `
@@ -6316,15 +6592,56 @@
                       <button class="free-board-tool-btn" type="button" data-free-board-insert-media="video">동영상</button>
                       <button class="free-board-tool-btn" type="button" data-free-board-upload-media>파일 첨부</button>
                       <input id="freeBoardFileInput" type="file" multiple hidden />
-                      <label class="free-board-html-option" for="freeBoardHtmlEnabled">
-                        <input id="freeBoardHtmlEnabled" name="htmlEnabled" type="checkbox"${editingPost?.htmlEnabled ? " checked" : ""} />
-                        HTML 사용
-                      </label>
                     </div>
-                    <textarea class="free-board-compose-body" id="freeBoardBody" name="body" maxlength="12000" placeholder="내용을 입력하세요. 모든 파일은 파일 첨부로 올리고, 이미지는 Ctrl+V 붙여넣기나 링크 버튼으로도 넣을 수 있습니다. 코드는 \`\`\` 코드 \`\`\` 형태로 넣으면 코드 박스로 표시됩니다.">${escapeHtml(composeBodyParts.body)}</textarea>
+                    <div class="free-board-rich-toolbar" role="toolbar" aria-label="글 서식 도구">
+                      <div class="free-board-rich-toolbar-group">
+                        <select class="free-board-rich-select" data-free-board-rich-control="fontName" aria-label="글꼴">
+                          <option value="">글꼴</option>
+                          <option value="Malgun Gothic">맑은 고딕</option>
+                          <option value="Arial">Arial</option>
+                          <option value="Verdana">Verdana</option>
+                          <option value="Georgia">Georgia</option>
+                          <option value="Courier New">고정폭</option>
+                        </select>
+                        <select class="free-board-rich-select is-size" data-free-board-rich-control="fontSize" aria-label="글자 크기">
+                          <option value="">크기</option>
+                          <option value="2">작게</option>
+                          <option value="3">보통</option>
+                          <option value="4">크게</option>
+                          <option value="5">더 크게</option>
+                          <option value="6">매우 크게</option>
+                        </select>
+                      </div>
+                      <div class="free-board-rich-toolbar-group">
+                        <button class="free-board-rich-btn" type="button" data-free-board-rich-command="bold" title="굵게" aria-label="굵게"><strong>B</strong></button>
+                        <button class="free-board-rich-btn" type="button" data-free-board-rich-command="italic" title="기울임" aria-label="기울임"><i>I</i></button>
+                        <button class="free-board-rich-btn" type="button" data-free-board-rich-command="underline" title="밑줄" aria-label="밑줄"><u>U</u></button>
+                        <button class="free-board-rich-btn" type="button" data-free-board-rich-command="strikeThrough" title="취소선" aria-label="취소선"><s>S</s></button>
+                        <input class="free-board-rich-color" type="color" value="#dff7ff" data-free-board-rich-control="foreColor" title="글자색" aria-label="글자색" />
+                      </div>
+                      <div class="free-board-rich-toolbar-group">
+                        <button class="free-board-rich-btn is-wide" type="button" data-free-board-rich-command="justifyLeft" title="왼쪽 정렬">왼쪽</button>
+                        <button class="free-board-rich-btn is-wide" type="button" data-free-board-rich-command="justifyCenter" title="가운데 정렬">가운데</button>
+                        <button class="free-board-rich-btn is-wide" type="button" data-free-board-rich-command="justifyRight" title="오른쪽 정렬">오른쪽</button>
+                      </div>
+                      <div class="free-board-rich-toolbar-group">
+                        <button class="free-board-rich-btn is-wide" type="button" data-free-board-rich-command="insertUnorderedList" title="글머리표 목록">• 목록</button>
+                        <button class="free-board-rich-btn is-wide" type="button" data-free-board-rich-command="insertOrderedList" title="번호 목록">1. 목록</button>
+                        <button class="free-board-rich-btn is-wide" type="button" data-free-board-rich-action="link" title="링크 넣기">링크</button>
+                        <button class="free-board-rich-btn is-wide" type="button" data-free-board-rich-command="unlink" title="링크 해제">해제</button>
+                      </div>
+                      <div class="free-board-rich-toolbar-group">
+                        <button class="free-board-rich-btn is-wide" type="button" data-free-board-rich-command="removeFormat" title="선택한 글자의 서식 지우기">서식 지우기</button>
+                        <button class="free-board-rich-btn" type="button" data-free-board-rich-command="undo" title="실행 취소" aria-label="실행 취소">↶</button>
+                        <button class="free-board-rich-btn" type="button" data-free-board-rich-command="redo" title="다시 실행" aria-label="다시 실행">↷</button>
+                      </div>
+                    </div>
+                    <input id="freeBoardHtmlEnabled" name="htmlEnabled" type="checkbox" checked hidden />
+                    <textarea id="freeBoardBody" name="body" maxlength="12000" hidden>${escapeHtml(composeBodyParts.body)}</textarea>
+                    <div class="free-board-rich-editor" id="freeBoardRichEditor" contenteditable="true" role="textbox" aria-multiline="true" spellcheck="true" data-placeholder="내용을 입력하세요.">${composeEditorHtml}</div>
                     <div class="free-board-compose-preview" id="freeBoardComposePreview" hidden></div>
                     <div class="free-board-compose-attachments" id="freeBoardComposeAttachments" hidden></div>
-                    <div class="free-board-help">첨부파일은 종류와 관계없이 파일 1개당 최대 200MB까지 가능합니다. HTML 사용을 체크해도 script, iframe, 이벤트 속성은 제거됩니다.</div>
+                    <div class="free-board-help">첨부파일은 종류와 관계없이 파일 1개당 최대 200MB까지 가능합니다.</div>
                   </div>
                   <div class="free-board-actions">
                     <button class="free-board-list-btn" type="button" data-free-board-list>취소</button>
@@ -6335,7 +6652,10 @@
               </section>
             </div>
           `;
-          window.setTimeout(() => renderFreeBoardComposePreview(document.getElementById("freeBoardBody")), 0);
+          window.setTimeout(() => {
+            syncFreeBoardRichEditor();
+            renderFreeBoardComposePreview(document.getElementById("freeBoardBody"));
+          }, 0);
           return;
         }
 
@@ -9839,6 +10159,7 @@
         if (!form) return;
         event.preventDefault();
 
+        syncFreeBoardRichEditor();
         const formData = new FormData(form);
         const postPassword = String(formData.get("postPassword") || "");
         const editAdminPassword = String(formData.get("adminPassword") || "");
@@ -9860,6 +10181,10 @@
         }
         if (!title || !body) {
           showFreeBoardMessage("제목과 내용을 입력해 주세요.", true);
+          return;
+        }
+        if (body.length > 12000) {
+          showFreeBoardMessage("글 내용은 서식을 포함해 12,000자 이하로 작성해 주세요.", true);
           return;
         }
 
@@ -9988,9 +10313,30 @@
         clearFreeBoardCategoryDropMarkers();
       });
 
+      newsPanel.addEventListener("mousedown", (event) => {
+        const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+        if (!target?.closest("[data-free-board-rich-command], [data-free-board-rich-action]")) return;
+        saveFreeBoardRichEditorSelection();
+        event.preventDefault();
+      });
+
       newsPanel.addEventListener("click", async (event) => {
         const clickTarget = event.target instanceof Element ? event.target : event.target?.parentElement;
         if (!clickTarget) return;
+
+        const richCommandButton = clickTarget.closest("[data-free-board-rich-command]");
+        if (richCommandButton) {
+          event.preventDefault();
+          runFreeBoardRichEditorCommand(String(richCommandButton.dataset.freeBoardRichCommand || ""));
+          return;
+        }
+
+        const richActionButton = clickTarget.closest("[data-free-board-rich-action]");
+        if (richActionButton) {
+          event.preventDefault();
+          if (richActionButton.dataset.freeBoardRichAction === "link") insertFreeBoardRichEditorLink();
+          return;
+        }
 
         const protectedDownloadLink = clickTarget.closest("[data-protected-board-download]");
         if (protectedDownloadLink) {
@@ -10309,7 +10655,26 @@
         writeAppHistoryState(true);
       });
 
+      newsPanel.addEventListener("mouseup", (event) => {
+        const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+        if (target?.closest("#freeBoardRichEditor")) saveFreeBoardRichEditorSelection();
+      });
+
+      newsPanel.addEventListener("keyup", (event) => {
+        const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+        if (target?.closest("#freeBoardRichEditor")) saveFreeBoardRichEditorSelection();
+      });
+
       newsPanel.addEventListener("change", async (event) => {
+        const control = event.target instanceof Element ? event.target : null;
+        const richControl = control?.closest("[data-free-board-rich-control]");
+        if (richControl) {
+          const command = String(richControl.dataset.freeBoardRichControl || "");
+          const value = String(richControl.value || "");
+          if (command && value) runFreeBoardRichEditorCommand(command, value);
+          if (richControl instanceof HTMLSelectElement) richControl.value = "";
+          return;
+        }
         const input = event.target instanceof HTMLInputElement ? event.target : null;
         if (input?.matches("[data-free-board-admin-select-page]")) {
           const checkboxes = [...newsPanel.querySelectorAll("[data-free-board-admin-select-post]")]
@@ -10375,8 +10740,9 @@
 
       newsPanel.addEventListener("paste", async (event) => {
         const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-        const textarea = target?.closest("#freeBoardBody");
-        if (!textarea) return;
+        const editor = target?.closest("#freeBoardRichEditor");
+        if (!editor) return;
+        const textarea = document.getElementById("freeBoardBody");
 
         const clipboardItems = Array.from(event.clipboardData?.items || []);
         const imageFiles = clipboardItems
@@ -10420,7 +10786,11 @@
         const pastedText = event.clipboardData?.getData("text/plain") || "";
         if (!pastedText) return;
         const convertedText = convertPlainMediaUrlsToMediaTokens(pastedText);
-        if (convertedText === pastedText) return;
+        if (convertedText === pastedText) {
+          event.preventDefault();
+          insertPlainTextIntoFreeBoardRichEditor(pastedText, editor);
+          return;
+        }
         const splitPasted = splitFreeBoardBodyAndMediaTokens(convertedText);
         if (!splitPasted.tokens.length) return;
         if (getFreeBoardComposeMediaCount(textarea) + splitPasted.tokens.length > FREE_BOARD_MAX_MEDIA) {
@@ -10428,15 +10798,18 @@
           return;
         }
         event.preventDefault();
-        if (splitPasted.body) insertTextIntoTextarea(textarea, splitPasted.body);
+        if (splitPasted.body) insertPlainTextIntoFreeBoardRichEditor(splitPasted.body, editor);
         addFreeBoardComposeMediaTokens(splitPasted.tokens);
         showFreeBoardMessage("이미지/동영상 주소를 첨부파일 목록에 추가했습니다.", false);
       });
 
       newsPanel.addEventListener("input", (event) => {
         const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-        const textarea = target?.closest("#freeBoardBody");
-        if (!textarea) return;
+        const editor = target?.closest("#freeBoardRichEditor");
+        if (!editor) return;
+        syncFreeBoardRichEditor(editor);
+        saveFreeBoardRichEditorSelection(editor);
+        const textarea = document.getElementById("freeBoardBody");
         renderFreeBoardComposePreview(textarea);
       });
 
