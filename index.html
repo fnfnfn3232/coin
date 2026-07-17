@@ -6194,6 +6194,7 @@
         const selectedPost = posts.find((post) => post.id === freeBoardSelectedId);
 
         if (freeBoardMode === "read" && selectedPost) {
+          const embeddedMediaTokens = validateEmbeddedMediaTokens(selectedPost.body).tokens;
           newsPanel.innerHTML = `
             <div class="free-board-shell">
               <section class="free-board-card free-board-read-card">
@@ -6215,7 +6216,8 @@
                     <div class="free-board-body">${renderSafePostBody(selectedPost.body, selectedPost.htmlEnabled)}</div>
                     ${renderFreeBoardMedia(selectedPost.mediaUrls)}
                   </div>
-                  ${renderFreeBoardAttachments(validateEmbeddedMediaTokens(selectedPost.body).tokens)}
+                  ${renderFreeBoardMediaSizes(embeddedMediaTokens)}
+                  ${renderFreeBoardAttachments(embeddedMediaTokens)}
                 </article>
               </section>
               ${renderFreeBoardComments(selectedPost)}
