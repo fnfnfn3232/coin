@@ -1544,7 +1544,8 @@
         gap: 6px;
       }
 
-      .free-board-attachment-link {
+      .free-board-attachment-link,
+      .free-board-attachment-media {
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -1558,6 +1559,9 @@
         font: inherit;
         text-align: left;
         text-decoration: none;
+      }
+
+      .free-board-attachment-link {
         cursor: pointer;
       }
 
@@ -5563,7 +5567,8 @@
       }
 
       function renderFreeBoardAttachments(tokens) {
-        const items = (tokens || [])
+        const safeTokens = tokens || [];
+        const fileItems = safeTokens
           .filter((token) => token.actualKind === "file" && token.requestedKind === "file" && isSafeAttachmentUrl(token.url))
           .map((token) => {
             const fileName = String(token.meta?.name || "첨부파일").trim() || "첨부파일";
@@ -5576,6 +5581,23 @@
               </button>
             `;
           });
+        let mediaIndex = 0;
+        const mediaItems = safeTokens
+          .filter((token) => token.actualKind === token.requestedKind && (token.actualKind === "image" || token.actualKind === "video"))
+          .map((token) => {
+            const size = Math.max(0, Math.floor(Number(token.meta?.size) || 0));
+            if (!size) return "";
+            mediaIndex += 1;
+            const label = token.actualKind === "image" ? `이미지 ${mediaIndex}` : `동영상 ${mediaIndex}`;
+            return `
+              <div class="free-board-attachment-media">
+                <span class="free-board-attachment-name">${escapeHtml(label)}</span>
+                <span class="free-board-attachment-size">${escapeHtml(formatBytes(size))}</span>
+              </div>
+            `;
+          })
+          .filter(Boolean);
+        const items = [...fileItems, ...mediaItems];
         if (!items.length) return "";
         return `
           <section class="free-board-attachments">
@@ -6216,7 +6238,6 @@
                     <div class="free-board-body">${renderSafePostBody(selectedPost.body, selectedPost.htmlEnabled)}</div>
                     ${renderFreeBoardMedia(selectedPost.mediaUrls)}
                   </div>
-                  ${renderFreeBoardMediaSizes(embeddedMediaTokens)}
                   ${renderFreeBoardAttachments(embeddedMediaTokens)}
                 </article>
               </section>
