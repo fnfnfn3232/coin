@@ -780,6 +780,22 @@
         margin-top: 14px;
       }
 
+      .market-meta-right {
+        margin-left: auto;
+        align-items: center;
+        justify-content: flex-end;
+      }
+
+      .market-source-toggle {
+        min-height: 34px;
+        padding: 7px 10px;
+        border-radius: 999px;
+        color: #bfefff;
+        font-size: 12px;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+
       .compare-grid {
         display: grid;
         grid-template-columns: minmax(220px, 280px) 52px repeat(3, minmax(220px, 280px));
@@ -2492,6 +2508,14 @@
       min-width: 1320px;
     }
 
+    table.market-source-hidden {
+      min-width: 1080px;
+    }
+
+    .market-source-hidden .market-source-cell {
+      display: none !important;
+    }
+
       thead th {
         text-align: left;
         color: var(--muted);
@@ -3653,16 +3677,19 @@
           </select>
         </div>
       </div>
-        <div class="row meta">
+      <div class="row meta">
           <div class="row">
             <input id="searchInput" type="search" />
           </div>
-          <div class="status" id="statusText"></div>
+          <div class="row market-meta-right">
+            <div class="status" id="statusText"></div>
+            <button class="market-source-toggle" id="marketSourceToggleBtn" type="button" aria-pressed="false">시총 출처 보기</button>
+          </div>
         </div>
       </section>
 
       <section class="panel table-wrap market-section">
-        <table>
+        <table class="market-source-hidden" id="marketTable">
         <thead>
           <tr>
             <th class="rank" id="thRank"></th>
@@ -3671,7 +3698,7 @@
             <th id="thPrice"></th>
             <th id="thCap"></th>
             <th id="thFdv"></th>
-            <th id="thSource"></th>
+            <th class="market-source-cell" id="thSource"></th>
           </tr>
         </thead>
         <tbody id="tableBody"></tbody>
@@ -3879,6 +3906,7 @@
     const SERVER_AUTH_API_BASE = String(window.SERVER_AUTH_API_BASE || "").replace(/\/+$/, "");
     const APP_VIEW_STATE_KEY = "fdv_app_view_state_v1";
     const SCREEN_SETTINGS_KEY = "fdv_screen_settings_v1";
+    const MARKET_SOURCE_VISIBLE_KEY = "fdv_market_source_visible_v1";
     const MARKET_BOARDS = ["binance", "upbit", "bithumb", "coinbase"];
     const SCREEN_SETTINGS_DEFAULT = {
       boardOrder: ["binance", "upbit", "bithumb", "coinbase"],
@@ -4016,6 +4044,7 @@
         viewMode: "market",
       };
       let screenSettings = loadScreenSettings();
+      let marketSourceVisible = loadMarketSourceVisibility();
       state.board = getDefaultMarketBoard();
 
     function isValidBoardPayload(payload) {
@@ -4094,6 +4123,8 @@
     const tableBody = document.getElementById("tableBody");
     const pagination = document.getElementById("pagination");
     const statusText = document.getElementById("statusText");
+      const marketTable = document.getElementById("marketTable");
+      const marketSourceToggleBtn = document.getElementById("marketSourceToggleBtn");
       const footerNote = document.getElementById("footerNote");
       const statBinance = document.getElementById("statBinance");
       const statUpbit = document.getElementById("statUpbit");
@@ -8368,6 +8399,32 @@
         saveScreenSettingsLocal(screenSettings);
       }
 
+      function loadMarketSourceVisibility() {
+        try {
+          return localStorage.getItem(MARKET_SOURCE_VISIBLE_KEY) === "1";
+        } catch (_error) {
+          return false;
+        }
+      }
+
+      function saveMarketSourceVisibility() {
+        try {
+          localStorage.setItem(MARKET_SOURCE_VISIBLE_KEY, marketSourceVisible ? "1" : "0");
+        } catch (_error) {
+          // 표시 설정 저장에 실패해도 현재 화면의 열 전환은 계속 동작합니다.
+        }
+      }
+
+      function applyMarketSourceVisibility() {
+        if (marketTable) {
+          marketTable.classList.toggle("market-source-hidden", !marketSourceVisible);
+        }
+        if (marketSourceToggleBtn) {
+          marketSourceToggleBtn.textContent = marketSourceVisible ? "시총 출처 숨기기" : "시총 출처 보기";
+          marketSourceToggleBtn.setAttribute("aria-pressed", String(marketSourceVisible));
+        }
+      }
+
       function orderedMarketBoards(settings = screenSettings) {
         return normalizeScreenSettings(settings).boardOrder;
       }
@@ -10022,7 +10079,7 @@
                 <div class="supply-main">${escapeHtml(supply.main || TEXT.unknown)}</div>
                 <div class="supply-sub">${escapeHtml(supply.sub || TEXT.noSupply)}</div>
               </td>
-              <td class="source" data-label="${TEXT.thSource}">
+              <td class="source market-source-cell" data-label="${TEXT.thSource}">
                 <div>${escapeHtml(sourceLabel(row.capSource))}</div>
                 ${sourceDetailText ? `<div class="muted">${escapeHtml(sourceDetailText)}</div>` : ""}
               </td>
@@ -11118,6 +11175,15 @@
           commitScreenSettingsDraft("현재 화면 설정을 저장했습니다.");
         });
       }
+
+      if (marketSourceToggleBtn) {
+        marketSourceToggleBtn.addEventListener("click", () => {
+          marketSourceVisible = !marketSourceVisible;
+          saveMarketSourceVisibility();
+          applyMarketSourceVisibility();
+        });
+      }
+      applyMarketSourceVisibility();
 
       manualRefreshBtn.addEventListener("click", async () => {
         const now = Date.now();
