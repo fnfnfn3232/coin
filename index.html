@@ -1070,6 +1070,36 @@
         gap: 14px;
       }
 
+      .shell.board-mode {
+        border-color: transparent;
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+      }
+
+      .shell.board-mode .hero,
+      .shell.board-mode .news-host,
+      .shell.board-mode .news-panel {
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+      }
+
+      .shell.board-mode .hero {
+        padding: 16px 10px 18px;
+        border-bottom: 1px solid rgba(151, 183, 198, 0.16);
+      }
+
+      .shell.board-mode .news-host {
+        padding: 12px 10px 0;
+      }
+
+      .shell.board-mode .news-panel {
+        min-height: 0;
+        padding: 0;
+      }
+
       .free-board-card {
         border: 1px solid rgba(151, 183, 198, 0.14);
         border-radius: 16px;
@@ -1121,10 +1151,46 @@
         border-color: rgba(103, 119, 255, 0.9);
       }
 
+      .free-board-list-page {
+        gap: 0;
+      }
+
+      .free-board-list-page .free-board-board-nav {
+        padding: 0 0 10px;
+        border: 0;
+        border-bottom: 1px solid rgba(84, 104, 255, 0.56);
+        border-radius: 0;
+        background: transparent;
+      }
+
+      .free-board-list-page .free-board-tab {
+        min-width: 0;
+        min-height: 40px;
+        padding: 8px 14px;
+        border-color: rgba(84, 104, 255, 0.42);
+        background: transparent;
+      }
+
+      .free-board-list-page .free-board-tab.active {
+        border-color: rgba(103, 119, 255, 0.88);
+        background: rgba(70, 84, 180, 0.76);
+      }
+
+      .free-board-list-page .free-board-card {
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        overflow: visible;
+      }
+
+      .free-board-list-page .free-board-list {
+        padding: 0;
+      }
+
       .free-board-table-wrap {
         min-height: 260px;
         overflow-x: auto;
-        border-top: 1px solid rgba(84, 104, 255, 0.65);
+        border-top: 0;
         border-bottom: 1px solid rgba(84, 104, 255, 0.65);
       }
 
@@ -3016,7 +3082,7 @@
         }
 
         .free-board-board-nav {
-          padding: 12px;
+          padding: 0 0 10px;
         }
 
         .free-board-tabs {
@@ -3057,6 +3123,25 @@
 
         .free-board-list {
           padding: 0;
+        }
+
+        .shell.board-mode {
+          width: min(100%, calc(100vw - 12px));
+          margin-top: 6px;
+          padding: 6px;
+        }
+
+        .shell.board-mode .hero {
+          padding: 12px 4px 14px;
+        }
+
+        .shell.board-mode .news-host {
+          padding: 10px 4px 0;
+        }
+
+        .free-board-list-page .free-board-tab {
+          min-height: 44px;
+          padding: 9px 8px;
         }
 
         .free-board-read {
@@ -6661,7 +6746,7 @@
         }
 
         newsPanel.innerHTML = `
-          <div class="free-board-shell">
+          <div class="free-board-shell free-board-list-page">
             <div class="free-board-board-nav">
               ${renderFreeBoardTabs()}
             </div>
