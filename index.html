@@ -8926,6 +8926,15 @@
       function normalizeKnownAssetIdentities() {
         let changed = 0;
         const boards = data.boards || {};
+        const binanceRows = Array.isArray(boards.binance) ? boards.binance : [];
+        const filteredBinanceRows = binanceRows.filter((row) =>
+          ![row?.name, row?.englishName, row?.koreanName]
+            .some((value) => String(value || "").toLowerCase().includes("bstocks"))
+        );
+        if (filteredBinanceRows.length !== binanceRows.length) {
+          boards.binance = filteredBinanceRows;
+          changed += binanceRows.length - filteredBinanceRows.length;
+        }
         const upbitRows = boards.upbit || [];
         for (const row of upbitRows) {
           const symbol = String(row?.symbol || "").toUpperCase();
