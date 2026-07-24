@@ -774,12 +774,21 @@ def apply_gensyn_supply_override(row: dict, *, source_detail: str) -> None:
     row["nameKeys"] = list(build_name_keys("Gensyn", "Gensyn", "젠신"))
 
 
+def is_binance_bstock(item: dict) -> bool:
+    return any(
+        "bstocks" in str(item.get(key) or "").lower()
+        for key in ("localFullName", "fullName", "name")
+    )
+
+
 def fetch_binance() -> tuple[list[dict], dict[str, list[dict]]]:
     payload = fetch_json("https://www.binance.com/bapi/apex/v1/public/apex/marketing/symbol/list")
     rows: list[dict] = []
     lookup: dict[str, list[dict]] = {}
     for item in payload.get("data", []):  # type: ignore[union-attr]
         if item.get("quoteAsset") != "USDT":
+            continue
+        if is_binance_bstock(item):
             continue
         symbol = item.get("baseAsset") or ""
         market_cap_usd = to_float(item.get("marketCap"))
