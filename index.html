@@ -3822,6 +3822,7 @@
     const MARKET_SNAPSHOT_GENERATED_AT_KEY = "fdv_market_snapshot_generated_at_v1";
     const LAST_GOOD_DATA_KEY = "fdv_last_good_data_v5";
     const UPBIT_TICKER_BATCH_SIZE = 100;
+    const BITHUMB_TICKER_BATCH_SIZE = 80;
     const COINBASE_PRODUCT_STATS_URL = "https://api.exchange.coinbase.com/products/stats";
     const GENSYN_SYMBOL = "AI";
     const GENSYN_BINANCE_SYMBOL = "AIGENSYN";
@@ -8978,23 +8979,29 @@
         const rows = data.boards?.bithumb || [];
         if (!rows.length) return 0;
 
-        const [tickerResult, capResult] = await Promise.allSettled([
-          fetchJsonNoCache("https://api.bithumb.com/public/ticker/ALL_KRW"),
-          fetchJsonNoCache("https://gw.bithumb.com/exchange/v1/trade/coinmarketcap"),
+        const markets = [...new Set(rows
+          .map((row) => String(row.symbol || "").trim().toUpperCase())
+          .filter(Boolean)
+          .map((symbol) => `KRW-${symbol}`))];
+        const [tickerResults, capResult] = await Promise.all([
+          Promise.allSettled(chunkArray(markets, BITHUMB_TICKER_BATCH_SIZE).map((group) => {
+            const query = encodeURIComponent(group.join(","));
+            return fetchJsonNoCache(`https://api.bithumb.com/v1/ticker?markets=${query}`);
+          })),
+          fetchJsonNoCache("https://gw.bithumb.com/exchange/v1/trade/coinmarketcap")
+            .then((value) => ({ status: "fulfilled", value }))
+            .catch((reason) => ({ status: "rejected", reason })),
         ]);
 
         const priceMap = new Map();
-        if (tickerResult.status === "fulfilled") {
-          const tickerPayload = tickerResult.value;
-          const tickerData = tickerPayload && typeof tickerPayload === "object" ? tickerPayload.data : null;
-          if (tickerData && typeof tickerData === "object") {
-            for (const [symbol, item] of Object.entries(tickerData)) {
-              const symbolText = String(symbol || "").toUpperCase();
-              if (!symbolText || symbolText === "DATE") continue;
-              const price = toPositiveNumber(item?.closing_price);
-              if (price === null) continue;
-              priceMap.set(symbolText, price);
-            }
+        for (const tickerResult of tickerResults) {
+          if (tickerResult.status !== "fulfilled" || !Array.isArray(tickerResult.value)) continue;
+          for (const item of tickerResult.value) {
+            const market = String(item?.market || "").toUpperCase();
+            const price = toPositiveNumber(item?.trade_price)
+              ?? toPositiveNumber(item?.prev_closing_price);
+            if (!market.startsWith("KRW-") || price === null) continue;
+            priceMap.set(market.replace("KRW-", ""), price);
           }
         }
 
