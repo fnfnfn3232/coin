@@ -37,6 +37,7 @@ ERC20_TOTAL_SUPPLY_SELECTOR = "0x18160ddd"
 CONTRACT_SUPPLY_WORKERS = 8
 CONTRACT_SUPPLY_MAX_REQUESTS = 260
 BITHUMB_BASIC_INFO_WORKERS = 8
+BITHUMB_TICKER_BATCH_SIZE = 80
 UPBIT_PREFER_BITHUMB_FILL_SYMBOL_MAP = {
     "1INCH": "1INCH",
     "BLEND": "BLEND",
@@ -274,11 +275,11 @@ def fetch_upbit_usdt_krw_rate() -> float | None:
 
 
 def fetch_bithumb_usdt_krw_rate() -> float | None:
-    payload = fetch_json("https://api.bithumb.com/public/ticker/USDT_KRW")
-    if not isinstance(payload, dict):
+    payload = fetch_json("https://api.bithumb.com/v1/ticker?markets=KRW-USDT")
+    if not isinstance(payload, list) or not payload:
         return None
-    data = payload.get("data") or {}
-    return to_float(data.get("closing_price"))
+    item = payload[0] if isinstance(payload[0], dict) else {}
+    return to_float(item.get("trade_price")) or to_float(item.get("prev_closing_price"))
 
 
 def refresh_fx_usd_krw(previous_payload: dict | None = None) -> float:
@@ -1138,22 +1139,25 @@ def fetch_upbit() -> tuple[list[dict], dict[str, list[dict]]]:
     return rows, lookup
 
 
-def fetch_bithumb_prices() -> dict[str, float]:
-    payload = fetch_json("https://api.bithumb.com/public/ticker/ALL_KRW")
-    if not isinstance(payload, dict):
-        return {}
-    data = payload.get("data") or {}
-    if not isinstance(data, dict):
-        return {}
-
+def fetch_bithumb_prices(symbols: list[str]) -> dict[str, float]:
     prices: dict[str, float] = {}
-    for symbol, item in data.items():
-        symbol_text = str(symbol or "").upper()
-        if not symbol_text or symbol_text == "DATE" or not isinstance(item, dict):
+    unique_symbols = list(dict.fromkeys(str(symbol or "").strip().upper() for symbol in symbols if symbol))
+    for start in range(0, len(unique_symbols), BITHUMB_TICKER_BATCH_SIZE):
+        chunk = unique_symbols[start : start + BITHUMB_TICKER_BATCH_SIZE]
+        query = urllib.parse.urlencode({"markets": ",".join(f"KRW-{symbol}" for symbol in chunk)})
+        payload = fetch_json(f"https://api.bithumb.com/v1/ticker?{query}")
+        if not isinstance(payload, list):
             continue
-        price_krw = to_float(item.get("closing_price"))
-        if price_krw is not None:
-            prices[symbol_text] = price_krw
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            market = str(item.get("market") or "").upper()
+            if not market.startswith("KRW-"):
+                continue
+            symbol = market.replace("KRW-", "")
+            price_krw = to_float(item.get("trade_price")) or to_float(item.get("prev_closing_price"))
+            if price_krw is not None:
+                prices[symbol] = price_krw
     return prices
 
 
@@ -1202,13 +1206,15 @@ def fetch_bithumb_basic_info_map(coin_types: list[str]) -> dict[str, dict]:
 def fetch_bithumb() -> list[dict]:
     cap_payload = fetch_json("https://gw.bithumb.com/exchange/v1/trade/coinmarketcap")
     cap_map = (cap_payload.get("data") or {}) if isinstance(cap_payload, dict) else {}
-    try:
-        bithumb_prices = fetch_bithumb_prices()
-    except Exception:  # noqa: BLE001
-        bithumb_prices = {}
     payload = fetch_json("https://gw.bithumb.com/exchange/v1/comn/intro")
     data = payload.get("data") or {}  # type: ignore[union-attr]
     krw_market = (data.get("coinsOnMarketList") or {}).get("C0100") or []
+    try:
+        bithumb_prices = fetch_bithumb_prices(
+            [str(item.get("coinSymbol") or "") for item in krw_market if isinstance(item, dict)]
+        )
+    except Exception:  # noqa: BLE001
+        bithumb_prices = {}
     basic_info_by_coin_type = fetch_bithumb_basic_info_map(
         [str(item.get("coinType") or "") for item in krw_market if isinstance(item, dict)]
     )

@@ -37,6 +37,7 @@ const MARKET_DATA_MAX_BYTES = 8 * 1024 * 1024;
 const MARKET_DATA_CHUNK_CHARS = 256 * 1024;
 const LIVE_PRICE_FETCH_TIMEOUT_MS = 12000;
 const LIVE_PRICE_UPBIT_BATCH_SIZE = 80;
+const LIVE_PRICE_BITHUMB_BATCH_SIZE = 80;
 const GITHUB_PAGES_MONTHLY_SOFT_LIMIT_BYTES = 100 * 1024 * 1024 * 1024;
 const USAGE_BEACON_MAX_BYTES = 25 * 1024 * 1024;
 const DEFAULT_NEWS_CACHE_SECONDS = 10 * 60;
@@ -253,28 +254,50 @@ async function fetchUpbitLivePriceMap(symbols) {
   return prices;
 }
 
-async function fetchBithumbLivePriceAndCapMaps() {
+async function fetchBithumbLivePriceAndCapMaps(symbols) {
   const prices = {};
   const caps = {};
-  const [tickerResult, capResult] = await Promise.allSettled([
-    fetchJsonWithTimeout("https://api.bithumb.com/public/ticker/ALL_KRW"),
-    fetchJsonWithTimeout("https://gw.bithumb.com/exchange/v1/trade/coinmarketcap"),
+  let requestedSymbols = Array.isArray(symbols) ? symbols : [];
+  if (!requestedSymbols.length) {
+    try {
+      const markets = await fetchJsonWithTimeout("https://api.bithumb.com/v1/market/all");
+      requestedSymbols = Array.isArray(markets)
+        ? markets
+          .map((item) => String(item?.market || "").toUpperCase())
+          .filter((market) => market.startsWith("KRW-"))
+          .map((market) => market.replace("KRW-", ""))
+        : [];
+    } catch {
+      requestedSymbols = [];
+    }
+  }
+  const tickerRequests = [];
+  for (let index = 0; index < requestedSymbols.length; index += LIVE_PRICE_BITHUMB_BATCH_SIZE) {
+    const group = requestedSymbols.slice(index, index + LIVE_PRICE_BITHUMB_BATCH_SIZE);
+    if (!group.length) continue;
+    const query = encodeURIComponent(group.map((symbol) => `KRW-${symbol}`).join(","));
+    tickerRequests.push(fetchJsonWithTimeout(`https://api.bithumb.com/v1/ticker?markets=${query}`));
+  }
+
+  const [tickerResults, capResult] = await Promise.all([
+    Promise.allSettled(tickerRequests),
+    fetchJsonWithTimeout("https://gw.bithumb.com/exchange/v1/trade/coinmarketcap")
+      .catch(() => null),
   ]);
 
-  if (tickerResult.status === "fulfilled") {
-    const tickerData = tickerResult.value?.data;
-    if (tickerData && typeof tickerData === "object") {
-      for (const [symbol, item] of Object.entries(tickerData)) {
-        const symbolText = String(symbol || "").toUpperCase();
-        const price = toPositiveNumber(item?.closing_price);
-        if (!symbolText || symbolText === "DATE" || price === null) continue;
-        prices[symbolText] = price;
-      }
+  for (const tickerResult of tickerResults) {
+    if (tickerResult.status !== "fulfilled" || !Array.isArray(tickerResult.value)) continue;
+    for (const item of tickerResult.value) {
+      const market = String(item?.market || "").toUpperCase();
+      const price = toPositiveNumber(item?.trade_price)
+        ?? toPositiveNumber(item?.prev_closing_price);
+      if (!market.startsWith("KRW-") || price === null) continue;
+      prices[market.replace("KRW-", "")] = price;
     }
   }
 
-  if (capResult.status === "fulfilled") {
-    const capData = capResult.value?.data;
+  if (capResult && typeof capResult === "object") {
+    const capData = capResult.data;
     if (capData && typeof capData === "object") {
       for (const [coinType, capValue] of Object.entries(capData)) {
         const cap = toPositiveNumber(capValue);
@@ -305,11 +328,12 @@ async function fetchCoinbaseLivePriceMap() {
 async function fetchLivePricePayload(marketPayload) {
   const errors = {};
   const upbitSymbols = collectSymbols(marketPayload, "upbit");
+  const bithumbSymbols = collectSymbols(marketPayload, "bithumb");
   const [fxResult, binanceResult, upbitResult, bithumbResult, coinbaseResult] = await Promise.allSettled([
     fetchLiveFxUsdKrw(),
     fetchBinanceLivePriceMap(),
     fetchUpbitLivePriceMap(upbitSymbols),
-    fetchBithumbLivePriceAndCapMaps(),
+    fetchBithumbLivePriceAndCapMaps(bithumbSymbols),
     fetchCoinbaseLivePriceMap(),
   ]);
 
