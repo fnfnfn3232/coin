@@ -1645,13 +1645,18 @@ def apply_supply_from_reference(
     source_detail: str,
     stale_source_detail: str,
 ) -> bool:
-    circulating_supply = to_float(candidate.get("circulatingSupply"))
-    total_supply = to_float(candidate.get("totalSupply"))
-    if circulating_supply is None and total_supply is None:
+    candidate_circulating_supply = to_float(candidate.get("circulatingSupply"))
+    candidate_total_supply = to_float(candidate.get("totalSupply"))
+    target_circulating_supply = to_float(target_row.get("circulatingSupply"))
+    target_total_supply = to_float(target_row.get("totalSupply"))
+    if candidate_circulating_supply is None and candidate_total_supply is None:
         return False
 
-    circulating_supply = circulating_supply or to_float(target_row.get("circulatingSupply"))
-    total_supply = total_supply or to_float(target_row.get("totalSupply"))
+    circulating_supply = candidate_circulating_supply or target_circulating_supply
+    # A stale Upbit market cap can be refreshed from another exchange, but the
+    # replacement exchange may expose current issued supply instead of Upbit's
+    # maximum issuance limit. Preserve the original limit when it is available.
+    total_supply = target_total_supply or candidate_total_supply
     target_row["circulatingSupply"] = circulating_supply
     target_row["totalSupply"] = total_supply
     target_row["circulatingRatio"] = compute_circulating_ratio(circulating_supply, total_supply)
