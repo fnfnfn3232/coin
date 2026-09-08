@@ -3560,39 +3560,24 @@ def has_coin_info_value(value: object) -> bool:
     return True
 
 
-def merge_coin_info_links(current_links: object, previous_links: object) -> list[dict]:
-    merged: list[dict] = []
+def clean_coin_info_links(links: object) -> list[dict]:
+    cleaned: list[dict] = []
     seen: set[tuple[str, str]] = set()
-    for source_links in (current_links, previous_links):
-        if not isinstance(source_links, list):
-            continue
-        for link in source_links:
-            if not isinstance(link, dict):
-                continue
-            label = keep_info_text(link.get("label")) or "링크"
-            url = keep_info_text(link.get("url"))
-            if not url.startswith(("http://", "https://")):
-                continue
-            key = (label, url)
-            if key in seen:
-                continue
-            seen.add(key)
-            merged.append({"label": label, "url": url})
-    return merged
-
-
-def coin_info_link_keys(links: object) -> set[tuple[str, str]]:
-    keys: set[tuple[str, str]] = set()
     if not isinstance(links, list):
-        return keys
+        return cleaned
     for link in links:
         if not isinstance(link, dict):
             continue
         label = keep_info_text(link.get("label")) or "링크"
         url = keep_info_text(link.get("url"))
-        if url.startswith(("http://", "https://")):
-            keys.add((label, url))
-    return keys
+        if not url.startswith(("http://", "https://")):
+            continue
+        key = (label, url)
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append({"label": label, "url": url})
+    return cleaned
 
 
 def merge_coin_source_info(current_info: object, previous_info: object, previous_generated_at: object = None) -> dict:
@@ -3605,12 +3590,15 @@ def merge_coin_source_info(current_info: object, previous_info: object, previous
         if str(key).startswith("_"):
             continue
         if key == "links":
-            current_link_keys = coin_info_link_keys(current.get("links"))
-            previous_link_keys = coin_info_link_keys(previous_value)
-            links = merge_coin_info_links(current.get("links"), previous_value)
-            if links:
-                current["links"] = links
-            if previous_link_keys - current_link_keys:
+            current_links = clean_coin_info_links(current.get("links"))
+            if current_links:
+                # A successful refresh is authoritative. Mixing older links back in
+                # keeps removed or replaced whitepapers alive forever.
+                current["links"] = current_links
+                continue
+            previous_links = clean_coin_info_links(previous_value)
+            if previous_links:
+                current["links"] = previous_links
                 preserved_fields.add("links")
             continue
         if not has_coin_info_value(current.get(key)) and has_coin_info_value(previous_value):
