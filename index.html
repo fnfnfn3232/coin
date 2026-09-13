@@ -8629,6 +8629,7 @@
       let freeBoardMessageIsError = false;
       let freeBoardMode = "list";
       let freeBoardFilter = "all";
+      let freeBoardSearchType = "titleBody";
       let freeBoardQuery = "";
       let freeBoardPage = 1;
       let freeBoardSelectedId = "";
@@ -10179,7 +10180,15 @@
           const category = normalizeFreeBoardCategory(post.category);
           if (freeBoardFilter !== "all" && category !== freeBoardFilter) return false;
           if (!query) return true;
-          return [post.title, post.body, post.author, freeBoardCategoryLabel(post.category)]
+          const comments = Array.isArray(post.comments) ? post.comments : [];
+          const searchValues = {
+            titleBody: [post.title, post.body],
+            title: [post.title],
+            body: [post.body],
+            comments: comments.map((comment) => comment.body),
+            author: [post.author],
+          };
+          return (searchValues[freeBoardSearchType] || searchValues.titleBody)
             .some((value) => String(value || "").toLowerCase().includes(query));
         });
       }
@@ -10757,7 +10766,11 @@
                 <div class="free-board-search">
                   <div class="free-board-search-main">
                     <select id="freeBoardSearchType" aria-label="검색 범위">
-                      <option value="titleBody">제목+내용</option>
+                      <option value="titleBody" ${freeBoardSearchType === "titleBody" ? "selected" : ""}>제목+내용</option>
+                      <option value="title" ${freeBoardSearchType === "title" ? "selected" : ""}>제목</option>
+                      <option value="body" ${freeBoardSearchType === "body" ? "selected" : ""}>내용</option>
+                      <option value="comments" ${freeBoardSearchType === "comments" ? "selected" : ""}>댓글</option>
+                      <option value="author" ${freeBoardSearchType === "author" ? "selected" : ""}>닉네임</option>
                     </select>
                     <input id="freeBoardSearchInput" type="search" value="${escapeAttr(freeBoardQuery)}" placeholder="검색어" />
                     <button class="free-board-submit" type="button" data-free-board-search>검색</button>
@@ -15715,6 +15728,7 @@
         freeBoardMode = ["list", "read", "write", "edit"].includes(payload.freeBoardMode) ? payload.freeBoardMode : "list";
         freeBoardSelectedId = String(payload.freeBoardSelectedId || "");
         freeBoardPage = 1;
+        freeBoardSearchType = "titleBody";
         freeBoardQuery = "";
         freeBoardFilter = getFreeBoardCategories().some((item) => item.value === payload.freeBoardFilter)
           ? String(payload.freeBoardFilter)
@@ -15806,6 +15820,7 @@
         freeBoardMode = "list";
         freeBoardSelectedId = "";
         freeBoardPage = 1;
+        freeBoardSearchType = "titleBody";
         freeBoardQuery = "";
         freeBoardFilter = "all";
         freeBoardAdminPanelOpen = false;
@@ -16907,6 +16922,10 @@
 
         if (clickTarget.closest("[data-free-board-search]")) {
           const input = document.getElementById("freeBoardSearchInput");
+          const searchType = document.getElementById("freeBoardSearchType");
+          freeBoardSearchType = ["titleBody", "title", "body", "comments", "author"].includes(searchType?.value)
+            ? searchType.value
+            : "titleBody";
           freeBoardQuery = String(input?.value || "");
           freeBoardPage = 1;
           freeBoardMode = "list";
@@ -17091,6 +17110,10 @@
         if (event.key !== "Enter") return;
         if (!event.target.closest("#freeBoardSearchInput")) return;
         event.preventDefault();
+        const searchType = document.getElementById("freeBoardSearchType");
+        freeBoardSearchType = ["titleBody", "title", "body", "comments", "author"].includes(searchType?.value)
+          ? searchType.value
+          : "titleBody";
         freeBoardQuery = String(event.target.value || "");
         freeBoardPage = 1;
         freeBoardMode = "list";
