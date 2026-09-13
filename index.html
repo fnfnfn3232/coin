@@ -2849,8 +2849,9 @@
         align-items: center;
         justify-content: center;
         gap: 8px;
-        flex-wrap: wrap;
-        flex: 1 1 auto;
+        flex: 1 1 100%;
+        flex-wrap: nowrap;
+        min-width: 0;
       }
 
       .free-board-admin-compact {
@@ -2888,8 +2889,21 @@
         border-radius: 3px;
       }
 
+      .free-board-search-main select {
+        flex: 0 0 auto;
+      }
+
       .free-board-search input {
         width: min(420px, 100%);
+        min-width: 0;
+      }
+
+      .free-board-search-main input {
+        flex: 1 1 260px;
+      }
+
+      .free-board-search-main .free-board-submit {
+        flex: 0 0 auto;
       }
 
       .free-board-search .free-board-admin-compact input {
