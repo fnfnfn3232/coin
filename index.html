@@ -6561,66 +6561,16 @@
         }
 
         .shell.board-mode .free-board-tabs {
+          display: flex;
           gap: 20px;
+          flex-wrap: nowrap;
+          overflow-x: auto;
         }
 
         .shell.board-mode .free-board-tab,
         .shell.board-mode .free-board-list-page .free-board-tab {
           min-height: 46px;
           font-size: 13px;
-        }
-
-        .shell.board-mode .free-board-mobile-posts {
-          gap: 0;
-        }
-
-        .shell.board-mode .free-board-mobile-post {
-          grid-template-columns: 54px minmax(0, 1fr) 42px 50px 28px;
-          align-items: center;
-          gap: 0 6px;
-          min-height: 50px;
-          padding: 0 4px;
-        }
-
-        .shell.board-mode .free-board-mobile-category,
-        .shell.board-mode .free-board-mobile-title,
-        .shell.board-mode .free-board-mobile-author,
-        .shell.board-mode .free-board-mobile-date,
-        .shell.board-mode .free-board-mobile-comments {
-          min-width: 0;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-        }
-
-        .shell.board-mode .free-board-mobile-category {
-          color: #53647b;
-          font-size: 11px;
-          font-weight: 650;
-        }
-
-        .shell.board-mode .free-board-mobile-title {
-          color: #14233b;
-          font-size: 13px;
-          line-height: 1.35;
-        }
-
-        .shell.board-mode .free-board-mobile-author,
-        .shell.board-mode .free-board-mobile-date {
-          color: #7a8799;
-          font-size: 10px;
-          text-align: center;
-        }
-
-        .shell.board-mode .free-board-mobile-comments {
-          color: #3567ff;
-          font-size: 11px;
-          font-weight: 700;
-          text-align: right;
-        }
-
-        .shell.board-mode .free-board-mobile-admin-post {
-          grid-template-columns: 28px minmax(0, 1fr);
         }
 
         .lock-ttl-wrap {
@@ -10203,11 +10153,14 @@
           const attachmentBadge = renderFreeBoardAttachmentBadge(post);
           const mobileButton = `
             <button class="free-board-mobile-post" type="button" data-free-board-open="${escapeAttr(postId)}">
-              <span class="free-board-mobile-category">${escapeHtml(freeBoardCategoryLabel(post.category))}</span>
               <span class="free-board-mobile-title">${escapeHtml(post.title)}${attachmentBadge}</span>
-              <span class="free-board-mobile-author">${escapeHtml(post.author || "익명")}</span>
-              <span class="free-board-mobile-date">${escapeHtml(formatFreeBoardShortTime(post.createdAt))}</span>
-              <span class="free-board-mobile-comments" aria-label="댓글 ${formatNumber(commentCount, 0)}개">${commentCount ? `[${formatNumber(commentCount, 0)}]` : ""}</span>
+              <span class="free-board-mobile-comments">${formatNumber(commentCount, 0)}</span>
+              <span class="free-board-mobile-meta">
+                <span class="free-board-mobile-category">${escapeHtml(freeBoardCategoryLabel(post.category))}</span>
+                <span>${escapeHtml(post.author || "익명")}</span>
+                <span>${escapeHtml(formatFreeBoardShortTime(post.createdAt))}</span>
+                <span>조회 ${formatNumber(post.views, 0)}</span>
+              </span>
             </button>
           `;
           if (adminMode) {
