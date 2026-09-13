@@ -6573,8 +6573,55 @@
           font-size: 13px;
         }
 
+        body:not(.locked) .intel-ticker-inner {
+          visibility: hidden;
+        }
+
+        body.locked .lock-ttl-wrap {
+          display: none;
+        }
+
         .lock-ttl-wrap {
-          top: 134px;
+          top: 3px;
+          right: 6px;
+          left: 6px;
+          display: flex;
+          align-items: center;
+          justify-content: flex-end;
+          gap: 4px;
+          min-height: 29px;
+        }
+
+        .lock-ttl-row {
+          flex-wrap: nowrap;
+          gap: 4px;
+          min-width: 0;
+        }
+
+        .lock-ttl,
+        .lock-logout-btn,
+        .lock-extend-btn {
+          min-height: 27px;
+          padding: 3px 7px;
+          border: 0;
+          border-radius: 4px;
+          background: transparent;
+          box-shadow: none;
+          font-size: 10px;
+          white-space: nowrap;
+        }
+
+        .lock-ttl {
+          color: #dce7f6;
+        }
+
+        .lock-logout-btn {
+          color: #ffb8bd;
+        }
+
+        .lock-extend-btn,
+        .lock-extend-btn:hover {
+          color: #9dbbff;
         }
       }
     @media (max-width: 720px) {
