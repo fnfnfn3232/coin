@@ -7753,6 +7753,9 @@
       function syncServerSession(payload) {
         if (!payload?.token) return 0;
         setServerAuthToken(payload.token);
+        if (Number.isFinite(Number(payload.extensionCount))) {
+          setLockExtendCount(Number(payload.extensionCount));
+        }
         siteSessionRole = payload?.role === "member" ? "member" : "admin";
         siteSessionSubject = siteSessionRole === "member" ? String(payload?.subject || "") : "owner";
         siteBoardReadApproved = siteSessionRole === "admin" || payload?.boardReadApproved === true
@@ -13132,15 +13135,23 @@
         lockExtendBtn.textContent = "연장 중...";
         try {
           if (hasServerAuth() && !isLocalPreview()) {
-            await verifyServerSession();
+            await fetchServerAuth("/api/session/extend", {
+              method: "POST",
+              timeoutMs: 8000,
+            });
           }
-          setLockExtendCount(used + 1);
           if (!hasServerAuth() || isLocalPreview()) {
+            setLockExtendCount(used + 1);
             setLockAuthFor24Hours();
           }
           renderLockTtl();
         } catch (error) {
           console.error(error);
+          if (error?.payload?.error === "session_extension_limit") {
+            setLockExtendCount(LOCK_EXTEND_MAX);
+            renderLockTtl();
+            return;
+          }
           if (isServerAuthExpiredError(error)) {
             handleServerAuthExpired();
             return;
