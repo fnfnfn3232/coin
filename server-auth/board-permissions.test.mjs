@@ -281,34 +281,119 @@ test("all admin password endpoints share an atomic limit and cannot spoof the cl
   assert.equal((await f.request("/api/screen-settings", "PUT", { settings: {} }, (await login.json()).token)).status, 200);
 });
 
-test("refresh preserves login; logout revokes the entire refresh chain for members and admins", async () => {
+test("refresh preserves the fixed expiry; logout revokes the extended session chain", async () => {
   for (const role of ["member", "admin"]) {
     const f = await fixture();
     const token = role === "member" ? f.memberToken : f.adminToken;
     const session = await (await f.request("/api/session", "GET", undefined, token)).json();
     assert.equal(session.role, role);
+    assert.equal(session.token, token);
+    assert.equal(session.extensionCount, 0);
+    assert.equal(session.extensionsRemaining, 3);
     const originalNow = Date.now;
-    let renewed;
+    let refreshed;
+    let extended;
     try {
       Date.now = () => originalNow() + 2000;
       const response = await f.request("/api/session", "GET", undefined, session.token);
       assert.equal(response.status, 200);
-      renewed = await response.json();
-      assert.notEqual(renewed.token, session.token);
+      refreshed = await response.json();
+      assert.equal(refreshed.token, session.token);
+      assert.equal(refreshed.expiresAt, session.expiresAt);
+
+      const form = new URLSearchParams({ token: session.token }).toString();
+      const formRefresh = await f.rawRequest("/api/session", "POST", form, "", { "Content-Type": "application/x-www-form-urlencoded" });
+      assert.equal(formRefresh.status, 200);
+      assert.equal((await formRefresh.json()).expiresAt, session.expiresAt);
+
+      const extendResponse = await f.request("/api/session/extend", "POST", {}, refreshed.token);
+      assert.equal(extendResponse.status, 200);
+      extended = await extendResponse.json();
+      assert.ok(extended.expiresAt > session.expiresAt);
+      assert.equal(extended.extensionCount, 1);
+      assert.equal(extended.extensionsRemaining, 2);
     } finally {
       Date.now = originalNow;
     }
-    const form = new URLSearchParams({ token: session.token }).toString();
-    assert.equal((await f.rawRequest("/api/session", "POST", form, "", { "Content-Type": "application/x-www-form-urlencoded" })).status, 200);
-    const logout = await f.request("/api/logout", "POST", {}, session.token);
+    const logout = await f.request("/api/logout", "POST", {}, extended.token);
     assert.equal(logout.status, 200);
     assert.match(logout.headers.get("Set-Cookie"), /Max-Age=0/);
-    for (const copy of [token, session.token, renewed.token]) {
+    for (const copy of [token, session.token, refreshed.token, extended.token]) {
       for (const path of ["/api/session", "/api/board/posts", "/api/board/media/media-1234567890-12345678", "/api/screen-settings"])
         assert.equal((await f.request(path, "GET", undefined, copy)).status, 401, `${role} ${path}`);
     }
     const freshToken = await createSessionToken(f.env, { role, subject: f.member.id, authVersion: 1 });
     assert.equal((await f.request("/api/board/posts", "GET", undefined, freshToken)).status, 200);
+  }
+});
+
+test("sessions expire 24 hours after login unless explicitly extended", async () => {
+  const originalNow = Date.now;
+  let now = Date.parse("2026-09-14T12:00:00Z");
+  Date.now = () => now;
+  try {
+    const f = await fixture();
+    const session = await (await f.request("/api/session")).json();
+    assert.equal(session.expiresAt, now + 24 * 60 * 60 * 1000);
+
+    now = session.expiresAt - 1000;
+    const beforeExpiry = await f.request("/api/session", "GET", undefined, session.token);
+    assert.equal(beforeExpiry.status, 200);
+    assert.equal((await beforeExpiry.json()).expiresAt, session.expiresAt);
+
+    now = session.expiresAt + 1000;
+    assert.equal((await f.request("/api/session", "GET", undefined, session.token)).status, 401);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("session extension is idempotent and limited to three uses in server storage", async () => {
+  const originalNow = Date.now;
+  let now = Date.parse("2026-09-14T12:00:00Z");
+  Date.now = () => now;
+  try {
+    const f = await fixture();
+    let token = f.memberToken;
+    let previousExpiresAt = (await (await f.request("/api/session", "GET", undefined, token)).json()).expiresAt;
+
+    for (let count = 1; count <= 3; count += 1) {
+      now += 1000;
+      const sourceToken = token;
+      const response = await f.request("/api/session/extend", "POST", {}, sourceToken);
+      assert.equal(response.status, 200);
+      const extended = await response.json();
+      assert.equal(extended.extensionCount, count);
+      assert.equal(extended.extensionsRemaining, 3 - count);
+      assert.ok(extended.expiresAt > previousExpiresAt);
+
+      if (count === 1) {
+        const retry = await f.request("/api/session/extend", "POST", {}, sourceToken);
+        assert.equal(retry.status, 200);
+        const retryPayload = await retry.json();
+        assert.equal(retryPayload.extensionCount, 1);
+        assert.equal(retryPayload.token, extended.token);
+      }
+
+      token = extended.token;
+      previousExpiresAt = extended.expiresAt;
+    }
+
+    now += 1000;
+    const rejected = await f.request("/api/session/extend", "POST", {}, token);
+    assert.equal(rejected.status, 429);
+    const rejectedPayload = await rejected.json();
+    assert.equal(rejectedPayload.error, "session_extension_limit");
+    assert.equal(rejectedPayload.extensionCount, 3);
+    assert.equal(rejectedPayload.extensionsRemaining, 0);
+
+    const refreshed = await f.request("/api/session", "GET", undefined, token);
+    assert.equal(refreshed.status, 200);
+    const refreshedPayload = await refreshed.json();
+    assert.equal(refreshedPayload.expiresAt, previousExpiresAt);
+    assert.equal(refreshedPayload.extensionCount, 3);
+  } finally {
+    Date.now = originalNow;
   }
 });
 

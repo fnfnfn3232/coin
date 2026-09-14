@@ -2,6 +2,8 @@ const COINNESS_NEWS_ENDPOINT = "https://api.coinness.com/feed/v1/breaking-news";
 const COOKIE_NAME = "coin_board_session";
 const PARTITIONED_COOKIE_NAME = "__Host-coin_board_session_partitioned";
 const SESSION_TTL_SECONDS = 24 * 60 * 60;
+const SESSION_EXTENSION_MAX = 3;
+const SESSION_EXTENSION_KEY_PREFIX = "session-extension:";
 const REVOKED_SESSION_KEY_PREFIX = "revoked-session:";
 const API_BODY_MAX_BYTES = 256 * 1024;
 const BOARD_POSTS_KEY = "free-board-posts";
@@ -787,8 +789,11 @@ function loginLockedResponse(record, env) {
   }), { status: 429, headers });
 }
 
-async function createSessionToken(env, claims = {}) {
-  const exp = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
+async function createSessionToken(env, claims = {}, expiresAt = 0) {
+  const requestedExp = Math.floor(Number(expiresAt) / 1000);
+  const exp = requestedExp > Math.floor(Date.now() / 1000)
+    ? requestedExp
+    : Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
   const nonce = claims.nonce || crypto.randomUUID();
   const role = claims.role === "member" ? "member" : "admin";
   const subject = role === "member" && /^[0-9a-f-]{36}$/i.test(String(claims.subject || ""))
@@ -800,17 +805,17 @@ async function createSessionToken(env, claims = {}) {
   return `${payload}.${signature}`;
 }
 
-function sessionCookie(token) {
-  return `${COOKIE_NAME}=${token}; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=${SESSION_TTL_SECONDS}`;
+function sessionCookie(token, maxAgeSeconds = SESSION_TTL_SECONDS) {
+  return `${COOKIE_NAME}=${token}; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=${Math.max(1, Math.floor(Number(maxAgeSeconds) || 1))}`;
 }
 
-function partitionedSessionCookie(token) {
-  return `${PARTITIONED_COOKIE_NAME}=${token}; HttpOnly; Secure; SameSite=None; Partitioned; Path=/; Max-Age=${SESSION_TTL_SECONDS}`;
+function partitionedSessionCookie(token, maxAgeSeconds = SESSION_TTL_SECONDS) {
+  return `${PARTITIONED_COOKIE_NAME}=${token}; HttpOnly; Secure; SameSite=None; Partitioned; Path=/; Max-Age=${Math.max(1, Math.floor(Number(maxAgeSeconds) || 1))}`;
 }
 
-function appendSessionCookies(headers, token) {
-  headers.append("Set-Cookie", sessionCookie(token));
-  headers.append("Set-Cookie", partitionedSessionCookie(token));
+function appendSessionCookies(headers, token, maxAgeSeconds = SESSION_TTL_SECONDS) {
+  headers.append("Set-Cookie", sessionCookie(token, maxAgeSeconds));
+  headers.append("Set-Cookie", partitionedSessionCookie(token, maxAgeSeconds));
 }
 
 function appendClearedSessionCookies(headers) {
@@ -818,9 +823,10 @@ function appendClearedSessionCookies(headers) {
   headers.append("Set-Cookie", `${PARTITIONED_COOKIE_NAME}=; HttpOnly; Secure; SameSite=None; Partitioned; Path=/; Max-Age=0`);
 }
 
-function sessionPayload(token, claims = null) {
+function sessionPayload(token, claims = null, extensionCount = 0) {
   const parts = String(token || "").split(".");
   const expiresAt = Number(["v2", "v3"].includes(parts[0]) ? parts[1] : parts[0]) * 1000;
+  const usedExtensions = Math.min(SESSION_EXTENSION_MAX, Math.max(0, Math.floor(Number(extensionCount) || 0)));
   return {
     ok: true,
     token,
@@ -829,6 +835,8 @@ function sessionPayload(token, claims = null) {
     subject: claims?.role === "member" ? String(claims.subject || "") : "owner",
     boardReadApproved: claims?.role !== "member" || claims?.boardReadApproved === true,
     boardWriteApproved: claims?.role !== "member" || claims?.boardWriteApproved === true,
+    extensionCount: usedExtensions,
+    extensionsRemaining: SESSION_EXTENSION_MAX - usedExtensions,
   };
 }
 
@@ -2516,6 +2524,7 @@ export class BoardStore {
       if (claims) {
         // Refreshes retain the nonce, invalidating older copies on logout as well.
         await this.state.storage.put(`${REVOKED_SESSION_KEY_PREFIX}${claims.nonce}`, Math.max(claims.expiresAt, now + (SESSION_TTL_SECONDS + 60) * 1000));
+        await this.state.storage.delete(`${SESSION_EXTENSION_KEY_PREFIX}${claims.nonce}`);
       }
     }
     const records = await this.state.storage.list({ prefix: REVOKED_SESSION_KEY_PREFIX });
@@ -2528,10 +2537,65 @@ export class BoardStore {
   async handleSessionRequest(request) {
     const claims = await this.getActiveSessionClaims(request);
     if (!claims) return jsonResponse({ error: "auth_required" }, 401, this.env);
-    const token = await createSessionToken(this.env, claims);
+    const key = `${SESSION_EXTENSION_KEY_PREFIX}${claims.nonce}`;
+    const stored = await this.state.storage.get(key);
+    const extensionCount = Math.min(SESSION_EXTENSION_MAX, Math.max(0, Math.floor(Number(stored?.count) || 0)));
+    const storedExpiresAt = Math.max(0, Math.floor(Number(stored?.expiresAt) || 0));
+    const expiresAt = Math.max(claims.expiresAt, storedExpiresAt);
+    const token = expiresAt > claims.expiresAt
+      ? await createSessionToken(this.env, claims, expiresAt)
+      : claims.token;
+    const maxAgeSeconds = Math.max(1, Math.ceil((expiresAt - Date.now()) / 1000));
     const headers = new Headers(jsonResponse({ ok: true }, 200, this.env).headers);
-    appendSessionCookies(headers, token);
-    return new Response(JSON.stringify(sessionPayload(token, claims)), { status: 200, headers });
+    appendSessionCookies(headers, token, maxAgeSeconds);
+    return new Response(JSON.stringify(sessionPayload(token, claims, extensionCount)), { status: 200, headers });
+  }
+
+  async handleSessionExtendRequest(request) {
+    const claims = await this.getActiveSessionClaims(request);
+    if (!claims) return jsonResponse({ error: "auth_required" }, 401, this.env);
+    const key = `${SESSION_EXTENSION_KEY_PREFIX}${claims.nonce}`;
+    const result = await this.state.storage.transaction(async (storage) => {
+      const now = Date.now();
+      const stored = (await storage.get(key)) || {};
+      const count = Math.min(SESSION_EXTENSION_MAX, Math.max(0, Math.floor(Number(stored.count) || 0)));
+      const storedExpiresAt = Math.max(0, Math.floor(Number(stored.expiresAt) || 0));
+      const sourceExpiresAt = Math.max(0, Math.floor(Number(stored.sourceExpiresAt) || 0));
+
+      // A retried request made with the same pre-extension token returns the
+      // existing result without consuming another extension.
+      if (sourceExpiresAt === claims.expiresAt && storedExpiresAt > claims.expiresAt) {
+        return { count, expiresAt: storedExpiresAt };
+      }
+      if (count >= SESSION_EXTENSION_MAX) {
+        return { error: "session_extension_limit", count, expiresAt: Math.max(claims.expiresAt, storedExpiresAt) };
+      }
+
+      const expiresAt = now + SESSION_TTL_SECONDS * 1000;
+      const next = {
+        count: count + 1,
+        expiresAt,
+        sourceExpiresAt: claims.expiresAt,
+        updatedAt: now,
+      };
+      await storage.put(key, next);
+      return next;
+    });
+
+    if (result.error) {
+      return jsonResponse({
+        error: result.error,
+        extensionCount: result.count,
+        extensionsRemaining: 0,
+        expiresAt: result.expiresAt,
+      }, 429, this.env);
+    }
+
+    const token = await createSessionToken(this.env, claims, result.expiresAt);
+    const maxAgeSeconds = Math.max(1, Math.ceil((result.expiresAt - Date.now()) / 1000));
+    const headers = new Headers(jsonResponse({ ok: true }, 200, this.env).headers);
+    appendSessionCookies(headers, token, maxAgeSeconds);
+    return new Response(JSON.stringify(sessionPayload(token, claims, result.count)), { status: 200, headers });
   }
 
   async readPosts(storage = this.state.storage) {
@@ -4194,6 +4258,9 @@ export class BoardStore {
     if (request.method === "GET" && url.pathname === "/api/session") {
       return this.handleSessionRequest(request);
     }
+    if (request.method === "POST" && url.pathname === "/api/session/extend") {
+      return this.handleSessionExtendRequest(request);
+    }
     if (request.method === "GET" && url.pathname === "/api/session/check") {
       const claims = await this.getActiveSessionClaims(request);
       return claims
@@ -4697,6 +4764,10 @@ export default {
       return jsonResponse({ error: "auth_storage_unavailable" }, 503, env);
     }
     if (url.pathname === "/api/logout" && request.method === "POST") {
+      if (!env.BOARD_STORE) return jsonResponse({ error: "auth_storage_unavailable" }, 503, env);
+      return env.BOARD_STORE.get(env.BOARD_STORE.idFromName("free-board")).fetch(request);
+    }
+    if (url.pathname === "/api/session/extend" && request.method === "POST") {
       if (!env.BOARD_STORE) return jsonResponse({ error: "auth_storage_unavailable" }, 503, env);
       return env.BOARD_STORE.get(env.BOARD_STORE.idFromName("free-board")).fetch(request);
     }
