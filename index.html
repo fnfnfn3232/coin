@@ -11273,13 +11273,21 @@
         if (upbitAuditData && !force) return upbitAuditData;
         if (upbitAuditPromise) return upbitAuditPromise;
         upbitAuditError = "";
-        upbitAuditPromise = fetch(`${UPBIT_AUDIT_DATA_URL}?v=20260701`, {
-          method: "GET",
-          cache: force ? "reload" : "force-cache",
-        })
-          .then(async (response) => {
-            if (!response.ok) throw new Error(`audit_http_${response.status}`);
-            const payload = await response.json();
+        upbitAuditPromise = Promise.resolve()
+          .then(async () => {
+            let payload = data?.upbitAudit;
+            if ((!payload || !Array.isArray(payload.rows)) && hasServerAuth() && !isLocalPreview()) {
+              await fetchLatestBoardData();
+              payload = data?.upbitAudit;
+            }
+            if ((!payload || !Array.isArray(payload.rows)) && isLocalPreview()) {
+              const response = await fetch(`${UPBIT_AUDIT_DATA_URL}?v=20260701`, {
+                method: "GET",
+                cache: force ? "reload" : "force-cache",
+              });
+              if (!response.ok) throw new Error(`audit_http_${response.status}`);
+              payload = await response.json();
+            }
             if (!payload || !Array.isArray(payload.rows) || payload.rows.length < 1) {
               throw new Error("audit_data_invalid");
             }
