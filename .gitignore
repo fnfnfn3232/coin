@@ -1,5 +1,12 @@
 __pycache__/
 *.pyc
+*.log
+
+# Local research captures; these are not runtime site assets.
+/bithumb_1949.js
+/bithumb_3299.js
+/bithumb_main.js
+/rt_excerpt.txt
 
 # Generated protected data. Keep local copies out of the public Pages repository.
 /data.js

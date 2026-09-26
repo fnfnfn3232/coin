@@ -3,8 +3,16 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const source = await readFile(new URL("./cloudflare-worker.js", import.meta.url), "utf8");
-const { default: worker, BoardStore, createSessionToken, normalizeMemberRecord } = await import(
-  `data:text/javascript;base64,${Buffer.from(`${source}\nexport { createSessionToken, normalizeMemberRecord };\n//# sourceURL=cloudflare-worker-under-test.mjs`).toString("base64")}`
+const {
+  default: worker,
+  BoardStore,
+  createSessionToken,
+  deriveMemberPasswordHash,
+  MEMBER_PASSWORD_ITERATIONS,
+  normalizeMemberRecord,
+  verifyMemberPassword,
+} = await import(
+  `data:text/javascript;base64,${Buffer.from(`${source}\nexport { createSessionToken, deriveMemberPasswordHash, MEMBER_PASSWORD_ITERATIONS, normalizeMemberRecord, verifyMemberPassword };\n//# sourceURL=cloudflare-worker-under-test.mjs`).toString("base64")}`
 );
 
 class MemoryStorage {
@@ -80,6 +88,31 @@ test("all existing active members migrate to read-only; migration is idempotent"
   assert.equal(normalizeMemberRecord({ ...base, status: "pending" }).boardReadApproved, false);
   assert.equal(normalizeMemberRecord({ ...base, boardPermissionVersion: 2, boardReadApproved: true, boardWriteApproved: true }).boardWriteApproved, true);
   assert.equal(normalizeMemberRecord({ ...base, boardPermissionVersion: 2, boardReadApproved: false, boardWriteApproved: true }).boardWriteApproved, false);
+});
+
+test("member passwords use 600,000 PBKDF2 iterations and upgrade after login", async () => {
+  assert.equal(MEMBER_PASSWORD_ITERATIONS, 600000);
+  const f = await fixture();
+  const password = "LegacyPassword123";
+  const passwordSalt = "00112233445566778899aabbccddeeff";
+  const legacyIterations = 210000;
+  const passwordHash = await deriveMemberPasswordHash(password, passwordSalt, legacyIterations);
+  await f.storage.put("site-members-v1", [{
+    ...f.member,
+    passwordSalt,
+    passwordHash,
+    passwordIterations: legacyIterations,
+  }]);
+
+  const response = await f.request("/api/login/member/password", "POST", {
+    email: f.member.email,
+    password,
+  }, null);
+  assert.equal(response.status, 200);
+
+  const [upgraded] = await f.storage.get("site-members-v1");
+  assert.equal(upgraded.passwordIterations, 600000);
+  assert.equal(await verifyMemberPassword(password, upgraded), true);
 });
 
 test("membership approval and restoration automatically grant reading, never writing", async () => {
