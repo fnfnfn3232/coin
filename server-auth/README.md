@@ -119,7 +119,7 @@ POST /api/logout
 
 ## Important limitation
 
-This protects data served by the Worker. It does not protect any data that is still committed into public `data.js`, `board_snapshot.json`, or the GitHub repository. News lists should stay in the Worker store instead of the GitHub Pages data files.
+This protects data served by the Worker. Generated `data.js`, `board_snapshot.json`, audit data, and news lists must stay untracked and be published only to the authenticated Worker store. Files committed to the GitHub repository or GitHub Pages are public and bypass Worker login.
 
 Also, do not reuse the old client-side password as the Worker password after deployment. The old password has already existed in public frontend code. Use a new password when setting `SITE_PASSWORD_SHA256`.
 
