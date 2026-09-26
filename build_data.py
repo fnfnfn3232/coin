@@ -4309,6 +4309,10 @@ def make_payload(previous_payload: dict | None = None) -> dict:
         with_cap = sum(1 for row in rows if row.get("sortCapUsd") is not None)
         futures_stats[exchange_name] = {"total": len(rows), "withCap": with_cap}
 
+    upbit_audit = load_upbit_audit_data(previous_payload)
+    if not isinstance(upbit_audit, dict) or not upbit_audit.get("rows"):
+        raise RuntimeError("protected_upbit_audit_data_missing")
+
     generated_at = int(time.time())
     return {
         "generatedAt": generated_at,
@@ -4324,7 +4328,7 @@ def make_payload(previous_payload: dict | None = None) -> dict:
         "stats": stats,
         "futuresStats": futures_stats,
         "scheduledDelistings": ACTIVE_SCHEDULED_DELISTINGS,
-        "upbitAudit": load_upbit_audit_data(previous_payload),
+        "upbitAudit": upbit_audit,
         "changes": build_changes(boards, previous_payload),
         "notes": {
             "binance": "binance_exact_market_cap",
