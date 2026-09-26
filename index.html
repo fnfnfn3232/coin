@@ -6070,38 +6070,113 @@
         min-width: 0;
       }
 
-      .hero-brand-lockup {
+      .hero-news {
         display: flex;
-        align-items: center;
-        gap: 22px;
+        min-width: 0;
+        flex-direction: column;
+        justify-content: center;
+        padding: 10px 0;
       }
 
-      .hero-brand-mark {
-        display: grid;
-        flex: 0 0 auto;
-        grid-template-columns: repeat(2, 22px);
-        gap: 6px;
+      .hero-news-head {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 20px;
+        margin-bottom: 15px;
       }
 
-      .hero-brand-mark span {
-        width: 22px;
-        height: 22px;
-        border-radius: 5px;
-        background: #3567ff;
-      }
-
-      .hero-brand-mark span:nth-child(2),
-      .hero-brand-mark span:nth-child(3) {
-        background: #7d9cff;
-      }
-
-      .hero h1 {
+      .hero-news-heading {
         margin: 0;
         color: #101f38;
-        font-size: 54px;
-        font-weight: 850;
-        line-height: 1;
+        font-size: 25px;
+        font-weight: 800;
+        line-height: 1.25;
         letter-spacing: 0;
+      }
+
+      .hero-news-more {
+        flex: 0 0 auto;
+        padding: 6px 0;
+        border: 0;
+        color: #3567ff;
+        background: transparent;
+        font-size: 13px;
+        font-weight: 750;
+        cursor: pointer;
+      }
+
+      .hero-news-more:hover,
+      .hero-news-more:focus-visible {
+        color: #194bd8;
+      }
+
+      .hero-news-list {
+        min-height: 332px;
+        border-top: 1px solid #dbe4ee;
+        border-bottom: 1px solid #dbe4ee;
+      }
+
+      .hero-news-item {
+        display: grid;
+        width: 100%;
+        min-width: 0;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px 18px;
+        align-items: center;
+        padding: 16px 2px;
+        border: 0;
+        border-bottom: 1px solid #e6ecf2;
+        color: inherit;
+        background: transparent;
+        text-align: left;
+        text-decoration: none;
+      }
+
+      .hero-news-item:last-child {
+        border-bottom: 0;
+      }
+
+      .hero-news-item:hover .hero-news-item-title,
+      .hero-news-item:focus-visible .hero-news-item-title {
+        color: #3567ff;
+      }
+
+      button.hero-news-item {
+        cursor: pointer;
+      }
+
+      .hero-news-item-title {
+        min-width: 0;
+        overflow: hidden;
+        color: #1a2a43;
+        font-size: 15px;
+        font-weight: 650;
+        line-height: 1.48;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .hero-news-item-meta {
+        color: #7d899b;
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+
+      .hero-news-state {
+        display: flex;
+        min-height: 332px;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        color: #738198;
+        font-size: 13px;
+        text-align: center;
+      }
+
+      .hero-news .title-status-slot:not(:empty) {
+        margin-top: 16px;
       }
 
       .hero > .market-only {
@@ -6438,8 +6513,8 @@
           padding-top: 58px;
         }
 
-        .hero h1 {
-          font-size: 46px;
+        .hero-news {
+          padding: 0;
         }
 
         .lock-ttl-wrap {
@@ -6504,24 +6579,21 @@
           padding: 42px 0 46px;
         }
 
-        .hero h1 {
-          font-size: 36px;
-          line-height: 1;
+        .hero-news-heading {
+          font-size: 22px;
         }
 
-        .hero-brand-lockup {
-          gap: 16px;
+        .hero-news-list,
+        .hero-news-state {
+          min-height: 0;
         }
 
-        .hero-brand-mark {
-          grid-template-columns: repeat(2, 17px);
-          gap: 5px;
+        .hero-news-item {
+          padding: 14px 0;
         }
 
-        .hero-brand-mark span {
-          width: 17px;
-          height: 17px;
-          border-radius: 4px;
+        .hero-news-item-title {
+          font-size: 14px;
         }
 
         .hero > .market-only {
@@ -6687,11 +6759,14 @@
   </header>
   <main class="shell" id="appShell">
     <section class="panel hero">
-      <div class="title-row">
+      <div class="title-row hero-news">
         <div class="title-left">
-          <div class="hero-brand-lockup">
-            <span class="hero-brand-mark" aria-hidden="true"><span></span><span></span><span></span><span></span></span>
-            <h1 id="title"></h1>
+          <div class="hero-news-head">
+            <h1 class="hero-news-heading" id="title"></h1>
+            <button class="hero-news-more" id="heroNewsMoreBtn" type="button">뉴스 전체보기 →</button>
+          </div>
+          <div class="hero-news-list" id="heroNewsList" aria-live="polite">
+            <div class="hero-news-state">최신 뉴스를 불러오는 중입니다.</div>
           </div>
           <div class="auto-strip-slot title-status-slot market-only" id="titleStatusSlot"></div>
         </div>
@@ -7404,6 +7479,8 @@
     const tabs = document.getElementById("tabs");
     const summaryStats = document.getElementById("summaryStats");
     const titleStatusSlot = document.getElementById("titleStatusSlot");
+    const heroNewsList = document.getElementById("heroNewsList");
+    const heroNewsMoreBtn = document.getElementById("heroNewsMoreBtn");
     const summaryStatusSlot = document.getElementById("summaryStatusSlot");
     const controlsStatusSlot = document.getElementById("controlsStatusSlot");
     const autoStrip = document.getElementById("autoStrip");
@@ -8624,10 +8701,12 @@
         if (!force && Date.now() - liveNewsFetchedAtMs < LIVE_NEWS_REFRESH_MS) return;
         refreshLiveNews(force)
           .then(() => {
+            renderHeroNewsPreview();
             if (state.viewMode === "news") renderNewsPanel();
           })
           .catch((error) => {
             console.error(error);
+            renderHeroNewsPreview();
             if (state.viewMode === "news") renderNewsPanel();
           });
       }
@@ -10160,6 +10239,59 @@
         const minute = pick("minute");
         if (!year || !month || !day || !hour) return raw;
         return `${year}년 ${month}월 ${day}일 ${hour}시${minute && minute !== "00" ? ` ${minute}분` : ""}`;
+      }
+
+      function formatHeroNewsTime(value) {
+        if (!value) return "";
+        const raw = String(value);
+        const numeric = Number(raw);
+        const date = Number.isFinite(numeric)
+          ? new Date(numeric < 1000000000000 ? numeric * 1000 : numeric)
+          : new Date(raw);
+        if (Number.isNaN(date.getTime())) return "";
+        const now = new Date();
+        const sameDay = date.getFullYear() === now.getFullYear()
+          && date.getMonth() === now.getMonth()
+          && date.getDate() === now.getDate();
+        if (sameDay) {
+          return date.toLocaleTimeString("ko-KR", {
+            timeZone: "Asia/Seoul",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+          });
+        }
+        return date.toLocaleDateString("ko-KR", {
+          timeZone: "Asia/Seoul",
+          month: "numeric",
+          day: "numeric",
+        }).replace(/\s/g, "");
+      }
+
+      function renderHeroNewsPreview() {
+        if (!heroNewsList) return;
+        const items = String(data.news?.query || "")
+          ? []
+          : getLoadedNewsItems(data.news).slice(0, 5);
+        if (!items.length) {
+          const message = liveNewsPromise
+            ? "최신 뉴스를 불러오는 중입니다."
+            : liveNewsError
+              ? "뉴스를 불러오지 못했습니다. 뉴스 메뉴에서 다시 시도해 주세요."
+              : "표시할 최신 뉴스가 없습니다.";
+          heroNewsList.innerHTML = `<div class="hero-news-state">${escapeHtml(message)}</div>`;
+          return;
+        }
+        heroNewsList.innerHTML = items.map((item, index) => {
+          const title = item.originalTitle || item.title || item.headline || item.name || "뉴스";
+          const time = formatHeroNewsTime(item.publishAt || item.publishedAt || item.time || item.datetime || item.createdAt || "");
+          const url = item.url || item.link || item.articleUrl || item.originUrl || item.sourceUrl || "";
+          const meta = ["코인니스", time].filter(Boolean).join(" · ");
+          const inner = `<span class="hero-news-item-title">${escapeHtml(title)}</span><span class="hero-news-item-meta">${escapeHtml(meta)}</span>`;
+          return isSafeHttpUrl(url)
+            ? `<a class="hero-news-item" href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${inner}</a>`
+            : `<button class="hero-news-item" type="button" data-hero-news-open="${index}">${inner}</button>`;
+        }).join("");
       }
 
       function freeBoardCategoryLabel(category) {
@@ -13197,7 +13329,7 @@
         }
       });
 
-      document.getElementById("title").textContent = TEXT.title;
+      document.getElementById("title").textContent = "최신 뉴스";
     document.getElementById("statLabelBinance").textContent = TEXT.statLabelBinance;
     document.getElementById("statLabelUpbit").textContent = TEXT.statLabelUpbit;
     document.getElementById("statLabelBithumb").textContent = TEXT.statLabelBithumb;
@@ -15874,6 +16006,9 @@
       }
 
       function goHomeView() {
+        if (newsSearchQuery || String(data.news?.query || "")) {
+          resetViewSearchState("news");
+        }
         selectDefaultMarketBoard();
         state.query = "";
         state.compareBoard = "";
@@ -16172,6 +16307,8 @@
     }
 
       function render() {
+        if (state.viewMode === "market") requestLiveNewsRefresh(false);
+        renderHeroNewsPreview();
         normalizeKnownAssetIdentities();
         normalizeKoreanAssetNames();
         ensureSelectedMarketBoard();
@@ -17306,6 +17443,17 @@
         goHomeView();
       });
 
+      heroNewsMoreBtn?.addEventListener("click", () => {
+        resetViewSearchState("news");
+        setViewMode("news");
+      });
+
+      heroNewsList?.addEventListener("click", (event) => {
+        if (!event.target.closest("[data-hero-news-open]")) return;
+        resetViewSearchState("news");
+        setViewMode("news");
+      });
+
       summaryStats?.addEventListener("click", (event) => {
         const target = event.target instanceof Element ? event.target : event.target?.parentElement;
         const card = target?.closest("[data-stat-board]");
@@ -17710,9 +17858,11 @@
             const newsResult = await refreshLiveNews(true);
             anySuccess = true;
             changed = changed || Boolean(newsResult?.items?.[0]?.id && newsResult.items[0].id !== beforeFirstNewsId);
+            renderHeroNewsPreview();
             if (state.viewMode === "news") renderNewsPanel();
           } catch (error) {
             console.error(error);
+            renderHeroNewsPreview();
             if (state.viewMode === "news") renderNewsPanel();
           }
 
@@ -17804,7 +17954,7 @@
         runAutoRefreshTick("interval");
       }, autoRefreshMs);
       window.setInterval(() => {
-        if (state.viewMode === "news") {
+        if (state.viewMode === "news" || state.viewMode === "market") {
           requestLiveNewsRefresh(true);
         }
       }, LIVE_NEWS_REFRESH_MS);
