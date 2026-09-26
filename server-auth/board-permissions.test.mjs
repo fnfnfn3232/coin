@@ -6,13 +6,14 @@ const source = await readFile(new URL("./cloudflare-worker.js", import.meta.url)
 const {
   default: worker,
   BoardStore,
+  createMemberPasswordCredentials,
   createSessionToken,
   deriveMemberPasswordHash,
   MEMBER_PASSWORD_ITERATIONS,
   normalizeMemberRecord,
   verifyMemberPassword,
 } = await import(
-  `data:text/javascript;base64,${Buffer.from(`${source}\nexport { createSessionToken, deriveMemberPasswordHash, MEMBER_PASSWORD_ITERATIONS, normalizeMemberRecord, verifyMemberPassword };\n//# sourceURL=cloudflare-worker-under-test.mjs`).toString("base64")}`
+  `data:text/javascript;base64,${Buffer.from(`${source}\nexport { createMemberPasswordCredentials, createSessionToken, deriveMemberPasswordHash, MEMBER_PASSWORD_ITERATIONS, normalizeMemberRecord, verifyMemberPassword };\n//# sourceURL=cloudflare-worker-under-test.mjs`).toString("base64")}`
 );
 
 class MemoryStorage {
@@ -90,8 +91,11 @@ test("all existing active members migrate to read-only; migration is idempotent"
   assert.equal(normalizeMemberRecord({ ...base, boardPermissionVersion: 2, boardReadApproved: false, boardWriteApproved: true }).boardWriteApproved, false);
 });
 
-test("member passwords use 600,000 PBKDF2 iterations and upgrade after login", async () => {
-  assert.equal(MEMBER_PASSWORD_ITERATIONS, 600000);
+test("member passwords stay within free Worker limits and stronger legacy hashes are preserved", async () => {
+  assert.equal(MEMBER_PASSWORD_ITERATIONS, 100000);
+  const fresh = await createMemberPasswordCredentials("NewPassword123");
+  assert.equal(fresh.passwordIterations, 100000);
+
   const f = await fixture();
   const password = "LegacyPassword123";
   const passwordSalt = "00112233445566778899aabbccddeeff";
@@ -111,7 +115,7 @@ test("member passwords use 600,000 PBKDF2 iterations and upgrade after login", a
   assert.equal(response.status, 200);
 
   const [upgraded] = await f.storage.get("site-members-v1");
-  assert.equal(upgraded.passwordIterations, 600000);
+  assert.equal(upgraded.passwordIterations, legacyIterations);
   assert.equal(await verifyMemberPassword(password, upgraded), true);
 });
 
