@@ -14,6 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 DATA_JS_PATH = ROOT / "data.js"
 SNAPSHOT_JSON_PATH = ROOT / "board_snapshot.json"
+UPBIT_AUDIT_DATA_PATH = ROOT / "upbit-audit-202607.json"
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
@@ -2323,6 +2324,21 @@ def pick_first_candidate_with_market_signal(candidate_rows: list[dict]) -> dict 
     return None
 
 
+def load_upbit_audit_data(previous_payload: dict | None) -> dict | None:
+    if UPBIT_AUDIT_DATA_PATH.exists():
+        try:
+            payload = json.loads(UPBIT_AUDIT_DATA_PATH.read_text(encoding="utf-8"))
+            if isinstance(payload, dict) and isinstance(payload.get("rows"), list) and payload["rows"]:
+                return payload
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    previous = (previous_payload or {}).get("upbitAudit")
+    if isinstance(previous, dict) and isinstance(previous.get("rows"), list) and previous["rows"]:
+        return clone_json_value(previous)
+    return None
+
+
 def derive_circulating_supply(
     *,
     market_cap_usd: float | None,
@@ -4308,6 +4324,7 @@ def make_payload(previous_payload: dict | None = None) -> dict:
         "stats": stats,
         "futuresStats": futures_stats,
         "scheduledDelistings": ACTIVE_SCHEDULED_DELISTINGS,
+        "upbitAudit": load_upbit_audit_data(previous_payload),
         "changes": build_changes(boards, previous_payload),
         "notes": {
             "binance": "binance_exact_market_cap",
