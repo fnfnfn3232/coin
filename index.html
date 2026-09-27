@@ -6080,10 +6080,62 @@
 
       .hero-news-head {
         display: flex;
-        align-items: flex-end;
+        align-items: center;
         justify-content: space-between;
         gap: 20px;
         margin-bottom: 15px;
+      }
+
+      .hero-news-actions,
+      .hero-news-pager {
+        display: flex;
+        align-items: center;
+      }
+
+      .hero-news-actions {
+        flex: 0 0 auto;
+        gap: 14px;
+      }
+
+      .hero-news-pager {
+        gap: 6px;
+      }
+
+      .hero-news-page {
+        min-width: 34px;
+        color: #738198;
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+        text-align: center;
+        white-space: nowrap;
+      }
+
+      .hero-news-nav {
+        display: inline-flex;
+        width: 30px;
+        height: 30px;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border: 1px solid #d4deea;
+        border-radius: 6px;
+        color: #3567ff;
+        background: transparent;
+        font-size: 20px;
+        line-height: 1;
+        cursor: pointer;
+      }
+
+      .hero-news-nav:hover:not(:disabled),
+      .hero-news-nav:focus-visible:not(:disabled) {
+        border-color: #3567ff;
+        background: #edf3ff;
+      }
+
+      .hero-news-nav:disabled {
+        color: #aeb8c6;
+        cursor: default;
+        opacity: 0.55;
       }
 
       .hero-news-heading {
@@ -6583,6 +6635,19 @@
           font-size: 22px;
         }
 
+        .hero-news-head {
+          gap: 12px;
+        }
+
+        .hero-news-actions {
+          gap: 8px;
+        }
+
+        .hero-news-nav {
+          width: 28px;
+          height: 28px;
+        }
+
         .hero-news-list,
         .hero-news-state {
           min-height: 0;
@@ -6763,7 +6828,14 @@
         <div class="title-left">
           <div class="hero-news-head">
             <h1 class="hero-news-heading" id="title"></h1>
-            <button class="hero-news-more" id="heroNewsMoreBtn" type="button">뉴스 전체보기 →</button>
+            <div class="hero-news-actions">
+              <div class="hero-news-pager" aria-label="홈 뉴스 페이지 이동">
+                <button class="hero-news-nav" id="heroNewsPrevBtn" type="button" aria-label="이전 뉴스 5개" title="이전 뉴스 5개">‹</button>
+                <span class="hero-news-page" id="heroNewsPage" aria-live="polite">0 / 0</span>
+                <button class="hero-news-nav" id="heroNewsNextBtn" type="button" aria-label="다음 뉴스 5개" title="다음 뉴스 5개">›</button>
+              </div>
+              <button class="hero-news-more" id="heroNewsMoreBtn" type="button">전체보기 →</button>
+            </div>
           </div>
           <div class="hero-news-list" id="heroNewsList" aria-live="polite">
             <div class="hero-news-state">최신 뉴스를 불러오는 중입니다.</div>
@@ -7286,6 +7358,7 @@
     const GITHUB_PAGES_MONTHLY_SOFT_LIMIT_BYTES = 100 * 1024 * 1024 * 1024;
     const LIVE_NEWS_REFRESH_MS = 10 * 60 * 1000;
     const NEWS_PAGE_SIZE = 40;
+    const HERO_NEWS_PAGE_SIZE = 5;
     const RANKING_PAGE_SIZE = 50;
     const FUTURES_PAGE_SIZE = 50;
     const DEFILLAMA_RANKING_CATEGORIES = {
@@ -7481,6 +7554,9 @@
     const titleStatusSlot = document.getElementById("titleStatusSlot");
     const heroNewsList = document.getElementById("heroNewsList");
     const heroNewsMoreBtn = document.getElementById("heroNewsMoreBtn");
+    const heroNewsPrevBtn = document.getElementById("heroNewsPrevBtn");
+    const heroNewsNextBtn = document.getElementById("heroNewsNextBtn");
+    const heroNewsPage = document.getElementById("heroNewsPage");
     const summaryStatusSlot = document.getElementById("summaryStatusSlot");
     const controlsStatusSlot = document.getElementById("controlsStatusSlot");
     const autoStrip = document.getElementById("autoStrip");
@@ -8757,6 +8833,7 @@
       let liveNewsLastUpdatedAtMs = 0;
       let liveNewsError = "";
       let newsSearchQuery = "";
+      let heroNewsPageIndex = 0;
       let rankingCategory = "tvl";
       let rankingQuery = "";
       let rankingVisibleCount = RANKING_PAGE_SIZE;
@@ -10249,30 +10326,35 @@
           ? new Date(numeric < 1000000000000 ? numeric * 1000 : numeric)
           : new Date(raw);
         if (Number.isNaN(date.getTime())) return "";
-        const now = new Date();
-        const sameDay = date.getFullYear() === now.getFullYear()
-          && date.getMonth() === now.getMonth()
-          && date.getDate() === now.getDate();
-        if (sameDay) {
-          return date.toLocaleTimeString("ko-KR", {
-            timeZone: "Asia/Seoul",
-            hour: "2-digit",
-            minute: "2-digit",
-            hour12: false,
-          });
-        }
-        return date.toLocaleDateString("ko-KR", {
+        const parts = new Intl.DateTimeFormat("ko-KR", {
           timeZone: "Asia/Seoul",
           month: "numeric",
           day: "numeric",
-        }).replace(/\s/g, "");
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        }).formatToParts(date);
+        const pick = (type) => parts.find((part) => part.type === type)?.value || "";
+        const month = String(Number(pick("month")) || pick("month"));
+        const day = String(Number(pick("day")) || pick("day"));
+        const hour = String(Number(pick("hour")) || pick("hour")).padStart(2, "0");
+        const minute = pick("minute");
+        if (!month || !day || !hour || !minute) return "";
+        return `${month}.${day}. ${hour}:${minute}`;
       }
 
       function renderHeroNewsPreview() {
         if (!heroNewsList) return;
-        const items = String(data.news?.query || "")
+        const allItems = String(data.news?.query || "")
           ? []
-          : getLoadedNewsItems(data.news).slice(0, 5);
+          : getLoadedNewsItems(data.news);
+        const totalPages = allItems.length ? Math.ceil(allItems.length / HERO_NEWS_PAGE_SIZE) : 0;
+        heroNewsPageIndex = totalPages ? Math.min(heroNewsPageIndex, totalPages - 1) : 0;
+        const start = heroNewsPageIndex * HERO_NEWS_PAGE_SIZE;
+        const items = allItems.slice(start, start + HERO_NEWS_PAGE_SIZE);
+        if (heroNewsPage) heroNewsPage.textContent = totalPages ? `${heroNewsPageIndex + 1} / ${totalPages}` : "0 / 0";
+        if (heroNewsPrevBtn) heroNewsPrevBtn.disabled = !totalPages || heroNewsPageIndex === 0;
+        if (heroNewsNextBtn) heroNewsNextBtn.disabled = !totalPages || heroNewsPageIndex >= totalPages - 1;
         if (!items.length) {
           const message = liveNewsPromise
             ? "최신 뉴스를 불러오는 중입니다."
@@ -10290,7 +10372,7 @@
           const inner = `<span class="hero-news-item-title">${escapeHtml(title)}</span><span class="hero-news-item-meta">${escapeHtml(meta)}</span>`;
           return isSafeHttpUrl(url)
             ? `<a class="hero-news-item" href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${inner}</a>`
-            : `<button class="hero-news-item" type="button" data-hero-news-open="${index}">${inner}</button>`;
+            : `<button class="hero-news-item" type="button" data-hero-news-open="${start + index}">${inner}</button>`;
         }).join("");
       }
 
@@ -17441,6 +17523,19 @@
 
       marketToggleBtn.addEventListener("click", () => {
         goHomeView();
+      });
+
+      heroNewsPrevBtn?.addEventListener("click", () => {
+        if (heroNewsPageIndex === 0) return;
+        heroNewsPageIndex -= 1;
+        renderHeroNewsPreview();
+      });
+
+      heroNewsNextBtn?.addEventListener("click", () => {
+        const totalPages = Math.ceil(getLoadedNewsItems(data.news).length / HERO_NEWS_PAGE_SIZE);
+        if (heroNewsPageIndex >= totalPages - 1) return;
+        heroNewsPageIndex += 1;
+        renderHeroNewsPreview();
       });
 
       heroNewsMoreBtn?.addEventListener("click", () => {
