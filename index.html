@@ -6178,14 +6178,17 @@
         align-items: center;
         padding: 16px 2px;
         border: 0;
-        border-bottom: 1px solid #e6ecf2;
         color: inherit;
         background: transparent;
         text-align: left;
         text-decoration: none;
       }
 
-      .hero-news-item:last-child {
+      .hero-news-entry {
+        border-bottom: 1px solid #e6ecf2;
+      }
+
+      .hero-news-entry:last-child {
         border-bottom: 0;
       }
 
@@ -6196,6 +6199,19 @@
 
       button.hero-news-item {
         cursor: pointer;
+      }
+
+      .hero-news-summary {
+        max-height: 116px;
+        margin: -5px 2px 14px;
+        padding: 11px 13px;
+        overflow-y: auto;
+        border: 1px solid #dbe4ee;
+        border-radius: 6px;
+        color: #52647d;
+        background: #f5f8fc;
+        font-size: 12px;
+        line-height: 1.65;
       }
 
       .hero-news-item-title {
@@ -8834,6 +8850,7 @@
       let liveNewsError = "";
       let newsSearchQuery = "";
       let heroNewsPageIndex = 0;
+      let heroNewsExpandedKey = "";
       let rankingCategory = "tvl";
       let rankingQuery = "";
       let rankingVisibleCount = RANKING_PAGE_SIZE;
@@ -10365,14 +10382,23 @@
           return;
         }
         heroNewsList.innerHTML = items.map((item, index) => {
+          const absoluteIndex = start + index;
           const title = item.originalTitle || item.title || item.headline || item.name || "뉴스";
           const time = formatHeroNewsTime(item.publishAt || item.publishedAt || item.time || item.datetime || item.createdAt || "");
-          const url = item.url || item.link || item.articleUrl || item.originUrl || item.sourceUrl || "";
+          const body = item.summary || item.contentPreview || item.body || item.description || item.text || "";
           const meta = ["코인니스", time].filter(Boolean).join(" · ");
-          const inner = `<span class="hero-news-item-title">${escapeHtml(title)}</span><span class="hero-news-item-meta">${escapeHtml(meta)}</span>`;
-          return isSafeHttpUrl(url)
-            ? `<a class="hero-news-item" href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${inner}</a>`
-            : `<button class="hero-news-item" type="button" data-hero-news-open="${start + index}">${inner}</button>`;
+          const key = String(item.id || item.articleUrl || item.url || item.headline || item.title || absoluteIndex);
+          const expanded = heroNewsExpandedKey === key;
+          const summaryText = body || "이 뉴스에는 저장된 요약문이 없습니다.";
+          return `
+            <article class="hero-news-entry">
+              <button class="hero-news-item" type="button" data-hero-news-summary="${escapeAttr(key)}" aria-expanded="${expanded}">
+                <span class="hero-news-item-title">${escapeHtml(title)}</span>
+                <span class="hero-news-item-meta">${escapeHtml(meta)}</span>
+              </button>
+              ${expanded ? `<div class="hero-news-summary">${escapeHtml(summaryText)}</div>` : ""}
+            </article>
+          `;
         }).join("");
       }
 
@@ -15809,6 +15835,15 @@
         }
       }
 
+      function mergeMarketSnapshotWithLiveNews(snapshot) {
+        if (!snapshot || typeof snapshot !== "object") return snapshot;
+        const currentNews = data?.news;
+        const hasLiveNewsState = liveNewsFetchedAtMs > 0
+          || (Array.isArray(currentNews?.items) && currentNews.items.length > 0);
+        if (!hasLiveNewsState) return snapshot;
+        return { ...snapshot, news: currentNews };
+      }
+
       async function fetchLatestBoardData() {
         if (marketDataLoadPromise) return marketDataLoadPromise;
         if (hasServerAuth() && !isLocalPreview()) {
@@ -15835,14 +15870,15 @@
               if (!isValidBoardPayload(parsed)) {
                 throw new Error(parsed?.error || "market_data_invalid");
               }
-              data = parsed;
-              window.BOARD_DATA = parsed;
+              const nextData = mergeMarketSnapshotWithLiveNews(parsed);
+              data = nextData;
+              window.BOARD_DATA = nextData;
               marketDataLoaded = true;
               marketDataLoadedFromServer = true;
               normalizeKnownAssetIdentities();
-              normalizeKoreanAssetNames(parsed);
+              normalizeKoreanAssetNames(nextData);
               const saved = saveLastGoodData(data);
-              setMarketSnapshotGeneratedAt(saved ? parsed.generatedAt : 0);
+              setMarketSnapshotGeneratedAt(saved ? nextData.generatedAt : 0);
               renderSummaryStats();
               renderAutoStatus();
               renderCurrentView();
@@ -15883,12 +15919,13 @@
           throw lastError || new Error("data.js load failed");
         }
 
-        data = parsed;
-        window.BOARD_DATA = parsed;
+        const nextData = mergeMarketSnapshotWithLiveNews(parsed);
+        data = nextData;
+        window.BOARD_DATA = nextData;
         marketDataLoaded = true;
-        setMarketSnapshotGeneratedAt(parsed.generatedAt);
+        setMarketSnapshotGeneratedAt(nextData.generatedAt);
         normalizeKnownAssetIdentities();
-        normalizeKoreanAssetNames(parsed);
+        normalizeKoreanAssetNames(nextData);
         saveLastGoodData(data);
         renderSummaryStats();
         renderAutoStatus();
@@ -17528,6 +17565,7 @@
       heroNewsPrevBtn?.addEventListener("click", () => {
         if (heroNewsPageIndex === 0) return;
         heroNewsPageIndex -= 1;
+        heroNewsExpandedKey = "";
         renderHeroNewsPreview();
       });
 
@@ -17535,6 +17573,7 @@
         const totalPages = Math.ceil(getLoadedNewsItems(data.news).length / HERO_NEWS_PAGE_SIZE);
         if (heroNewsPageIndex >= totalPages - 1) return;
         heroNewsPageIndex += 1;
+        heroNewsExpandedKey = "";
         renderHeroNewsPreview();
       });
 
@@ -17544,9 +17583,11 @@
       });
 
       heroNewsList?.addEventListener("click", (event) => {
-        if (!event.target.closest("[data-hero-news-open]")) return;
-        resetViewSearchState("news");
-        setViewMode("news");
+        const button = event.target.closest("[data-hero-news-summary]");
+        if (!button) return;
+        const key = String(button.dataset.heroNewsSummary || "");
+        heroNewsExpandedKey = heroNewsExpandedKey === key ? "" : key;
+        renderHeroNewsPreview();
       });
 
       summaryStats?.addEventListener("click", (event) => {
