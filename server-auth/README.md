@@ -14,6 +14,7 @@ The current frontend is wired to use this API when `window.SERVER_AUTH_API_BASE`
 - Worker sets an `HttpOnly` session cookie.
 - Protected APIs, such as `/api/news`, return data only when that cookie is valid.
 - Coinness news is stored and returned as preview-only data. Full original text is intentionally not stored.
+- `/api/l2-fees` requires an active site session and returns the latest DefiLlama chain-fee aggregates for a reviewed set of major Ethereum L2s, including chains without a listed token. App fees and L1s are excluded. The shared Durable Object cache lasts 10 minutes, merges concurrent refreshes, and preserves the last successful result on upstream errors with a 1-minute retry cooldown. Missing metrics are `null`, never fabricated as zero. `fetchedAt` is the retrieval time, not the end of the provider's aggregation period. L2 coverage is defined in `L2_FEE_CHAINS` and should be reviewed when new chains are added.
 - Board attachments can be stored in the private Cloudflare R2 bucket bound as `BOARD_MEDIA_BUCKET`.
 - New members enter an email address and choose their own password, then wait for approval in the site admin panel.
 - Member passwords must be 8-20 characters, include both an English letter and a number, and cannot repeat the same character more than four times in a row.

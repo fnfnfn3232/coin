@@ -12,6 +12,20 @@ const BOARD_CATEGORIES_KEY = "free-board-categories";
 const USAGE_STATS_KEY = "usage-stats-v1";
 const NEWS_STORE_KEY = "coinness-news-store-v1";
 const MARKET_DATA_KEY = "market-data-v1";
+const L2_FEES_KEY = "l2-fees-v1";
+const L2_FEES_CACHE_MS = 10 * 60 * 1000;
+const L2_FEES_RETRY_MS = 60 * 1000;
+const L2_FEES_ENDPOINT = "https://api.llama.fi/overview/fees?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true&dataType=dailyFees";
+// Reviewed Ethereum L2 coverage; do not classify L1s or apps by their token symbol.
+const L2_FEE_CHAINS = {
+  base: "Base", arbitrum: "Arbitrum", "op-mainnet": "OP Mainnet",
+  starknet: "Starknet", "zksync-era": "ZKsync Era", scroll: "Scroll",
+  linea: "Linea", mantle: "Mantle", blast: "Blast", ink: "Ink",
+  unichain: "Unichain", "world-chain": "World Chain", abstract: "Abstract",
+  taiko: "Taiko", "fuel-ignition": "Fuel Ignition", zora: "Zora",
+  mode: "Mode", lisk: "Lisk", fraxtal: "Fraxtal", morph: "Morph",
+  bob: "BOB", megaeth: "MegaETH", rise: "RISE", katana: "Katana",
+};
 const MARKET_DATA_CHUNK_PREFIX = "market-data-v1:chunk:";
 const EXCHANGE_HISTORY_KEY = "exchange-history-v1";
 const EXCHANGE_HISTORY_IDS = ["binance", "upbit", "bithumb", "coinbase"];
@@ -101,15 +115,16 @@ const GITHUB_OIDC_REPOSITORY = "fnfnfn3232/coin";
 const GITHUB_OIDC_AUDIENCE = "coin-board-auth-market-data";
 const SCREEN_MARKET_BOARDS = ["binance", "upbit", "bithumb", "coinbase"];
 const SCREEN_NAV_ITEMS = ["market", "news", "board", "resources"];
-const SCREEN_RESOURCE_ITEMS = ["futures", "ranking", "audit"];
+const SCREEN_RESOURCE_ITEMS = ["futures", "ranking", "audit", "l2fees"];
 const SCREEN_RESOURCE_LABEL_DEFAULTS = {
   futures: "선물",
   ranking: "랭킹",
   audit: "실사 보유량",
+  l2fees: "L2 수수료",
 };
 const DEFAULT_SCREEN_SETTINGS = {
   navOrder: ["market", "news", "board", "resources"],
-  resourceOrder: ["futures", "ranking", "audit"],
+  resourceOrder: [...SCREEN_RESOURCE_ITEMS],
   resourceLabels: { ...SCREEN_RESOURCE_LABEL_DEFAULTS },
   boardOrder: ["binance", "upbit", "bithumb", "coinbase"],
   statusPosition: "summary",
@@ -279,6 +294,36 @@ async function fetchJsonWithTimeout(url, timeoutMs = LIVE_PRICE_FETCH_TIMEOUT_MS
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+function normalizeL2Fees(source, now = Date.now()) {
+  if (!Array.isArray(source?.protocols)) throw new Error("invalid_l2_fees_payload");
+  const bySlug = new Map();
+  for (const row of source.protocols) {
+    if (row.protocolType !== "chain" || row.category !== "Chain" || !Object.hasOwn(L2_FEE_CHAINS, row.slug)) continue;
+    if (bySlug.has(row.slug)) throw new Error("duplicate_l2_chain");
+    bySlug.set(row.slug, row);
+  }
+  const metric = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+  const rows = Object.entries(L2_FEE_CHAINS).map(([slug, name]) => {
+    const row = bySlug.get(slug);
+    let logo = "";
+    try {
+      const url = new URL(row?.logo);
+      if (url.protocol === "https:" && url.hostname === "icons.llamao.fi") {
+        if (url.pathname.startsWith("/chains/")) url.pathname = `/icons${url.pathname}`;
+        logo = url.href;
+      }
+    } catch (_error) { /* Missing logos are optional. */ }
+    return {
+      slug, name, logo,
+      total24h: metric(row?.total24h), total7d: metric(row?.total7d), total30d: metric(row?.total30d),
+      change1d: typeof row?.change_1d === "number" && Number.isFinite(row.change_1d) ? row.change_1d : null,
+      url: `https://defillama.com/chain/${encodeURIComponent(name)}`,
+    };
+  });
+  if (!rows.some((row) => row.total24h !== null)) throw new Error("empty_l2_fees_payload");
+  return { rows, fetchedAt: now, checkedAt: now, stale: false, sourceUrl: "https://defillama.com/fees/chains" };
 }
 
 function collectSymbols(payload, boardName, fieldName = "symbol") {
@@ -1454,6 +1499,7 @@ async function requireGithubOidc(request, env) {
 
 function isProtectedContentPath(url) {
   return url.pathname === "/api/market-data"
+    || url.pathname === "/api/l2-fees"
     || url.pathname === "/api/exchange-history"
     || url.pathname === "/api/live-prices"
     || url.pathname === "/api/news"
@@ -2431,6 +2477,7 @@ export class BoardStore {
     this.env = env;
     this.mediaUploadOperations = new Map();
     this.boardPostsOperation = Promise.resolve();
+    this.l2FeesPromise = null;
   }
 
   async readMembers(storage = this.state.storage) {
@@ -2912,6 +2959,34 @@ export class BoardStore {
   async handleLivePricesRequest() {
     const payload = await this.readMarketData();
     return jsonResponse(await fetchLivePricePayload(payload), 200, this.env);
+  }
+
+  async loadL2Fees() {
+    const stored = await this.state.storage.get(L2_FEES_KEY);
+    const now = Date.now();
+    if (stored && now - stored.checkedAt < (stored.stale ? L2_FEES_RETRY_MS : L2_FEES_CACHE_MS)) {
+      return { ...stored, cached: true };
+    }
+    try {
+      const source = await fetchJsonWithTimeout(L2_FEES_ENDPOINT);
+      const payload = normalizeL2Fees(source, now);
+      await this.state.storage.put(L2_FEES_KEY, payload);
+      return payload;
+    } catch (_error) {
+      const payload = stored?.rows?.length
+        ? { ...stored, checkedAt: now, stale: true }
+        : { rows: [], fetchedAt: 0, checkedAt: now, stale: true, sourceUrl: "https://defillama.com/fees/chains" };
+      await this.state.storage.put(L2_FEES_KEY, payload);
+      return payload;
+    }
+  }
+
+  async handleL2FeesRequest() {
+    if (!this.l2FeesPromise) {
+      this.l2FeesPromise = this.loadL2Fees().finally(() => { this.l2FeesPromise = null; });
+    }
+    const payload = await this.l2FeesPromise;
+    return jsonResponse(payload, payload.rows.length ? 200 : 503, this.env);
   }
 
   async refreshNewsStore(force = false) {
@@ -4333,6 +4408,10 @@ export class BoardStore {
       return this.recordApiResponse(await this.handleLivePricesRequest(request, url));
     }
 
+    if (request.method === "GET" && url.pathname === "/api/l2-fees") {
+      return this.recordApiResponse(await this.handleL2FeesRequest());
+    }
+
     if (request.method === "GET" && url.pathname === "/api/news") {
       return this.recordApiResponse(await this.handleNewsRequest(request, url));
     }
@@ -4834,6 +4913,10 @@ export default {
       if (!env.BOARD_STORE) return jsonResponse(await fetchLivePricePayload(null), 200, env);
       const id = env.BOARD_STORE.idFromName("free-board");
       return env.BOARD_STORE.get(id).fetch(request);
+    }
+    if (url.pathname === "/api/l2-fees" && request.method === "GET") {
+      if (!env.BOARD_STORE) return jsonResponse({ error: "l2_fees_storage_not_configured" }, 503, env);
+      return env.BOARD_STORE.get(env.BOARD_STORE.idFromName("free-board")).fetch(request);
     }
     if (url.pathname === "/api/news" && request.method === "GET") {
       if (!env.BOARD_STORE) return jsonResponse(await fetchCoinnessNewsSafely(env), 200, env);
