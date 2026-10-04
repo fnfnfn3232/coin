@@ -12,11 +12,30 @@ const BOARD_CATEGORIES_KEY = "free-board-categories";
 const USAGE_STATS_KEY = "usage-stats-v1";
 const NEWS_STORE_KEY = "coinness-news-store-v1";
 const MARKET_DATA_KEY = "market-data-v1";
-const L2_FEES_KEY = "l2-fees-v1";
+const L2_FEES_KEY = "chain-fees-v2";
 const L2_FEES_CACHE_MS = 10 * 60 * 1000;
 const L2_FEES_RETRY_MS = 60 * 1000;
 const L2_FEES_ENDPOINT = "https://api.llama.fi/overview/fees?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true&dataType=dailyFees";
-// Reviewed Ethereum L2 coverage; do not classify L1s or apps by their token symbol.
+// Reviewed chain identities and DefiLlama parent.types=L2 metadata (2026-10-04).
+// Explicit coverage avoids treating an unclassified sidechain or L3 as an L1.
+const L1_FEE_CHAINS = {
+  bitcoin: "Bitcoin", ethereum: "Ethereum", solana: "Solana", tron: "Tron", bsc: "BSC",
+  avalanche: "Avalanche", sui: "Sui", aptos: "Aptos", near: "Near", ton: "TON",
+  cardano: "Cardano", stellar: "Stellar", hedera: "Hedera", algorand: "Algorand",
+  tezos: "Tezos", litecoin: "Litecoin", doge: "Doge", bitcoincash: "Bitcoincash",
+  monero: "Monero", zcash: "Zcash", dash: "Dash", ethereumclassic: "EthereumClassic",
+  icp: "ICP", filecoin: "Filecoin", arweave: "Arweave", chia: "Chia",
+  injective: "Injective", akash: "Akash", cosmoshub: "CosmosHub", osmosis: "Osmosis",
+  neutron: "Neutron", noble: "Noble", celestia: "Celestia", thorchain: "THORChain",
+  provenance: "Provenance", seda: "Seda", sei: "Sei", shido: "Shido",
+  sonic: "Sonic", fantom: "Fantom", berachain: "Berachain", monad: "Monad",
+  "hyperliquid-l1": "Hyperliquid L1", kaia: "Kaia", flow: "Flow", multiversx: "MultiversX",
+  zilliqa: "Zilliqa", aelf: "aelf", waves: "Waves", xdc: "XDC", flare: "Flare",
+  songbird: "Songbird", iotex: "IoTeX", canto: "Canto", cronos: "Cronos",
+  harmony: "Harmony", pulsechain: "PulseChain", quai: "Quai", plasma: "Plasma",
+  somnia: "Somnia", tempo: "Tempo", vana: "Vana", lukso: "LUKSO", nibiru: "Nibiru",
+  "babylon-genesis": "Babylon Genesis", chiliz: "Chiliz", zetachain: "ZetaChain",
+};
 const L2_FEE_CHAINS = {
   base: "Base", arbitrum: "Arbitrum", "op-mainnet": "OP Mainnet",
   starknet: "Starknet", "zksync-era": "ZKsync Era", scroll: "Scroll",
@@ -25,6 +44,16 @@ const L2_FEE_CHAINS = {
   taiko: "Taiko", "fuel-ignition": "Fuel Ignition", zora: "Zora",
   mode: "Mode", lisk: "Lisk", fraxtal: "Fraxtal", morph: "Morph",
   bob: "BOB", megaeth: "MegaETH", rise: "RISE", katana: "Katana",
+  "robinhood-chain": "Robinhood Chain", celo: "Celo", movement: "Movement",
+  boba: "Boba", earnm: "Earnm", hpp: "HPP", "iota-evm": "IOTA EVM",
+  lightlink: "LightLink", matchain: "Matchain", redstone: "Redstone", shape: "Shape",
+  soneium: "Soneium", superseed: "Superseed", swellchain: "Swellchain",
+  metis: "Metis", sophon: "Sophon", "arbitrum-nova": "Arbitrum Nova",
+  eclipse: "Eclipse", manta: "Manta", polynomial: "Polynomial", opbnb: "opBNB",
+  "polygon-zkevm": "Polygon zkEVM", k2: "K2", reyachain: "ReyaChain",
+  shimmerevm: "ShimmerEVM", "adventure-layer": "Adventure Layer", swan: "Swan",
+  "sx-network": "SX Network", rollux: "Rollux", saakuru: "Saakuru", kroma: "Kroma",
+  eden: "Eden", "x-layer": "X Layer", mint: "Mint",
 };
 const MARKET_DATA_CHUNK_PREFIX = "market-data-v1:chunk:";
 const EXCHANGE_HISTORY_KEY = "exchange-history-v1";
@@ -115,12 +144,13 @@ const GITHUB_OIDC_REPOSITORY = "fnfnfn3232/coin";
 const GITHUB_OIDC_AUDIENCE = "coin-board-auth-market-data";
 const SCREEN_MARKET_BOARDS = ["binance", "upbit", "bithumb", "coinbase"];
 const SCREEN_NAV_ITEMS = ["market", "news", "board", "resources"];
-const SCREEN_RESOURCE_ITEMS = ["futures", "ranking", "audit", "l2fees"];
+const SCREEN_RESOURCE_ITEMS = ["futures", "ranking", "audit", "l2fees", "l1fees"];
 const SCREEN_RESOURCE_LABEL_DEFAULTS = {
   futures: "선물",
   ranking: "랭킹",
   audit: "실사 보유량",
   l2fees: "L2 수수료",
+  l1fees: "L1 수수료",
 };
 const DEFAULT_SCREEN_SETTINGS = {
   navOrder: ["market", "news", "board", "resources"],
@@ -296,16 +326,16 @@ async function fetchJsonWithTimeout(url, timeoutMs = LIVE_PRICE_FETCH_TIMEOUT_MS
   }
 }
 
-function normalizeL2Fees(source, now = Date.now()) {
+function normalizeChainFees(source, chains, now = Date.now()) {
   if (!Array.isArray(source?.protocols)) throw new Error("invalid_l2_fees_payload");
   const bySlug = new Map();
   for (const row of source.protocols) {
-    if (row.protocolType !== "chain" || row.category !== "Chain" || !Object.hasOwn(L2_FEE_CHAINS, row.slug)) continue;
+    if (row.protocolType !== "chain" || row.category !== "Chain" || !Object.hasOwn(chains, row.slug)) continue;
     if (bySlug.has(row.slug)) throw new Error("duplicate_l2_chain");
     bySlug.set(row.slug, row);
   }
   const metric = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
-  const rows = Object.entries(L2_FEE_CHAINS).map(([slug, name]) => {
+  const rows = Object.entries(chains).map(([slug, name]) => {
     const row = bySlug.get(slug);
     let logo = "";
     try {
@@ -324,6 +354,14 @@ function normalizeL2Fees(source, now = Date.now()) {
   });
   if (!rows.some((row) => row.total24h !== null)) throw new Error("empty_l2_fees_payload");
   return { rows, fetchedAt: now, checkedAt: now, stale: false, sourceUrl: "https://defillama.com/fees/chains" };
+}
+
+function normalizeL2Fees(source, now = Date.now()) {
+  return normalizeChainFees(source, L2_FEE_CHAINS, now);
+}
+
+function normalizeL1Fees(source, now = Date.now()) {
+  return normalizeChainFees(source, L1_FEE_CHAINS, now);
 }
 
 function collectSymbols(payload, boardName, fieldName = "symbol") {
@@ -1500,6 +1538,7 @@ async function requireGithubOidc(request, env) {
 function isProtectedContentPath(url) {
   return url.pathname === "/api/market-data"
     || url.pathname === "/api/l2-fees"
+    || url.pathname === "/api/l1-fees"
     || url.pathname === "/api/exchange-history"
     || url.pathname === "/api/live-prices"
     || url.pathname === "/api/news"
@@ -2970,22 +3009,24 @@ export class BoardStore {
     try {
       const source = await fetchJsonWithTimeout(L2_FEES_ENDPOINT);
       const payload = normalizeL2Fees(source, now);
+      payload.l1Rows = normalizeL1Fees(source, now).rows;
       await this.state.storage.put(L2_FEES_KEY, payload);
       return payload;
     } catch (_error) {
       const payload = stored?.rows?.length
         ? { ...stored, checkedAt: now, stale: true }
-        : { rows: [], fetchedAt: 0, checkedAt: now, stale: true, sourceUrl: "https://defillama.com/fees/chains" };
+        : { rows: [], l1Rows: [], fetchedAt: 0, checkedAt: now, stale: true, sourceUrl: "https://defillama.com/fees/chains" };
       await this.state.storage.put(L2_FEES_KEY, payload);
       return payload;
     }
   }
 
-  async handleL2FeesRequest() {
+  async handleL2FeesRequest(layer = "l2") {
     if (!this.l2FeesPromise) {
       this.l2FeesPromise = this.loadL2Fees().finally(() => { this.l2FeesPromise = null; });
     }
-    const payload = await this.l2FeesPromise;
+    const { l1Rows, ...shared } = await this.l2FeesPromise;
+    const payload = { ...shared, rows: layer === "l1" ? l1Rows || [] : shared.rows };
     return jsonResponse(payload, payload.rows.length ? 200 : 503, this.env);
   }
 
@@ -4408,8 +4449,8 @@ export class BoardStore {
       return this.recordApiResponse(await this.handleLivePricesRequest(request, url));
     }
 
-    if (request.method === "GET" && url.pathname === "/api/l2-fees") {
-      return this.recordApiResponse(await this.handleL2FeesRequest());
+    if (request.method === "GET" && ["/api/l2-fees", "/api/l1-fees"].includes(url.pathname)) {
+      return this.recordApiResponse(await this.handleL2FeesRequest(url.pathname === "/api/l1-fees" ? "l1" : "l2"));
     }
 
     if (request.method === "GET" && url.pathname === "/api/news") {
@@ -4914,7 +4955,7 @@ export default {
       const id = env.BOARD_STORE.idFromName("free-board");
       return env.BOARD_STORE.get(id).fetch(request);
     }
-    if (url.pathname === "/api/l2-fees" && request.method === "GET") {
+    if (["/api/l2-fees", "/api/l1-fees"].includes(url.pathname) && request.method === "GET") {
       if (!env.BOARD_STORE) return jsonResponse({ error: "l2_fees_storage_not_configured" }, 503, env);
       return env.BOARD_STORE.get(env.BOARD_STORE.idFromName("free-board")).fetch(request);
     }
