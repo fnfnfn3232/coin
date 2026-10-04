@@ -12,9 +12,10 @@ const {
   MEMBER_PASSWORD_ITERATIONS,
   normalizeMemberRecord,
   normalizeL2Fees,
+  normalizeL1Fees,
   verifyMemberPassword,
 } = await import(
-  `data:text/javascript;base64,${Buffer.from(`${source}\nexport { createMemberPasswordCredentials, createSessionToken, deriveMemberPasswordHash, MEMBER_PASSWORD_ITERATIONS, normalizeMemberRecord, normalizeL2Fees, verifyMemberPassword };\n//# sourceURL=cloudflare-worker-under-test.mjs`).toString("base64")}`
+  `data:text/javascript;base64,${Buffer.from(`${source}\nexport { createMemberPasswordCredentials, createSessionToken, deriveMemberPasswordHash, MEMBER_PASSWORD_ITERATIONS, normalizeMemberRecord, normalizeL2Fees, normalizeL1Fees, verifyMemberPassword };\n//# sourceURL=cloudflare-worker-under-test.mjs`).toString("base64")}`
 );
 
 class MemoryStorage {
@@ -80,6 +81,7 @@ async function fixture({ read = true, write = false } = {}) {
 
 const feeSource = (fee = 12) => ({ protocols: [
   { slug: "base", name: "Base", category: "Chain", protocolType: "chain", total24h: fee, total7d: 80, total30d: null, change_1d: -2, logo: "https://icons.llamao.fi/chains/base.jpg" },
+  { slug: "ethereum", name: "Ethereum", category: "Chain", protocolType: "chain", total24h: 200, total7d: 1400, total30d: 6000 },
 ] });
 
 test("L2 fees exclude L1s and app fees, keep zero and missing metrics distinct", () => {
@@ -100,18 +102,45 @@ test("L2 fees exclude L1s and app fees, keep zero and missing metrics distinct",
   assert.throws(() => normalizeL2Fees({ protocols: [...feeSource().protocols, ...feeSource().protocols] }));
 });
 
-test("L2 endpoint requires login, allows approved read-only members and shares cached responses", async () => {
+test("L1 coverage excludes L2s, L3s, sidechains and applications without a rank cap", () => {
+  const input = feeSource();
+  input.protocols.push(
+    { slug: "solana", category: "Chain", protocolType: "chain", total24h: 0, total7d: -1 },
+    { slug: "polygon", category: "Chain", protocolType: "chain", total24h: 10 },
+    { slug: "apechain", category: "Chain", protocolType: "chain", total24h: 10 },
+    { slug: "tron", category: "Dexs", protocolType: "protocol", total24h: 10 },
+    { slug: "celo", category: "Chain", protocolType: "chain", total24h: 5 },
+    { slug: "robinhood-chain", category: "Chain", protocolType: "chain", total24h: 6 },
+  );
+  const l1 = normalizeL1Fees(input);
+  const l2 = normalizeL2Fees(input);
+  assert.ok(l1.rows.length > 25 && l2.rows.length > 25);
+  assert.equal(l1.rows.find((row) => row.slug === "solana").total24h, 0);
+  assert.equal(l1.rows.find((row) => row.slug === "solana").total7d, null);
+  assert.equal(l1.rows.find((row) => row.slug === "tron").total24h, null);
+  assert.equal(l1.rows.some((row) => ["base", "apechain", "polygon", "celo"].includes(row.slug)), false);
+  assert.equal(l2.rows.find((row) => row.slug === "celo").total24h, 5);
+  assert.equal(l2.rows.find((row) => row.slug === "robinhood-chain").total24h, 6);
+  assert.equal(l2.rows.some((row) => row.slug === "apechain"), false);
+  assert.throws(() => normalizeL1Fees({ protocols: [] }));
+});
+
+test("L1/L2 endpoints require login and share a single cache and upstream request", async () => {
   const f = await fixture();
   const realFetch = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = async () => { calls++; return Response.json(feeSource()); };
   try {
     assert.equal((await f.request("/api/l2-fees", "GET", undefined, null)).status, 401);
+    assert.equal((await f.request("/api/l1-fees", "GET", undefined, null)).status, 401);
     assert.equal(calls, 0);
-    const responses = await Promise.all([f.request("/api/l2-fees"), f.request("/api/l2-fees")]);
+    const responses = await Promise.all([f.request("/api/l2-fees"), f.request("/api/l1-fees")]);
     assert.equal(responses[0].status, 200);
     assert.equal(responses[1].status, 200);
     assert.equal(calls, 1);
+    const l1 = await responses[1].json();
+    assert.equal(l1.rows.find((row) => row.slug === "ethereum").total24h, 200);
+    assert.equal(l1.rows.some((row) => row.slug === "base"), false);
     const third = await f.request("/api/l2-fees");
     assert.equal((await third.json()).cached, true);
     assert.equal(calls, 1);
@@ -122,7 +151,8 @@ test("L2 refresh failure or empty source preserves last good data with retry coo
   for (const failure of [() => { throw new Error("unavailable"); }, () => Response.json({ protocols: [] })]) {
     const f = await fixture();
     const good = normalizeL2Fees(feeSource(), Date.now() - 700000);
-    await f.storage.put("l2-fees-v1", good);
+    good.l1Rows = normalizeL1Fees(feeSource(), good.fetchedAt).rows;
+    await f.storage.put("chain-fees-v2", good);
     const realFetch = globalThis.fetch;
     let calls = 0;
     globalThis.fetch = async () => { calls++; return failure(); };
@@ -132,6 +162,9 @@ test("L2 refresh failure or empty source preserves last good data with retry coo
       assert.equal(payload.fetchedAt, good.fetchedAt);
       assert.deepEqual(payload.rows, good.rows);
       await f.request("/api/l2-fees");
+      const l1 = await (await f.request("/api/l1-fees")).json();
+      assert.equal(l1.stale, true);
+      assert.deepEqual(l1.rows, good.l1Rows);
       assert.equal(calls, 1);
     } finally { globalThis.fetch = realFetch; }
   }
@@ -145,6 +178,7 @@ test("L2 first-load failure returns 503 instead of a false zero balance", async 
     const response = await f.request("/api/l2-fees");
     assert.equal(response.status, 503);
     assert.deepEqual((await response.json()).rows, []);
+    assert.equal((await f.request("/api/l1-fees")).status, 503);
   } finally { globalThis.fetch = realFetch; }
 });
 

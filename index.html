@@ -6793,6 +6793,7 @@
             <button id="rankingToggleBtn" type="button" role="menuitem"></button>
             <button id="auditToggleBtn" type="button" role="menuitem"></button>
             <button id="l2FeesToggleBtn" type="button" role="menuitem"></button>
+            <button id="l1FeesToggleBtn" type="button" role="menuitem"></button>
           </div>
         </div>
       </div>
@@ -7263,12 +7264,13 @@
     const MARKET_SOURCE_VISIBLE_KEY = "fdv_market_source_visible_v1";
     const MARKET_BOARDS = ["binance", "upbit", "bithumb", "coinbase"];
     const SCREEN_NAV_ITEMS = ["market", "news", "board", "resources"];
-    const RESOURCE_MENU_ITEMS = ["futures", "ranking", "audit", "l2fees"];
+    const RESOURCE_MENU_ITEMS = ["futures", "ranking", "audit", "l2fees", "l1fees"];
     const RESOURCE_MENU_LABEL_DEFAULTS = {
       futures: "선물",
       ranking: "랭킹",
       audit: "실사 보유량",
       l2fees: "L2 수수료",
+      l1fees: "L1 수수료",
     };
     const UPBIT_AUDIT_DATA_URL = "./upbit-audit-202607.json";
     const UPBIT_AUDIT_PAGE_SIZE = 50;
@@ -7579,6 +7581,7 @@
       const futuresToggleBtn = document.getElementById("futuresToggleBtn");
       const auditToggleBtn = document.getElementById("auditToggleBtn");
       const l2FeesToggleBtn = document.getElementById("l2FeesToggleBtn");
+      const l1FeesToggleBtn = document.getElementById("l1FeesToggleBtn");
       const resourcesMenuBtn = document.getElementById("resourcesMenuBtn");
       const screenSettingsSaveBtn = document.getElementById("screenSettingsSaveBtn");
       const screenSettingsResetBtn = document.getElementById("screenSettingsResetBtn");
@@ -8833,13 +8836,9 @@
       let upbitAuditSort = "report";
       let upbitAuditQuery = "";
       let upbitAuditPage = 1;
-      let l2FeesData = null;
-      let l2FeesPromise = null;
-      let l2FeesCheckedAt = 0;
-      let l2FeesError = "";
-      let l2FeesQuery = "";
-      let l2FeesSortKey = "total24h";
-      let l2FeesSortDirection = "desc";
+      const chainFeesStates = Object.fromEntries(["l1fees", "l2fees"].map((mode) => [mode, {
+        data: null, promise: null, checkedAt: 0, error: "", query: "", sortKey: "total24h", sortDirection: "desc",
+      }]));
       let adminServerPassword = "";
       let serverUsageStats = null;
       let serverUsageError = "";
@@ -11857,14 +11856,22 @@
 
       function renderContentPanel() {
         if (RESOURCE_MENU_ITEMS.includes(state.viewMode)) {
-          if (state.viewMode === "l2fees") {
-            renderL2FeesPanel();
+          if (chainFeesStates[state.viewMode]) {
+            renderChainFeesPanel();
           } else if (state.viewMode === "ranking") {
             renderRankingPanel();
           } else if (state.viewMode === "futures") {
             renderFuturesPanel();
           } else {
             renderAuditPanel();
+          }
+          const tabs = newsPanel.querySelector(".resource-tabs");
+          const activeTab = tabs?.querySelector(".resource-tab.active");
+          if (activeTab) {
+            const tabBounds = activeTab.getBoundingClientRect();
+            const bounds = tabs.getBoundingClientRect();
+            if (tabBounds.right > bounds.right) tabs.scrollLeft += tabBounds.right - bounds.right;
+            else if (tabBounds.left < bounds.left) tabs.scrollLeft += tabBounds.left - bounds.left;
           }
           return;
         }
@@ -11885,55 +11892,60 @@
         `).join("")}</nav>`;
       }
 
-      async function requestL2Fees(force = false) {
-        if (l2FeesPromise || isSiteLocked() || document.hidden) return l2FeesPromise;
-        if (!force && Date.now() - l2FeesCheckedAt < (l2FeesError || l2FeesData?.stale ? 60000 : 600000)) return;
-        l2FeesCheckedAt = Date.now();
-        l2FeesError = "";
-        l2FeesPromise = (async () => {
+      async function requestChainFees(mode = state.viewMode, force = false) {
+        const fees = chainFeesStates[mode];
+        if (!fees) return;
+        if (fees.promise || isSiteLocked() || document.hidden) return fees.promise;
+        if (!force && Date.now() - fees.checkedAt < (fees.error || fees.data?.stale ? 60000 : 600000)) return;
+        fees.checkedAt = Date.now();
+        fees.error = "";
+        fees.promise = (async () => {
           try {
-            const payload = await fetchServerAuth("/api/l2-fees", { timeoutMs: 20000 });
+            const payload = await fetchServerAuth(mode === "l1fees" ? "/api/l1-fees" : "/api/l2-fees", { timeoutMs: 20000 });
             if (!Array.isArray(payload?.rows) || !payload.rows.length) throw new Error("empty_l2_fees");
-            l2FeesData = payload;
+            fees.data = payload;
           } catch (_error) {
-            l2FeesError = "수수료 정보를 갱신하지 못했습니다.";
+            fees.error = "수수료 정보를 갱신하지 못했습니다.";
           } finally {
-            l2FeesPromise = null;
-            if (state.viewMode === "l2fees") renderContentPanel();
+            fees.promise = null;
+            if (state.viewMode === mode) renderContentPanel();
           }
         })();
-        if (state.viewMode === "l2fees") renderContentPanel();
-        return l2FeesPromise;
+        if (state.viewMode === mode) renderContentPanel();
+        return fees.promise;
       }
 
-      function renderL2FeesPanel() {
-        const aliases = { base: "베이스", arbitrum: "아비트럼", "op-mainnet": "옵티미즘", starknet: "스타크넷", scroll: "스크롤", linea: "리네아", mantle: "맨틀", blast: "블라스트", "zksync-era": "지케이싱크", taiko: "타이코" };
-        const query = l2FeesQuery.trim().toLowerCase();
-        const rows = (l2FeesData?.rows || []).filter((row) => !query || `${row.name} ${aliases[row.slug] || ""}`.toLowerCase().includes(query));
+      function renderChainFeesPanel() {
+        const mode = state.viewMode;
+        const fees = chainFeesStates[mode];
+        const layer = mode === "l1fees" ? "L1" : "L2";
+        const aliases = { bitcoin: "비트코인 BTC", ethereum: "이더리움 ETH", solana: "솔라나 SOL", tron: "트론 TRX", bsc: "비앤비 바이낸스 BNB", avalanche: "아발란체 AVAX", sui: "수이", aptos: "앱토스", near: "니어", ton: "톤", cardano: "에이다 ADA", stellar: "스텔라 XLM", doge: "도지 DOGE", base: "베이스", arbitrum: "아비트럼", "op-mainnet": "옵티미즘", starknet: "스타크넷", scroll: "스크롤", linea: "리네아", mantle: "맨틀", blast: "블라스트", "zksync-era": "지케이싱크", taiko: "타이코", celo: "셀로", metis: "메티스", eclipse: "이클립스" };
+        const query = fees.query.trim().toLowerCase();
+        const rows = (fees.data?.rows || []).filter((row) => !query || `${row.name} ${row.slug} ${aliases[row.slug] || ""}`.toLowerCase().includes(query));
         rows.sort((a, b) => {
-          const av = a[l2FeesSortKey], bv = b[l2FeesSortKey];
+          const av = a[fees.sortKey], bv = b[fees.sortKey];
           if (av === null && bv === null) return a.name.localeCompare(b.name);
           if (av === null) return 1;
           if (bv === null) return -1;
-          return (l2FeesSortDirection === "asc" ? av - bv : bv - av) || a.name.localeCompare(b.name);
+          return (fees.sortDirection === "asc" ? av - bv : bv - av) || a.name.localeCompare(b.name);
         });
-        const sortHeader = (key, label) => `<th aria-sort="${l2FeesSortKey === key ? (l2FeesSortDirection === "asc" ? "ascending" : "descending") : "none"}"><button type="button" class="l2-fees-sort" data-l2-sort="${key}">${label}${l2FeesSortKey === key ? (l2FeesSortDirection === "asc" ? " ↑" : " ↓") : ""}</button></th>`;
+        const sortHeader = (key, label) => `<th aria-sort="${fees.sortKey === key ? (fees.sortDirection === "asc" ? "ascending" : "descending") : "none"}"><button type="button" class="l2-fees-sort" data-l2-sort="${key}">${label}${fees.sortKey === key ? (fees.sortDirection === "asc" ? " ↑" : " ↓") : ""}</button></th>`;
         const money = (value) => typeof value === "number" && Number.isFinite(value)
           ? value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }) : "-";
-        const fetchedAt = Number(l2FeesData?.fetchedAt) || 0;
+        const fetchedAt = Number(fees.data?.fetchedAt) || 0;
         const date = fetchedAt ? new Date(fetchedAt).toLocaleString("ko-KR", { timeZone: "Asia/Seoul", hour12: false }) : "";
         newsPanel.innerHTML = `<section class="l2-fees-shell">${renderResourceTabs()}
-          <div class="l2-fees-head"><h2>${escapeHtml(getResourceMenuLabel("l2fees"))}</h2><a href="https://defillama.com/fees/chains" target="_blank" rel="noopener noreferrer">DefiLlama 원본 ↗</a></div>
+          <div class="l2-fees-head"><h2>${escapeHtml(getResourceMenuLabel(mode))}</h2><a href="https://defillama.com/fees/chains" target="_blank" rel="noopener noreferrer">DefiLlama 원본 ↗</a></div>
           <div class="l2-fees-toolbar">
-            <form id="l2FeesSearchForm" class="l2-fees-search"><input type="search" name="query" aria-label="L2 체인 검색" placeholder="체인 검색" value="${escapeAttr(l2FeesQuery)}" maxlength="80" /><button type="submit">검색</button></form>
-            <div class="l2-fees-status"><span>${l2FeesPromise ? "갱신 중" : "10분 자동 조회"}${date ? ` · 조회 ${escapeHtml(date)}` : ""}</span><button type="button" class="l2-fees-refresh" data-l2-refresh title="수수료 갱신" aria-label="수수료 갱신" ${l2FeesPromise ? "disabled" : ""}>↻</button></div>
+            <form id="l2FeesSearchForm" class="l2-fees-search"><input type="search" name="query" aria-label="${layer} 체인 검색" placeholder="체인 검색" value="${escapeAttr(fees.query)}" maxlength="80" /><button type="submit">검색</button></form>
+            <div class="l2-fees-status"><span>${fees.promise ? "갱신 중" : "10분 자동 조회"}${date ? ` · 조회 ${escapeHtml(date)}` : ""}</span><button type="button" class="l2-fees-refresh" data-l2-refresh title="수수료 갱신" aria-label="수수료 갱신" ${fees.promise ? "disabled" : ""}>↻</button></div>
           </div>
-          <p class="l2-fees-note">주요 Ethereum L2 · 체인 자체 수수료 · USD · DefiLlama 최신 24h 집계</p>
-          ${l2FeesError || l2FeesData?.stale ? `<p class="l2-fees-warning" role="status">${l2FeesData ? "갱신이 지연되어 마지막 조회 값을 표시합니다." : "수수료 정보를 불러오지 못했습니다."}</p>` : ""}
+          <p class="l2-fees-note">${layer} · 체인 자체 수수료 · USD · DefiLlama 최신 24h 집계${fees.data ? ` · 총 ${rows.length}개 / 24h 확인 ${rows.filter((row) => row.total24h !== null).length}개` : ""}</p>
+          ${fees.error || fees.data?.stale ? `<p class="l2-fees-warning" role="status">${fees.data ? "갱신이 지연되어 마지막 조회 값을 표시합니다." : "수수료 정보를 불러오지 못했습니다."}</p>` : ""}
           ${rows.length ? `<div class="l2-fees-table-wrap"><table class="l2-fees-table"><colgroup><col /><col /><col /><col /><col /><col /></colgroup><thead><tr><th>순위</th><th>체인</th>${sortHeader("total24h", "수수료 24h")}${sortHeader("total7d", "수수료 7d")}${sortHeader("total30d", "수수료 30d")}${sortHeader("change1d", "전일 대비")}</tr></thead><tbody>${rows.map((row, index) => `<tr>
             <td>${index + 1}</td><td><a class="l2-fees-chain" href="${escapeAttr(row.url)}" target="_blank" rel="noopener noreferrer">${row.logo ? `<img src="${escapeAttr(row.logo)}" alt="" width="24" height="24" loading="lazy" referrerpolicy="no-referrer" />` : ""}<span>${escapeHtml(row.name)}</span></a></td>
             <td>${money(row.total24h)}</td><td>${money(row.total7d)}</td><td>${money(row.total30d)}</td><td>${row.change1d === null ? "-" : escapeHtml(formatRankingChange(row.change1d))}</td>
-          </tr>`).join("")}</tbody></table></div>` : `<p class="l2-fees-empty">${l2FeesPromise ? "수수료 정보를 불러오는 중입니다." : l2FeesData ? "검색 결과가 없습니다." : "표시할 수수료 정보가 없습니다."}</p>`}
+          </tr>`).join("")}</tbody></table></div>` : `<p class="l2-fees-empty">${fees.promise ? "수수료 정보를 불러오는 중입니다." : fees.data ? "검색 결과가 없습니다." : "표시할 수수료 정보가 없습니다."}</p>`}
         </section>`;
       }
 
@@ -14200,6 +14212,7 @@
           ranking: rankingToggleBtn,
           audit: auditToggleBtn,
           l2fees: l2FeesToggleBtn,
+          l1fees: l1FeesToggleBtn,
         };
         orderedResourceMenuItems().forEach((item) => {
           const button = resourceButtons[item];
@@ -16095,6 +16108,7 @@
         const isResourcesMode = state.viewMode === "resources" || RESOURCE_MENU_ITEMS.includes(state.viewMode);
         appShell.classList.toggle("resource-mode", isResourcesMode);
         l2FeesToggleBtn.classList.toggle("active", state.viewMode === "l2fees");
+        l1FeesToggleBtn.classList.toggle("active", state.viewMode === "l1fees");
         resourcesMenuBtn?.classList.toggle("active", isResourcesMode);
         if (isMarketMode) {
           scheduleMarketChart();
@@ -16110,7 +16124,7 @@
         if (isAuditMode) {
           requestUpbitAuditData();
         }
-        if (state.viewMode === "l2fees") requestL2Fees();
+        if (chainFeesStates[state.viewMode]) requestChainFees();
         if (isNewsMode) {
           requestLiveNewsRefresh(true);
         }
@@ -16135,8 +16149,8 @@
       }
 
       function resetViewSearchState(viewMode) {
-        if (viewMode === "l2fees") {
-          l2FeesQuery = "";
+        if (chainFeesStates[viewMode]) {
+          chainFeesStates[viewMode].query = "";
           return;
         }
         if (viewMode === "news") {
@@ -16605,7 +16619,7 @@
       newsPanel.addEventListener("submit", async (event) => {
         if (event.target.id === "l2FeesSearchForm") {
           event.preventDefault();
-          l2FeesQuery = String(new FormData(event.target).get("query") || "").trim().slice(0, 80);
+          chainFeesStates[state.viewMode].query = String(new FormData(event.target).get("query") || "").trim().slice(0, 80);
           renderContentPanel();
           return;
         }
@@ -17695,6 +17709,11 @@
         setViewMode("l2fees");
       });
 
+      l1FeesToggleBtn.addEventListener("click", () => {
+        resetViewSearchState("l1fees");
+        setViewMode("l1fees");
+      });
+
       newsPanel.addEventListener("click", (event) => {
         const button = event.target.closest("button");
         if (!button) return;
@@ -17703,11 +17722,12 @@
           setViewMode(button.dataset.resourceView);
         } else if (["total24h", "total7d", "total30d", "change1d"].includes(button.dataset.l2Sort)) {
           const key = button.dataset.l2Sort;
-          l2FeesSortDirection = l2FeesSortKey === key && l2FeesSortDirection === "desc" ? "asc" : "desc";
-          l2FeesSortKey = key;
+          const fees = chainFeesStates[state.viewMode];
+          fees.sortDirection = fees.sortKey === key && fees.sortDirection === "desc" ? "asc" : "desc";
+          fees.sortKey = key;
           renderContentPanel();
         } else if (button.hasAttribute("data-l2-refresh")) {
-          requestL2Fees(true);
+          requestChainFees(state.viewMode, true);
         }
       });
 
@@ -18144,10 +18164,10 @@
         }
       }, LIVE_NEWS_REFRESH_MS);
       window.setInterval(() => {
-        if (state.viewMode === "l2fees") requestL2Fees();
+        if (chainFeesStates[state.viewMode]) requestChainFees();
       }, 60000);
       document.addEventListener("visibilitychange", () => {
-        if (!document.hidden && state.viewMode === "l2fees") requestL2Fees();
+        if (!document.hidden && chainFeesStates[state.viewMode]) requestChainFees();
       });
       render();
     </script>
