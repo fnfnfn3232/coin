@@ -52,6 +52,26 @@ class CoinLogoTests(unittest.TestCase):
         build_data.apply_coin_logos({"coinbase": [row]}, {}, {"BTC": [candidate]})
         self.assertEqual(row["logo"], candidate["logo"])
 
+    def test_bithumb_official_filename_and_shared_views(self):
+        expected = "https://content.bithumb.com/resources/img/coin/coin-9ddb46ab895d9bc27eeb625c5eda618d.png"
+        row = self.row("CUDIS", "Cudis")
+        future = self.row("CUDIS", "Cudis")
+        build_data.apply_coin_logos({"bithumb": [row]}, {"binance": [future]}, {})
+        self.assertEqual(row["logo"], expected)
+        self.assertEqual(future["logo"], expected)
+        self.assertEqual(build_data.safe_coin_logo_url(expected), expected)
+        for symbol in [None, "cudis", "../BTC", "BTC?x=1", ""]:
+            self.assertEqual(build_data.bithumb_coin_logo_url(symbol), "")
+        for url in ["https://content.bithumb.com/resources/img/coin/coin-CUDIS.png",
+                    "https://content.bithumb.com/notice.html",
+                    expected.replace("content.bithumb.com", "content.bithumb.com.evil.example")]:
+            self.assertEqual(build_data.safe_coin_logo_url(url), "")
+
+    def test_bithumb_uses_raw_exchange_symbol(self):
+        row = self.row("TEMCO", "Temco", compareSymbol="OTHER", logo="https://assets.coingecko.com/old.png")
+        build_data.apply_coin_logos({"bithumb": [row]}, {}, {})
+        self.assertEqual(row["logo"], "https://content.bithumb.com/resources/img/coin/coin-6212caa4db3b29372f33b45a4984e913.png")
+
 
 if __name__ == "__main__":
     unittest.main()

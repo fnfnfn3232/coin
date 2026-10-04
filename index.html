@@ -7238,6 +7238,7 @@
     <button class="scroll-btn" id="scrollBottomBtn" type="button" aria-label="맨 아래로 이동">↓</button>
   </div>
 
+  <script src="./vendor/js-md5.min.js"></script>
   <script>
     window.SERVER_AUTH_API_BASE = "https://coin-board-auth.dlatl20000.workers.dev";
   </script>
@@ -7803,9 +7804,10 @@
       function safeCoinLogoUrl(value) {
         try {
           const url = new URL(value);
+          if (url.hostname === "content.bithumb.com" && !/^\/resources\/img\/coin\/coin-[a-f0-9]{32}\.png$/.test(url.pathname)) return "";
           return url.protocol === "https:" && !url.username && !url.password && !url.port && [
             "static.upbit.com", "bin.bnbstatic.com", "assets.coingecko.com",
-            "coin-images.coingecko.com", "s2.coinmarketcap.com", "icons.llamao.fi",
+            "coin-images.coingecko.com", "s2.coinmarketcap.com", "icons.llamao.fi", "content.bithumb.com",
           ].includes(url.hostname) ? url.href : "";
         } catch (_error) { return ""; }
       }
@@ -7819,8 +7821,14 @@
         const matches = (item) => item === row || names(item).some((name) => keys.has(name));
         const references = Object.values(data.boards || {}).flat().filter((item) => getComparableSymbol(item) === symbol && matches(item));
         const upbit = (data.boards?.upbit || []).find((item) => getComparableSymbol(item) === symbol && matches(item));
+        const bithumb = (data.boards?.bithumb || []).find((item) => getComparableSymbol(item) === symbol && matches(item));
         const info = data.coinInfo?.[symbol];
         const urls = [row?.logo, ...(matches(info) ? [info?.logo] : []), ...references.map((item) => item.logo)];
+        if (bithumb && /^[A-Z0-9]{1,30}$/.test(bithumb.symbol) && typeof window.md5 === "function") {
+          const logo = `https://content.bithumb.com/resources/img/coin/coin-${window.md5(bithumb.symbol)}.png`;
+          if (bithumb === row) urls.unshift(logo);
+          else urls.push(logo);
+        }
         const cmcId = `${row?.supplyDetail || ""} ${row?.capSourceDetail || ""}`.match(/coinmarketcap_quotes:(\d+)\b/)?.[1];
         if (cmcId) urls.push(`https://s2.coinmarketcap.com/static/img/coins/64x64/${cmcId}.png`);
         if (upbit && /^[A-Z0-9]{1,30}$/.test(upbit.symbol)) urls.push(`https://static.upbit.com/logos/${upbit.symbol}.png`);

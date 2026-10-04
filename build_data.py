@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import html
+import hashlib
 import re
 import time
 import urllib.parse
@@ -2663,12 +2664,22 @@ def safe_coin_logo_url(value: object) -> str:
         url = urllib.parse.urlsplit(value)
         if url.scheme == "https" and url.hostname in {
             "static.upbit.com", "bin.bnbstatic.com", "assets.coingecko.com",
-            "coin-images.coingecko.com", "s2.coinmarketcap.com", "icons.llamao.fi",
+            "coin-images.coingecko.com", "s2.coinmarketcap.com", "icons.llamao.fi", "content.bithumb.com",
         } and not url.username and not url.password and url.port in (None, 443):
+            if url.hostname == "content.bithumb.com" and not re.fullmatch(r"/resources/img/coin/coin-[a-f0-9]{32}\.png", url.path):
+                return ""
             return value
     except ValueError:
         pass
     return ""
+
+
+def bithumb_coin_logo_url(symbol: object) -> str:
+    if not isinstance(symbol, str) or not re.fullmatch(r"[A-Z0-9]{1,30}", symbol):
+        return ""
+    # Bithumb uses MD5(symbol) in image filenames, not for password security.
+    image_id = hashlib.md5(symbol.encode("ascii"), usedforsecurity=False).hexdigest()
+    return f"https://content.bithumb.com/resources/img/coin/coin-{image_id}.png"
 
 
 def apply_coin_logos(boards: dict, futures: dict, candidates: dict, previous_payload: dict | None = None) -> None:
@@ -2683,6 +2694,8 @@ def apply_coin_logos(boards: dict, futures: dict, candidates: dict, previous_pay
             logo = safe_coin_logo_url(row.get("logo"))
             if board == "upbit" and re.fullmatch(r"[A-Z0-9]{1,30}", str(row.get("symbol") or "")):
                 logo = f"https://static.upbit.com/logos/{row['symbol']}.png"
+            if board == "bithumb":
+                logo = bithumb_coin_logo_url(row.get("symbol")) or logo
             if not logo:
                 for key in row_symbols(row):
                     candidate = pick_coingecko_supply_candidate(row, candidates.get(key, []))
