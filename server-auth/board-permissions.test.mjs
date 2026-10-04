@@ -11,9 +11,10 @@ const {
   deriveMemberPasswordHash,
   MEMBER_PASSWORD_ITERATIONS,
   normalizeMemberRecord,
+  normalizeL2Fees,
   verifyMemberPassword,
 } = await import(
-  `data:text/javascript;base64,${Buffer.from(`${source}\nexport { createMemberPasswordCredentials, createSessionToken, deriveMemberPasswordHash, MEMBER_PASSWORD_ITERATIONS, normalizeMemberRecord, verifyMemberPassword };\n//# sourceURL=cloudflare-worker-under-test.mjs`).toString("base64")}`
+  `data:text/javascript;base64,${Buffer.from(`${source}\nexport { createMemberPasswordCredentials, createSessionToken, deriveMemberPasswordHash, MEMBER_PASSWORD_ITERATIONS, normalizeMemberRecord, normalizeL2Fees, verifyMemberPassword };\n//# sourceURL=cloudflare-worker-under-test.mjs`).toString("base64")}`
 );
 
 class MemoryStorage {
@@ -76,6 +77,76 @@ async function fixture({ read = true, write = false } = {}) {
   });
   return { store, storage, member, request, rawRequest, post, adminToken, memberToken, adminPassword, env };
 }
+
+const feeSource = (fee = 12) => ({ protocols: [
+  { slug: "base", name: "Base", category: "Chain", protocolType: "chain", total24h: fee, total7d: 80, total30d: null, change_1d: -2, logo: "https://icons.llamao.fi/chains/base.jpg" },
+] });
+
+test("L2 fees exclude L1s and app fees, keep zero and missing metrics distinct", () => {
+  const input = feeSource(0);
+  input.protocols.push(
+    { slug: "ethereum", category: "Chain", protocolType: "chain", total24h: 999 },
+    { slug: "arbitrum", category: "Dexs", protocolType: "protocol", total24h: 999 },
+    { slug: "scroll", category: "Chain", protocolType: "chain", total24h: -1, total7d: Infinity, logo: "javascript:alert(1)" },
+  );
+  const result = normalizeL2Fees(input, 1234);
+  assert.equal(result.fetchedAt, 1234);
+  assert.equal(result.rows.find((row) => row.slug === "base").total24h, 0);
+  assert.equal(result.rows.find((row) => row.slug === "base").total30d, null);
+  assert.equal(result.rows.find((row) => row.slug === "arbitrum").total24h, null);
+  assert.equal(result.rows.find((row) => row.slug === "scroll").logo, "");
+  assert.equal(result.rows.some((row) => row.slug === "ethereum"), false);
+  assert.throws(() => normalizeL2Fees({ protocols: [] }));
+  assert.throws(() => normalizeL2Fees({ protocols: [...feeSource().protocols, ...feeSource().protocols] }));
+});
+
+test("L2 endpoint requires login, allows approved read-only members and shares cached responses", async () => {
+  const f = await fixture();
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; return Response.json(feeSource()); };
+  try {
+    assert.equal((await f.request("/api/l2-fees", "GET", undefined, null)).status, 401);
+    assert.equal(calls, 0);
+    const responses = await Promise.all([f.request("/api/l2-fees"), f.request("/api/l2-fees")]);
+    assert.equal(responses[0].status, 200);
+    assert.equal(responses[1].status, 200);
+    assert.equal(calls, 1);
+    const third = await f.request("/api/l2-fees");
+    assert.equal((await third.json()).cached, true);
+    assert.equal(calls, 1);
+  } finally { globalThis.fetch = realFetch; }
+});
+
+test("L2 refresh failure or empty source preserves last good data with retry cooldown", async () => {
+  for (const failure of [() => { throw new Error("unavailable"); }, () => Response.json({ protocols: [] })]) {
+    const f = await fixture();
+    const good = normalizeL2Fees(feeSource(), Date.now() - 700000);
+    await f.storage.put("l2-fees-v1", good);
+    const realFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => { calls++; return failure(); };
+    try {
+      const payload = await (await f.request("/api/l2-fees")).json();
+      assert.equal(payload.stale, true);
+      assert.equal(payload.fetchedAt, good.fetchedAt);
+      assert.deepEqual(payload.rows, good.rows);
+      await f.request("/api/l2-fees");
+      assert.equal(calls, 1);
+    } finally { globalThis.fetch = realFetch; }
+  }
+});
+
+test("L2 first-load failure returns 503 instead of a false zero balance", async () => {
+  const f = await fixture();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ protocols: [] });
+  try {
+    const response = await f.request("/api/l2-fees");
+    assert.equal(response.status, 503);
+    assert.deepEqual((await response.json()).rows, []);
+  } finally { globalThis.fetch = realFetch; }
+});
 
 test("all existing active members migrate to read-only; migration is idempotent", () => {
   const base = { id: crypto.randomUUID(), email: "legacy@example.com", status: "active" };

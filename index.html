@@ -6795,7 +6795,60 @@
         justify-content: flex-start;
       }
     }
-    </style>
+    .shell.resource-mode .hero,
+    .shell.resource-mode .market-only,
+    .shell.resource-mode .market-section { display: none !important; }
+    .shell.resource-mode .news-host { display: block; padding-top: 48px; }
+    .intel-header .nav-dropdown.is-navigating .nav-dropdown-menu { opacity: 0; pointer-events: none; }
+    .resource-tabs { display: flex; gap: 22px; overflow-x: auto; margin-bottom: 28px; border-bottom: 1px solid var(--line); scrollbar-width: thin; }
+    .resource-tab { flex: 0 0 auto; min-height: 46px; padding: 0 3px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted); font-size: 16px; font-weight: 600; white-space: nowrap; letter-spacing: 0; }
+    .resource-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .resource-tab:hover { color: var(--accent); background: transparent; }
+    .l2-fees-head h2 { margin: 0; font-size: 24px; letter-spacing: 0; }
+    .l2-fees-head { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 22px; }
+    .l2-fees-head a { font-size: 14px; color: var(--accent); white-space: nowrap; }
+    .l2-fees-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+    .l2-fees-search { display: flex; align-items: center; gap: 8px; max-width: 100%; }
+    .l2-fees-search input { width: 250px; min-width: 0; }
+    .l2-fees-search button { white-space: nowrap; }
+    .l2-fees-status { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
+    .l2-fees-refresh { flex: 0 0 38px; width: 38px; height: 38px; padding: 0; border-radius: 6px; font-size: 22px; }
+    .l2-fees-note { margin: 16px 0 24px; color: var(--muted); font-size: 14px; line-height: 1.6; }
+    .l2-fees-warning { color: #bd7a00; font-size: 14px; }
+    .l2-fees-table-wrap { overflow-x: auto; }
+    .l2-fees-table { display: table !important; width: 100%; min-width: 720px !important; border-collapse: collapse; font-size: 15px; font-variant-numeric: tabular-nums; }
+    .l2-fees-table thead { display: table-header-group !important; }
+    .l2-fees-table tbody { display: table-row-group !important; }
+    .l2-fees-table tr { display: table-row !important; padding: 0; }
+    .l2-fees-table td { display: table-cell !important; padding: 18px 12px !important; border-bottom: 1px solid var(--line) !important; }
+    .l2-fees-table td::before { content: none; }
+    .l2-fees-table th, .l2-fees-table td { padding: 18px 12px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    .l2-fees-table th { color: var(--muted); font-size: 14px; }
+    .l2-fees-table th:first-child, .l2-fees-table td:first-child { width: 48px; text-align: center; color: var(--muted); }
+    .l2-fees-table th:nth-child(2), .l2-fees-table td:nth-child(2) { text-align: left; width: 190px; }
+    .l2-fees-chain { display: inline-flex; gap: 10px; align-items: center; color: var(--text); text-decoration: none; }
+    .l2-fees-chain img { flex: 0 0 24px; object-fit: contain; border-radius: 50%; }
+    .l2-fees-chain span { white-space: normal; overflow-wrap: anywhere; line-height: 1.4; }
+    .l2-fees-sort { border: 0; padding: 0; color: inherit; background: transparent; font: inherit; border-radius: 0; }
+    .l2-fees-sort:hover, .l2-fees-sort:focus-visible { color: var(--accent); background: transparent; }
+    .l2-fees-empty { padding: 60px 0; text-align: center; color: var(--muted); }
+    @media (max-width: 700px) {
+      .shell.resource-mode .news-host { padding-top: 28px; }
+      .resource-tabs { gap: 17px; margin-bottom: 22px; }
+      .resource-tab { font-size: 15px; }
+      .l2-fees-head h2 { font-size: 22px; }
+      .l2-fees-toolbar, .l2-fees-search { width: 100%; }
+      .l2-fees-search input { flex: 1; width: 0; }
+      .l2-fees-status { width: 100%; justify-content: space-between; line-height: 1.5; }
+      .l2-fees-table th, .l2-fees-table td { padding: 16px 9px !important; }
+      .l2-fees-table { table-layout: fixed; width: 688px; min-width: 688px !important; }
+      .l2-fees-table col:nth-child(1) { width: 36px; }
+      .l2-fees-table col:nth-child(2) { width: 120px; }
+      .l2-fees-table col:nth-child(n+3) { width: 140px; }
+      .l2-fees-table col:last-child { width: 112px; }
+      .l2-fees-table th:nth-child(2), .l2-fees-table td:nth-child(2) { width: auto; }
+    }
+  </style>
   </head>
   <body>
   <div class="intel-ticker" aria-label="사이트 상태 요약">
@@ -6823,6 +6876,7 @@
             <button id="futuresToggleBtn" type="button" role="menuitem"></button>
             <button id="rankingToggleBtn" type="button" role="menuitem"></button>
             <button id="auditToggleBtn" type="button" role="menuitem"></button>
+            <button id="l2FeesToggleBtn" type="button" role="menuitem"></button>
           </div>
         </div>
       </div>
@@ -7293,11 +7347,12 @@
     const MARKET_SOURCE_VISIBLE_KEY = "fdv_market_source_visible_v1";
     const MARKET_BOARDS = ["binance", "upbit", "bithumb", "coinbase"];
     const SCREEN_NAV_ITEMS = ["market", "news", "board", "resources"];
-    const RESOURCE_MENU_ITEMS = ["futures", "ranking", "audit"];
+    const RESOURCE_MENU_ITEMS = ["futures", "ranking", "audit", "l2fees"];
     const RESOURCE_MENU_LABEL_DEFAULTS = {
       futures: "선물",
       ranking: "랭킹",
       audit: "실사 보유량",
+      l2fees: "L2 수수료",
     };
     const UPBIT_AUDIT_DATA_URL = "./upbit-audit-202607.json";
     const UPBIT_AUDIT_PAGE_SIZE = 50;
@@ -7326,7 +7381,7 @@
     };
     const SCREEN_SETTINGS_DEFAULT = {
       navOrder: ["market", "news", "board", "resources"],
-      resourceOrder: ["futures", "ranking", "audit"],
+      resourceOrder: [...RESOURCE_MENU_ITEMS],
       resourceLabels: { ...RESOURCE_MENU_LABEL_DEFAULTS },
       boardOrder: ["binance", "upbit", "bithumb", "coinbase"],
       statusPosition: "summary",
@@ -7607,6 +7662,7 @@
       const rankingToggleBtn = document.getElementById("rankingToggleBtn");
       const futuresToggleBtn = document.getElementById("futuresToggleBtn");
       const auditToggleBtn = document.getElementById("auditToggleBtn");
+      const l2FeesToggleBtn = document.getElementById("l2FeesToggleBtn");
       const resourcesMenu = document.getElementById("resourcesMenu");
       const resourcesMenuBtn = document.getElementById("resourcesMenuBtn");
       const screenSettingsSaveBtn = document.getElementById("screenSettingsSaveBtn");
@@ -8862,6 +8918,13 @@
       let upbitAuditSort = "report";
       let upbitAuditQuery = "";
       let upbitAuditPage = 1;
+      let l2FeesData = null;
+      let l2FeesPromise = null;
+      let l2FeesCheckedAt = 0;
+      let l2FeesError = "";
+      let l2FeesQuery = "";
+      let l2FeesSortKey = "total24h";
+      let l2FeesSortDirection = "desc";
       let adminServerPassword = "";
       let serverUsageStats = null;
       let serverUsageError = "";
@@ -11167,6 +11230,7 @@
 
         newsPanel.innerHTML = `
           <div class="ranking-shell">
+            ${renderResourceTabs()}
             <nav class="ranking-tabs" aria-label="DefiLlama 랭킹 종류">
               ${categoryTabs}
             </nav>
@@ -11372,6 +11436,7 @@
 
         newsPanel.innerHTML = `
           <div class="futures-shell">
+            ${renderResourceTabs()}
             <nav class="futures-tabs" aria-label="선물 거래소">
               ${tabsMarkup}
             </nav>
@@ -11544,6 +11609,7 @@
         if (!upbitAuditData) {
           newsPanel.innerHTML = `
             <div class="audit-shell">
+              ${renderResourceTabs()}
               <div class="audit-head">
                 <div>
                   <h2 class="audit-title">업비트 디지털 자산 실사 보유량</h2>
@@ -11640,6 +11706,7 @@
 
         newsPanel.innerHTML = `
           <div class="audit-shell">
+            ${renderResourceTabs()}
             <div class="audit-head">
               <div>
                 <h2 class="audit-title">업비트 디지털 자산 실사 보유량</h2>
@@ -11874,6 +11941,18 @@
       }
 
       function renderContentPanel() {
+        if (RESOURCE_MENU_ITEMS.includes(state.viewMode)) {
+          if (state.viewMode === "l2fees") {
+            renderL2FeesPanel();
+          } else if (state.viewMode === "ranking") {
+            renderRankingPanel();
+          } else if (state.viewMode === "futures") {
+            renderFuturesPanel();
+          } else {
+            renderAuditPanel();
+          }
+          return;
+        }
         if (state.viewMode === "exchange-history") {
           renderExchangeHistoryPanel();
           return;
@@ -11882,19 +11961,65 @@
           renderFreeBoard();
           return;
         }
-        if (state.viewMode === "ranking") {
-          renderRankingPanel();
-          return;
-        }
-        if (state.viewMode === "futures") {
-          renderFuturesPanel();
-          return;
-        }
-        if (state.viewMode === "audit") {
-          renderAuditPanel();
-          return;
-        }
         renderNewsPanel();
+      }
+
+      function renderResourceTabs() {
+        return `<nav class="resource-tabs" aria-label="자료 분류">${orderedResourceMenuItems().map((item) => `
+          <button type="button" class="resource-tab${state.viewMode === item ? " active" : ""}" data-resource-view="${item}" aria-pressed="${state.viewMode === item}">${escapeHtml(getResourceMenuLabel(item))}</button>
+        `).join("")}</nav>`;
+      }
+
+      async function requestL2Fees(force = false) {
+        if (l2FeesPromise || isSiteLocked() || document.hidden) return l2FeesPromise;
+        if (!force && Date.now() - l2FeesCheckedAt < (l2FeesError || l2FeesData?.stale ? 60000 : 600000)) return;
+        l2FeesCheckedAt = Date.now();
+        l2FeesError = "";
+        l2FeesPromise = (async () => {
+          try {
+            const payload = await fetchServerAuth("/api/l2-fees", { timeoutMs: 20000 });
+            if (!Array.isArray(payload?.rows) || !payload.rows.length) throw new Error("empty_l2_fees");
+            l2FeesData = payload;
+          } catch (_error) {
+            l2FeesError = "수수료 정보를 갱신하지 못했습니다.";
+          } finally {
+            l2FeesPromise = null;
+            if (state.viewMode === "l2fees") renderContentPanel();
+          }
+        })();
+        if (state.viewMode === "l2fees") renderContentPanel();
+        return l2FeesPromise;
+      }
+
+      function renderL2FeesPanel() {
+        const aliases = { base: "베이스", arbitrum: "아비트럼", "op-mainnet": "옵티미즘", starknet: "스타크넷", scroll: "스크롤", linea: "리네아", mantle: "맨틀", blast: "블라스트", "zksync-era": "지케이싱크", taiko: "타이코" };
+        const query = l2FeesQuery.trim().toLowerCase();
+        const rows = (l2FeesData?.rows || []).filter((row) => !query || `${row.name} ${aliases[row.slug] || ""}`.toLowerCase().includes(query));
+        rows.sort((a, b) => {
+          const av = a[l2FeesSortKey], bv = b[l2FeesSortKey];
+          if (av === null && bv === null) return a.name.localeCompare(b.name);
+          if (av === null) return 1;
+          if (bv === null) return -1;
+          return (l2FeesSortDirection === "asc" ? av - bv : bv - av) || a.name.localeCompare(b.name);
+        });
+        const sortHeader = (key, label) => `<th aria-sort="${l2FeesSortKey === key ? (l2FeesSortDirection === "asc" ? "ascending" : "descending") : "none"}"><button type="button" class="l2-fees-sort" data-l2-sort="${key}">${label}${l2FeesSortKey === key ? (l2FeesSortDirection === "asc" ? " ↑" : " ↓") : ""}</button></th>`;
+        const money = (value) => typeof value === "number" && Number.isFinite(value)
+          ? value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }) : "-";
+        const fetchedAt = Number(l2FeesData?.fetchedAt) || 0;
+        const date = fetchedAt ? new Date(fetchedAt).toLocaleString("ko-KR", { timeZone: "Asia/Seoul", hour12: false }) : "";
+        newsPanel.innerHTML = `<section class="l2-fees-shell">${renderResourceTabs()}
+          <div class="l2-fees-head"><h2>${escapeHtml(getResourceMenuLabel("l2fees"))}</h2><a href="https://defillama.com/fees/chains" target="_blank" rel="noopener noreferrer">DefiLlama 원본 ↗</a></div>
+          <div class="l2-fees-toolbar">
+            <form id="l2FeesSearchForm" class="l2-fees-search"><input type="search" name="query" aria-label="L2 체인 검색" placeholder="체인 검색" value="${escapeAttr(l2FeesQuery)}" maxlength="80" /><button type="submit">검색</button></form>
+            <div class="l2-fees-status"><span>${l2FeesPromise ? "갱신 중" : "10분 자동 조회"}${date ? ` · 조회 ${escapeHtml(date)}` : ""}</span><button type="button" class="l2-fees-refresh" data-l2-refresh title="수수료 갱신" aria-label="수수료 갱신" ${l2FeesPromise ? "disabled" : ""}>↻</button></div>
+          </div>
+          <p class="l2-fees-note">주요 Ethereum L2 · 체인 자체 수수료 · USD · DefiLlama 최신 24h 집계</p>
+          ${l2FeesError || l2FeesData?.stale ? `<p class="l2-fees-warning" role="status">${l2FeesData ? "갱신이 지연되어 마지막 조회 값을 표시합니다." : "수수료 정보를 불러오지 못했습니다."}</p>` : ""}
+          ${rows.length ? `<div class="l2-fees-table-wrap"><table class="l2-fees-table"><colgroup><col /><col /><col /><col /><col /><col /></colgroup><thead><tr><th>순위</th><th>체인</th>${sortHeader("total24h", "수수료 24h")}${sortHeader("total7d", "수수료 7d")}${sortHeader("total30d", "수수료 30d")}${sortHeader("change1d", "전일 대비")}</tr></thead><tbody>${rows.map((row, index) => `<tr>
+            <td>${index + 1}</td><td><a class="l2-fees-chain" href="${escapeAttr(row.url)}" target="_blank" rel="noopener noreferrer">${row.logo ? `<img src="${escapeAttr(row.logo)}" alt="" width="24" height="24" loading="lazy" referrerpolicy="no-referrer" />` : ""}<span>${escapeHtml(row.name)}</span></a></td>
+            <td>${money(row.total24h)}</td><td>${money(row.total7d)}</td><td>${money(row.total30d)}</td><td>${row.change1d === null ? "-" : escapeHtml(formatRankingChange(row.change1d))}</td>
+          </tr>`).join("")}</tbody></table></div>` : `<p class="l2-fees-empty">${l2FeesPromise ? "수수료 정보를 불러오는 중입니다." : l2FeesData ? "검색 결과가 없습니다." : "표시할 수수료 정보가 없습니다."}</p>`}
+        </section>`;
       }
 
       function setLockCapsWarning(active) {
@@ -14159,6 +14284,7 @@
           futures: futuresToggleBtn,
           ranking: rankingToggleBtn,
           audit: auditToggleBtn,
+          l2fees: l2FeesToggleBtn,
         };
         orderedResourceMenuItems().forEach((item) => {
           const button = resourceButtons[item];
@@ -15796,7 +15922,7 @@
       }
 
       function renderCurrentView() {
-        if (state.viewMode === "news" || state.viewMode === "board" || state.viewMode === "ranking" || state.viewMode === "futures" || state.viewMode === "audit" || state.viewMode === "exchange-history") {
+        if (state.viewMode === "news" || state.viewMode === "board" || state.viewMode === "resources" || RESOURCE_MENU_ITEMS.includes(state.viewMode) || state.viewMode === "exchange-history") {
           renderContentPanel();
           return;
         }
@@ -16029,7 +16155,8 @@
       }
 
       function setViewMode(mode, options = {}) {
-        const requestedMode = ["news", "board", "ranking", "futures", "audit", "exchange-history"].includes(mode) ? mode : "market";
+        const requestedMode = mode === "resources" ? orderedResourceMenuItems()[0]
+          : ["news", "board", ...RESOURCE_MENU_ITEMS, "exchange-history"].includes(mode) ? mode : "market";
         state.viewMode = requestedMode === "board" && !canAccessFreeBoard() ? "market" : requestedMode;
         const isMarketMode = state.viewMode === "market";
         const isNewsMode = state.viewMode === "news";
@@ -16050,7 +16177,9 @@
         rankingToggleBtn.classList.toggle("active", isRankingMode);
         futuresToggleBtn.classList.toggle("active", isFuturesMode);
         auditToggleBtn.classList.toggle("active", isAuditMode);
-        const isResourcesMode = isRankingMode || isFuturesMode || isAuditMode;
+        const isResourcesMode = state.viewMode === "resources" || RESOURCE_MENU_ITEMS.includes(state.viewMode);
+        appShell.classList.toggle("resource-mode", isResourcesMode);
+        l2FeesToggleBtn.classList.toggle("active", state.viewMode === "l2fees");
         resourcesMenuBtn?.classList.toggle("active", isResourcesMode);
         resourcesMenu?.classList.remove("is-open");
         resourcesMenuBtn?.setAttribute("aria-expanded", "false");
@@ -16059,7 +16188,7 @@
         } else {
           destroyMarketChart();
         }
-        if (isNewsMode || isBoardMode || isRankingMode || isFuturesMode || isAuditMode || isExchangeHistoryMode) {
+        if (isNewsMode || isBoardMode || isResourcesMode || isExchangeHistoryMode) {
           renderContentPanel();
         }
         if (isExchangeHistoryMode) {
@@ -16068,6 +16197,7 @@
         if (isAuditMode) {
           requestUpbitAuditData();
         }
+        if (state.viewMode === "l2fees") requestL2Fees();
         if (isNewsMode) {
           requestLiveNewsRefresh(true);
         }
@@ -16092,6 +16222,10 @@
       }
 
       function resetViewSearchState(viewMode) {
+        if (viewMode === "l2fees") {
+          l2FeesQuery = "";
+          return;
+        }
         if (viewMode === "news") {
           newsSearchQuery = "";
           data.news = { items: [], query: "", total: 0, storedCount: 0, hasMore: false, nextOffset: 0 };
@@ -16556,6 +16690,12 @@
       });
 
       newsPanel.addEventListener("submit", async (event) => {
+        if (event.target.id === "l2FeesSearchForm") {
+          event.preventDefault();
+          l2FeesQuery = String(new FormData(event.target).get("query") || "").trim().slice(0, 80);
+          renderContentPanel();
+          return;
+        }
         const auditSearchForm = event.target.closest("#auditSearchForm");
         if (auditSearchForm) {
           event.preventDefault();
@@ -17619,9 +17759,24 @@
 
       resourcesMenuBtn?.addEventListener("click", (event) => {
         event.stopPropagation();
-        const isOpen = !resourcesMenu?.classList.contains("is-open");
-        resourcesMenu?.classList.toggle("is-open", isOpen);
-        resourcesMenuBtn.setAttribute("aria-expanded", String(isOpen));
+        setViewMode("resources");
+        resourcesMenu.classList.add("is-navigating");
+      });
+
+      resourcesMenu?.addEventListener("mouseleave", () => {
+        resourcesMenu.classList.remove("is-navigating");
+        resourcesMenuBtn.setAttribute("aria-expanded", "false");
+      });
+      resourcesMenu?.addEventListener("mouseenter", () => {
+        if (matchMedia("(hover: hover)").matches) resourcesMenuBtn.setAttribute("aria-expanded", "true");
+      });
+      resourcesMenuBtn?.addEventListener("keydown", (event) => {
+        if (event.key !== "ArrowDown") return;
+        event.preventDefault();
+        resourcesMenu.classList.remove("is-navigating");
+        resourcesMenu.classList.add("is-open");
+        resourcesMenuBtn.setAttribute("aria-expanded", "true");
+        document.querySelector("#resourcesMenuList button")?.focus();
       });
 
       document.addEventListener("click", (event) => {
@@ -17650,6 +17805,27 @@
       auditToggleBtn.addEventListener("click", () => {
         resetViewSearchState("audit");
         setViewMode("audit");
+      });
+
+      l2FeesToggleBtn.addEventListener("click", () => {
+        resetViewSearchState("l2fees");
+        setViewMode("l2fees");
+      });
+
+      newsPanel.addEventListener("click", (event) => {
+        const button = event.target.closest("button");
+        if (!button) return;
+        if (RESOURCE_MENU_ITEMS.includes(button.dataset.resourceView)) {
+          resetViewSearchState(button.dataset.resourceView);
+          setViewMode(button.dataset.resourceView);
+        } else if (["total24h", "total7d", "total30d", "change1d"].includes(button.dataset.l2Sort)) {
+          const key = button.dataset.l2Sort;
+          l2FeesSortDirection = l2FeesSortKey === key && l2FeesSortDirection === "desc" ? "asc" : "desc";
+          l2FeesSortKey = key;
+          renderContentPanel();
+        } else if (button.hasAttribute("data-l2-refresh")) {
+          requestL2Fees(true);
+        }
       });
 
       window.addEventListener("popstate", (event) => {
@@ -18084,6 +18260,12 @@
           requestLiveNewsRefresh(true);
         }
       }, LIVE_NEWS_REFRESH_MS);
+      window.setInterval(() => {
+        if (state.viewMode === "l2fees") requestL2Fees();
+      }, 60000);
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden && state.viewMode === "l2fees") requestL2Fees();
+      });
       render();
     </script>
   </body>
