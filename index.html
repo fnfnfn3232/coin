@@ -6717,6 +6717,12 @@
     .shell.resource-mode .market-section { display: none !important; }
     .shell.resource-mode .news-host { display: block; padding-top: 48px; }
     .resource-tabs { display: flex; gap: 22px; overflow-x: auto; margin-bottom: 28px; border-bottom: 1px solid var(--line); scrollbar-width: thin; }
+    .coin-identity { display: inline-flex !important; align-items: center; gap: 8px; max-width: 100%; min-width: 0; margin: 0 !important; font: inherit !important; color: inherit !important; vertical-align: middle; }
+    .coin-identity > .coin-label { display: block; min-width: 0; margin: 0; font: inherit; color: inherit; overflow-wrap: anywhere; }
+    .coin-identity > .coin-mark { position: relative; display: inline-flex; flex: 0 0 24px; width: 24px; height: 24px; margin: 0; align-items: center; justify-content: center; border-radius: 50%; background: var(--line); color: var(--muted); font: 600 12px/1 sans-serif; overflow: hidden; }
+    .coin-mark > img { display: block; width: 24px; height: 24px; object-fit: contain; }
+    .coin-mark > .coin-mark-fallback { margin: 0; font: inherit; color: inherit; }
+    .coin-mark-fallback[hidden] { display: none !important; }
     .resource-tab { flex: 0 0 auto; min-height: 46px; padding: 0 3px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted); font-size: 16px; font-weight: 600; white-space: nowrap; letter-spacing: 0; }
     .resource-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
     .resource-tab:hover { color: var(--accent); background: transparent; }
@@ -7791,6 +7797,58 @@
       function escapeAttr(value) {
         return escapeHtml(value);
       }
+
+      const failedCoinLogoUrls = new Set();
+
+      function safeCoinLogoUrl(value) {
+        try {
+          const url = new URL(value);
+          return url.protocol === "https:" && !url.username && !url.password && !url.port && [
+            "static.upbit.com", "bin.bnbstatic.com", "assets.coingecko.com",
+            "coin-images.coingecko.com", "s2.coinmarketcap.com", "icons.llamao.fi",
+          ].includes(url.hostname) ? url.href : "";
+        } catch (_error) { return ""; }
+      }
+
+      function coinLogoSources(row) {
+        const symbol = getComparableSymbol(row);
+        const names = (item) => [item?.name, item?.koreanName, item?.englishName]
+          .filter(Boolean).map((name) => String(name).toLowerCase().replace(/[^a-z0-9가-힣]/g, ""))
+          .filter((name) => name !== symbol.toLowerCase());
+        const keys = new Set(names(row));
+        const matches = (item) => item === row || names(item).some((name) => keys.has(name));
+        const references = Object.values(data.boards || {}).flat().filter((item) => getComparableSymbol(item) === symbol && matches(item));
+        const upbit = (data.boards?.upbit || []).find((item) => getComparableSymbol(item) === symbol && matches(item));
+        const info = data.coinInfo?.[symbol];
+        const urls = [row?.logo, ...(matches(info) ? [info?.logo] : []), ...references.map((item) => item.logo)];
+        const cmcId = `${row?.supplyDetail || ""} ${row?.capSourceDetail || ""}`.match(/coinmarketcap_quotes:(\d+)\b/)?.[1];
+        if (cmcId) urls.push(`https://s2.coinmarketcap.com/static/img/coins/64x64/${cmcId}.png`);
+        if (upbit && /^[A-Z0-9]{1,30}$/.test(upbit.symbol)) urls.push(`https://static.upbit.com/logos/${upbit.symbol}.png`);
+        return [...new Set(urls.map(safeCoinLogoUrl).filter((url) => url && !failedCoinLogoUrls.has(url)))];
+      }
+
+      function renderCoinIdentity(row, label) {
+        const urls = coinLogoSources(row);
+        const initial = getComparableSymbol(row).slice(0, 1) || "?";
+        return `<span class="coin-identity"><span class="coin-mark" aria-hidden="true">
+          <span class="coin-mark-fallback" ${urls.length ? "hidden" : ""}>${escapeHtml(initial)}</span>
+          ${urls.length ? `<img src="${escapeAttr(urls[0])}" data-coin-logo-fallbacks="${escapeAttr(JSON.stringify(urls.slice(1)))}" alt="" width="24" height="24" loading="lazy" decoding="async" referrerpolicy="no-referrer" />` : ""}
+        </span><span class="coin-label">${escapeHtml(label)}</span></span>`;
+      }
+
+      document.addEventListener("error", (event) => {
+        const img = event.target;
+        if (!(img instanceof HTMLImageElement) || !img.hasAttribute("data-coin-logo-fallbacks")) return;
+        failedCoinLogoUrls.add(img.src);
+        const remaining = JSON.parse(img.dataset.coinLogoFallbacks || "[]").map(safeCoinLogoUrl).filter((url) => url && !failedCoinLogoUrls.has(url));
+        if (remaining.length) {
+          img.dataset.coinLogoFallbacks = JSON.stringify(remaining.slice(1));
+          img.src = remaining[0];
+        } else {
+          img.parentElement.querySelector(".coin-mark-fallback").hidden = false;
+          img.remove();
+        }
+      }, true);
 
       function hasServerAuth() {
         return Boolean(SERVER_AUTH_API_BASE);
@@ -11217,7 +11275,7 @@
                           <td class="ranking-rank">${formatNumber(Number(row.rank) || 0, 0)}</td>
                           <td class="ranking-coin">
                             <div class="ranking-coin-heading">
-                              <a class="ranking-coin-link" href="${escapeAttr(rowUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.name || row.symbol || "-")}</a>
+                              <a class="ranking-coin-link" href="${escapeAttr(rowUrl)}" target="_blank" rel="noopener noreferrer">${renderCoinIdentity(row, row.name || row.symbol || "-")}</a>
                               ${marketCapDetail ? `<span class="ranking-market-cap">${escapeHtml(marketCapDetail)}</span>` : ""}
                             </div>
                             <span class="ranking-symbol">${escapeHtml(row.symbol || "-")}</span>
@@ -11400,7 +11458,7 @@
                             <span>${escapeHtml(row.contractMarket || futuresExchangeLabel(futuresExchange))}</span>
                           </td>
                           <td class="futures-underlying">
-                            <strong>${escapeHtml(row.name || row.symbol || "-")}</strong>
+                            <strong>${renderCoinIdentity(row, row.name || row.symbol || "-")}</strong>
                             <span>${escapeHtml(row.symbol || "-")}</span>
                           </td>
                           <td class="futures-type">
@@ -11684,7 +11742,7 @@
                         <tr>
                           <td class="audit-no">${row.no ? formatNumber(row.no, 0) : "-"}</td>
                           <td class="audit-coin">
-                            <strong>${escapeHtml(row.name || row.symbol || "-")}</strong>
+                            <strong>${renderCoinIdentity(row, row.name || row.symbol || "-")}</strong>
                             <span>${escapeHtml(row.symbol || "-")}${row.listed ? " · 현재 상장" : ""}</span>
                           </td>
                           <td class="audit-quantity"><strong>${escapeHtml(row.ledgerQuantity)}</strong><span>전산원장</span></td>
@@ -13999,7 +14057,7 @@
 
       function openCoinInfo(symbol, fallbackRow = null) {
         const info = getCoinInfo(symbol, fallbackRow);
-        coinInfoTitle.textContent = info.koreanName || info.symbol;
+        coinInfoTitle.innerHTML = renderCoinIdentity(fallbackRow || info, info.koreanName || info.symbol);
         coinInfoSubtitle.textContent = `${info.symbol}${info.englishName ? ` · ${info.englishName}` : ""}`;
         coinInfoBody.innerHTML = renderCoinInfo(info);
         coinInfoModal.classList.remove("hidden");
@@ -16448,7 +16506,7 @@
               <td class="rank" data-label="${TEXT.thRank}">${rank}</td>
               <td data-label="${TEXT.thCoin}">
                 <div class="coin-title-line">
-                  <button class="coin-name coin-info-trigger" type="button" data-coin-info-symbol="${escapeAttr(coinSymbol)}" aria-label="${escapeAttr(`${displayName} 코인 정보 보기`)}">${escapeHtml(displayName)}</button>
+                  <button class="coin-name coin-info-trigger" type="button" data-coin-info-symbol="${escapeAttr(coinSymbol)}" aria-label="${escapeAttr(`${displayName} 코인 정보 보기`)}">${renderCoinIdentity(row, displayName)}</button>
                   ${riskBadges}
                 </div>
                 <div class="coin-pair">${escapeHtml(row.pair)}</div>

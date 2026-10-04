@@ -1279,6 +1279,7 @@ def fetch_binance() -> tuple[list[dict], dict[str, list[dict]]]:
             "name": item.get("localFullName") or item.get("fullName") or item.get("name") or symbol,
             "englishName": item.get("fullName") or item.get("name") or symbol,
             "koreanName": item.get("localFullName") or item.get("fullName") or symbol,
+            "logo": safe_coin_logo_url(item.get("logo")),
             "marketCapUsd": market_cap_usd,
             "marketCapKrw": market_cap_krw,
             "priceUsd": price_usd,
@@ -2655,6 +2656,55 @@ def row_symbols(row: dict) -> set[str]:
     }
 
 
+def safe_coin_logo_url(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    try:
+        url = urllib.parse.urlsplit(value)
+        if url.scheme == "https" and url.hostname in {
+            "static.upbit.com", "bin.bnbstatic.com", "assets.coingecko.com",
+            "coin-images.coingecko.com", "s2.coinmarketcap.com", "icons.llamao.fi",
+        } and not url.username and not url.password and url.port in (None, 443):
+            return value
+    except ValueError:
+        pass
+    return ""
+
+
+def apply_coin_logos(boards: dict, futures: dict, candidates: dict, previous_payload: dict | None = None) -> None:
+    references: dict[str, list[dict]] = {}
+    for rows in ((previous_payload or {}).get("boards") or {}).values():
+        for row in rows:
+            if safe_coin_logo_url(row.get("logo")):
+                references.setdefault(get_row_compare_symbol(row), []).append(row)
+    for board, rows in boards.items():
+        for row in rows:
+            symbol = get_row_compare_symbol(row)
+            logo = safe_coin_logo_url(row.get("logo"))
+            if board == "upbit" and re.fullmatch(r"[A-Z0-9]{1,30}", str(row.get("symbol") or "")):
+                logo = f"https://static.upbit.com/logos/{row['symbol']}.png"
+            if not logo:
+                for key in row_symbols(row):
+                    candidate = pick_coingecko_supply_candidate(row, candidates.get(key, []))
+                    if candidate and safe_coin_logo_url(candidate.get("logo")):
+                        logo = safe_coin_logo_url(candidate.get("logo"))
+                        break
+            row["logo"] = logo
+            if not logo:
+                cmc_match = re.search(r"coinmarketcap_quotes:(\d+)\b", f"{row.get('supplyDetail', '')} {row.get('capSourceDetail', '')}")
+                if cmc_match:
+                    logo = f"https://s2.coinmarketcap.com/static/img/coins/64x64/{cmc_match[1]}.png"
+                    row["logo"] = logo
+            if logo:
+                references.setdefault(symbol, []).append(row)
+    for rows in [*boards.values(), *futures.values()]:
+        for row in rows:
+            if safe_coin_logo_url(row.get("logo")):
+                continue
+            ref = pick_coingecko_supply_candidate(row, references.get(get_row_compare_symbol(row), []))
+            row["logo"] = safe_coin_logo_url(ref.get("logo")) if ref else ""
+
+
 def make_coingecko_market_candidate(item: dict) -> dict | None:
     symbol = str(item.get("symbol") or "").upper()
     if not symbol:
@@ -2680,6 +2730,7 @@ def make_coingecko_market_candidate(item: dict) -> dict | None:
         "marketCapRank": item.get("market_cap_rank"),
         "supplyDetail": f"coingecko_markets:{gecko_id}",
         "coingeckoId": gecko_id,
+        "logo": safe_coin_logo_url(item.get("image")),
         "sourceId": gecko_id,
         "nameKeys": list(
             {
@@ -2837,6 +2888,7 @@ def fetch_coinmarketcap_market_candidates(target_symbols: set[str]) -> dict[str,
                 "marketCapRank": item.get("cmc_rank"),
                 "supplyDetail": f"coinmarketcap_quotes:{cmc_id}",
                 "sourceId": cmc_id,
+                "logo": f"https://s2.coinmarketcap.com/static/img/coins/64x64/{cmc_id}.png" if cmc_id.isdigit() else "",
                 "nameKeys": list(build_name_keys(symbol, name, name)),
             }
             candidates.setdefault(symbol, []).append(candidate)
@@ -3688,6 +3740,8 @@ def build_coin_info(boards: dict[str, list[dict]], previous_payload: dict | None
             english_name = first_text(row.get("englishName"), row.get("name"))
             if english_name and not entry.get("englishName"):
                 entry["englishName"] = english_name
+            if not entry.get("logo") and safe_coin_logo_url(row.get("logo")):
+                entry["logo"] = row["logo"]
 
             url = exchange_listing_url(board_name, row)
             entry["listings"][board_name] = {
@@ -4290,6 +4344,7 @@ def make_payload(previous_payload: dict | None = None) -> dict:
     }
     for board_name, rows in boards.items():
         ensure_listing_coverage(board_name, expected_pairs[board_name], rows)
+    apply_coin_logos(boards, futures, coingecko_supply_candidates, previous_payload)
     coin_info = build_coin_info(boards, previous_payload)
     defillama_rankings = build_defillama_rankings(
         boards,
