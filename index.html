@@ -5945,62 +5945,7 @@
       }
 
       .intel-header .nav-dropdown-menu {
-        position: absolute;
-        top: calc(100% - 1px);
-        left: 50%;
-        z-index: 50;
-        display: grid;
-        min-width: 174px;
-        padding: 8px;
-        border: 1px solid #dde4ed;
-        border-radius: 6px;
-        background: #ffffff;
-        box-shadow: 0 18px 44px rgba(16, 31, 56, 0.15);
-        opacity: 0;
-        pointer-events: none;
-        transform: translate(-50%, 8px);
-        transition: opacity 150ms ease, transform 150ms ease;
-      }
-
-      .intel-header .nav-dropdown:hover .nav-dropdown-menu,
-      .intel-header .nav-dropdown.is-open .nav-dropdown-menu {
-        opacity: 1;
-        pointer-events: auto;
-        transform: translate(-50%, 0);
-      }
-
-      .intel-header .nav-dropdown-menu button {
-        width: 100%;
-        min-height: 42px;
-        padding: 0 14px;
-        border: 0;
-        border-radius: 4px;
-        background: transparent;
-        color: #516079;
-        font-size: 14px;
-        font-weight: 700;
-        text-align: left;
-        cursor: pointer;
-      }
-
-      .intel-header .nav-dropdown-menu button:hover,
-      .intel-header .nav-dropdown-menu button:focus-visible,
-      .intel-header .nav-dropdown-menu button.active {
-        background: #f1f5ff;
-        color: #2858db;
-        outline: none;
-      }
-
-      .intel-header .nav-dropdown-caret {
-        display: inline-block;
-        margin-left: 5px;
-        font-size: 10px;
-        transition: transform 150ms ease;
-      }
-
-      .intel-header .nav-dropdown:hover .nav-dropdown-caret,
-      .intel-header .nav-dropdown.is-open .nav-dropdown-caret {
-        transform: rotate(180deg);
+        display: none;
       }
 
       .intel-header .view-link {
@@ -6553,17 +6498,6 @@
           white-space: nowrap;
         }
 
-        .intel-header .nav-dropdown-menu {
-          right: 0;
-          left: auto;
-          transform: translateY(8px);
-        }
-
-        .intel-header .nav-dropdown:hover .nav-dropdown-menu,
-        .intel-header .nav-dropdown.is-open .nav-dropdown-menu {
-          transform: translateY(0);
-        }
-
         .shell > .hero {
           grid-template-columns: 1fr;
           gap: 38px;
@@ -6613,23 +6547,6 @@
 
         .intel-header .nav-dropdown {
           position: static;
-        }
-
-        .intel-header .nav-dropdown-menu {
-          top: calc(100% - 1px);
-          right: 0;
-          left: 0;
-          width: 100%;
-          min-width: 0;
-          max-height: min(56vh, 280px);
-          overflow-y: auto;
-          overscroll-behavior: contain;
-          transform: translateY(8px);
-        }
-
-        .intel-header .nav-dropdown:hover .nav-dropdown-menu,
-        .intel-header .nav-dropdown.is-open .nav-dropdown-menu {
-          transform: translateY(0);
         }
 
         .shell > .hero {
@@ -6799,7 +6716,6 @@
     .shell.resource-mode .market-only,
     .shell.resource-mode .market-section { display: none !important; }
     .shell.resource-mode .news-host { display: block; padding-top: 48px; }
-    .intel-header .nav-dropdown.is-navigating .nav-dropdown-menu { opacity: 0; pointer-events: none; }
     .resource-tabs { display: flex; gap: 22px; overflow-x: auto; margin-bottom: 28px; border-bottom: 1px solid var(--line); scrollbar-width: thin; }
     .resource-tab { flex: 0 0 auto; min-height: 46px; padding: 0 3px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted); font-size: 16px; font-weight: 600; white-space: nowrap; letter-spacing: 0; }
     .resource-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
@@ -6869,10 +6785,10 @@
         <button class="view-link" id="newsToggleBtn" type="button" data-view-nav="news"></button>
         <button class="view-link board-access-hidden" id="boardToggleBtn" type="button" data-view-nav="board"></button>
         <div class="nav-dropdown" id="resourcesMenu" data-view-nav="resources">
-          <button class="view-link" id="resourcesMenuBtn" type="button" aria-haspopup="true" aria-expanded="false">
-            자료<span class="nav-dropdown-caret" aria-hidden="true">▼</span>
+          <button class="view-link" id="resourcesMenuBtn" type="button">
+            자료
           </button>
-          <div class="nav-dropdown-menu" id="resourcesMenuList" role="menu" aria-label="자료 하위 메뉴">
+          <div class="nav-dropdown-menu" id="resourcesMenuList" hidden>
             <button id="futuresToggleBtn" type="button" role="menuitem"></button>
             <button id="rankingToggleBtn" type="button" role="menuitem"></button>
             <button id="auditToggleBtn" type="button" role="menuitem"></button>
@@ -7663,7 +7579,6 @@
       const futuresToggleBtn = document.getElementById("futuresToggleBtn");
       const auditToggleBtn = document.getElementById("auditToggleBtn");
       const l2FeesToggleBtn = document.getElementById("l2FeesToggleBtn");
-      const resourcesMenu = document.getElementById("resourcesMenu");
       const resourcesMenuBtn = document.getElementById("resourcesMenuBtn");
       const screenSettingsSaveBtn = document.getElementById("screenSettingsSaveBtn");
       const screenSettingsResetBtn = document.getElementById("screenSettingsResetBtn");
@@ -16181,8 +16096,6 @@
         appShell.classList.toggle("resource-mode", isResourcesMode);
         l2FeesToggleBtn.classList.toggle("active", state.viewMode === "l2fees");
         resourcesMenuBtn?.classList.toggle("active", isResourcesMode);
-        resourcesMenu?.classList.remove("is-open");
-        resourcesMenuBtn?.setAttribute("aria-expanded", "false");
         if (isMarketMode) {
           scheduleMarketChart();
         } else {
@@ -17760,36 +17673,6 @@
       resourcesMenuBtn?.addEventListener("click", (event) => {
         event.stopPropagation();
         setViewMode("resources");
-        resourcesMenu.classList.add("is-navigating");
-      });
-
-      resourcesMenu?.addEventListener("mouseleave", () => {
-        resourcesMenu.classList.remove("is-navigating");
-        resourcesMenuBtn.setAttribute("aria-expanded", "false");
-      });
-      resourcesMenu?.addEventListener("mouseenter", () => {
-        if (matchMedia("(hover: hover)").matches) resourcesMenuBtn.setAttribute("aria-expanded", "true");
-      });
-      resourcesMenuBtn?.addEventListener("keydown", (event) => {
-        if (event.key !== "ArrowDown") return;
-        event.preventDefault();
-        resourcesMenu.classList.remove("is-navigating");
-        resourcesMenu.classList.add("is-open");
-        resourcesMenuBtn.setAttribute("aria-expanded", "true");
-        document.querySelector("#resourcesMenuList button")?.focus();
-      });
-
-      document.addEventListener("click", (event) => {
-        if (resourcesMenu?.contains(event.target)) return;
-        resourcesMenu?.classList.remove("is-open");
-        resourcesMenuBtn?.setAttribute("aria-expanded", "false");
-      });
-
-      resourcesMenu?.addEventListener("keydown", (event) => {
-        if (event.key !== "Escape") return;
-        resourcesMenu.classList.remove("is-open");
-        resourcesMenuBtn?.setAttribute("aria-expanded", "false");
-        resourcesMenuBtn?.focus();
       });
 
       rankingToggleBtn.addEventListener("click", () => {
