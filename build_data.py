@@ -572,6 +572,8 @@ def clone_previous_futures_rows(previous_payload: dict | None, exchange_name: st
     rows = futures.get(exchange_name)
     if not isinstance(rows, list):
         return []
+    if exchange_name == "binance":
+        rows = [row for row in rows if is_binance_usdt_future(row)]
     try:
         return json.loads(json.dumps(rows, ensure_ascii=False))
     except (TypeError, ValueError):
@@ -1967,6 +1969,18 @@ def normalize_futures_underlying_symbol(value: object, known_symbols: set[str] |
     return symbol
 
 
+def is_binance_usdt_future(row: object) -> bool:
+    if not isinstance(row, dict):
+        return False
+    contract_id = str(row.get("contractId") or row.get("pair") or "").upper().strip()
+    return (
+        str(row.get("quoteAsset") or "").upper().strip() == "USDT"
+        and str(row.get("marginAsset") or "USDT").upper().strip() == "USDT"
+        and contract_id.endswith("USDT")
+        and str(row.get("contractMarket") or "").upper() != "COIN-M"
+    )
+
+
 def fetch_binance_futures_official(known_symbols: set[str] | None = None) -> list[dict]:
     rows: list[dict] = []
     sources = (
@@ -1976,13 +1990,6 @@ def fetch_binance_futures_official(known_symbols: set[str] | None = None) -> lis
             BINANCE_USDM_FUTURES_INFO_ENDPOINT,
             BINANCE_USDM_FUTURES_PRICE_ENDPOINT,
             "status",
-        ),
-        (
-            "coinm",
-            "\u0043\u004f\u0049\u004e\u002d\u004d",
-            BINANCE_COINM_FUTURES_INFO_ENDPOINT,
-            BINANCE_COINM_FUTURES_PRICE_ENDPOINT,
-            "contractStatus",
         ),
     )
     for market_key, market_label, info_endpoint, price_endpoint, status_key in sources:
@@ -2000,6 +2007,8 @@ def fetch_binance_futures_official(known_symbols: set[str] | None = None) -> lis
                 continue
             if str(item.get(status_key) or "").upper() != "TRADING":
                 continue
+            if item.get("quoteAsset") != "USDT" or item.get("marginAsset") != "USDT":
+                continue
             contract_type = str(item.get("contractType") or "").upper()
             if contract_type != "PERPETUAL":
                 continue
@@ -2008,7 +2017,7 @@ def fetch_binance_futures_official(known_symbols: set[str] | None = None) -> lis
             contract_id = str(item.get("symbol") or "").upper().strip()
             raw_underlying = str(item.get("baseAsset") or "").upper().strip()
             underlying = normalize_futures_underlying_symbol(raw_underlying, known_symbols)
-            if not contract_id or not underlying:
+            if not contract_id.endswith("USDT") or not underlying:
                 continue
             is_perpetual = contract_type == "PERPETUAL"
             delivery_date = int(to_float(item.get("deliveryDate")) or 0)
@@ -2039,6 +2048,7 @@ def fetch_binance_futures_official(known_symbols: set[str] | None = None) -> lis
                     ),
                     "contractMarket": market_label,
                     "quoteAsset": str(item.get("quoteAsset") or "USD").upper(),
+                    "marginAsset": "USDT",
                     "nativeCurrency": "USD",
                     "priceUsd": price_usd,
                     "priceKrw": price_usd * FX_USD_KRW if price_usd is not None else None,
@@ -2080,6 +2090,8 @@ def fetch_binance_futures_coingecko(known_symbols: set[str] | None = None) -> li
         raw_underlying = str(item.get("base") or "").upper().strip()
         underlying = normalize_futures_underlying_symbol(raw_underlying, known_symbols)
         quote_asset = str(item.get("target") or "USD").upper().strip()
+        if quote_asset != "USDT" or not contract_id.endswith("USDT"):
+            continue
         if not contract_id or not underlying or contract_id in seen_contracts:
             continue
         seen_contracts.add(contract_id)

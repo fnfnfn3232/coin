@@ -11362,13 +11362,21 @@
         return FUTURES_SPOT_EXCHANGES.filter(([exchange]) => exchangeKeys.has(exchange));
       }
 
+      function isBinanceUsdtFuture(row) {
+        const contractId = String(row?.contractId || row?.pair || "").trim().toUpperCase();
+        return String(row?.quoteAsset || "").trim().toUpperCase() === "USDT"
+          && String(row?.marginAsset || "USDT").trim().toUpperCase() === "USDT"
+          && contractId.endsWith("USDT")
+          && String(row?.contractMarket || "").toUpperCase() !== "COIN-M";
+      }
+
       function renderFuturesPanel() {
         if (!["binance", "coinbase"].includes(futuresExchange)) {
           futuresExchange = "binance";
         }
         const spotListingLookup = buildSpotListingLookup();
         const allRows = Array.isArray(data.futures?.[futuresExchange])
-          ? data.futures[futuresExchange]
+          ? data.futures[futuresExchange].filter((row) => futuresExchange !== "binance" || isBinanceUsdtFuture(row))
           : [];
         const normalizedQuery = futuresQuery.trim().toLocaleLowerCase("ko-KR");
         const matchingRows = !normalizedQuery
