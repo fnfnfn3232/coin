@@ -8909,7 +8909,6 @@
         data: null, promise: null, checkedAt: 0, error: "", query: "", sortKey: "total24h", sortDirection: "desc",
       }]));
       const RESOURCE_SEARCH_SELECTOR = '#rankingSearchForm input[name="rankingQuery"], #futuresSearchForm input[name="futuresQuery"], #auditSearchForm input[name="auditQuery"], #l2FeesSearchForm input[name="query"]';
-      let resourceSearchComposingInput = null;
       let adminServerPassword = "";
       let serverUsageStats = null;
       let serverUsageError = "";
@@ -11972,25 +11971,36 @@
       }
 
       function renderResourceSearchPanel(markup) {
-        // Do not replace an input while the IME is composing a Korean syllable.
-        if (resourceSearchComposingInput && newsPanel.contains(resourceSearchComposingInput)) return;
-        const active = document.activeElement;
-        const search = active?.matches(RESOURCE_SEARCH_SELECTOR) && newsPanel.contains(active) ? active : null;
-        const focusState = search ? {
-          formId: search.form.id,
-          value: search.value,
-          start: search.selectionStart,
-          end: search.selectionEnd,
-          direction: search.selectionDirection,
-        } : null;
-        newsPanel.innerHTML = markup;
-        if (!focusState) return;
-        const nextInput = newsPanel.querySelector(`#${focusState.formId} input[type="search"]`);
-        if (!nextInput) return;
-        nextInput.value = focusState.value;
-        nextInput.focus({ preventScroll: true });
-        if (focusState.start !== null && focusState.end !== null) {
-          nextInput.setSelectionRange(focusState.start, focusState.end, focusState.direction);
+        const template = document.createElement("template");
+        template.innerHTML = markup;
+        const nextInput = template.content.querySelector(RESOURCE_SEARCH_SELECTOR);
+        const input = nextInput && newsPanel.querySelector(`#${nextInput.form.id} input[type="search"]`);
+        if (!input) {
+          newsPanel.replaceChildren(template.content);
+          return;
+        }
+
+        // Keep the input and its ancestors attached so native clear and IME events finish normally.
+        function updateAroundInput(current, next) {
+          if (current === input) return;
+          const currentBranch = [...current.childNodes].find((node) => node.contains(input));
+          const nextBranch = [...next.childNodes].find((node) => node.contains(nextInput));
+          const nextChildren = [...next.childNodes];
+          [...current.childNodes].forEach((node) => {
+            if (node !== currentBranch) node.remove();
+          });
+          let afterInput = false;
+          nextChildren.forEach((node) => {
+            if (node === nextBranch) afterInput = true;
+            else if (afterInput) current.appendChild(node);
+            else current.insertBefore(node, currentBranch);
+          });
+          updateAroundInput(currentBranch, nextBranch);
+        }
+        updateAroundInput(newsPanel, template.content);
+        input.setAttribute("aria-label", nextInput.getAttribute("aria-label") || input.placeholder);
+        if (document.activeElement !== input || input.value.trim().slice(0, 80) !== nextInput.value) {
+          input.value = nextInput.value;
         }
       }
 
@@ -17709,23 +17719,21 @@
         showFreeBoardMessage("이미지/동영상 주소를 첨부파일 목록에 추가했습니다.", false);
       });
 
-      newsPanel.addEventListener("compositionstart", (event) => {
-        if (event.target.matches?.(RESOURCE_SEARCH_SELECTOR)) resourceSearchComposingInput = event.target;
-      });
-
       newsPanel.addEventListener("compositionend", (event) => {
         if (!event.target.matches?.(RESOURCE_SEARCH_SELECTOR)) return;
-        resourceSearchComposingInput = null;
-        applyResourceSearch(event.target, true);
+        applyResourceSearch(event.target);
       });
 
       newsPanel.addEventListener("search", (event) => {
-        if (!event.isComposing && resourceSearchComposingInput !== event.target) applyResourceSearch(event.target);
+        applyResourceSearch(event.target);
+      }, true);
+
+      newsPanel.addEventListener("change", (event) => {
+        applyResourceSearch(event.target);
       });
 
       newsPanel.addEventListener("input", (event) => {
         if (event.target.matches?.(RESOURCE_SEARCH_SELECTOR)) {
-          if (event.isComposing || resourceSearchComposingInput === event.target) return;
           applyResourceSearch(event.target);
           return;
         }
