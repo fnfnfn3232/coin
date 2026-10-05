@@ -10,7 +10,9 @@
   <meta name="googlebot" content="noindex, nofollow, noarchive, nosnippet, noimageindex" />
   <meta name="bingbot" content="noindex, nofollow, noarchive, nosnippet, noimageindex" />
   <title>블록스코프</title>
-  <link rel="icon" type="image/svg+xml" href="./favicon.svg?v=20261005" />
+  <link rel="icon" type="image/x-icon" href="./assets/branding/blockscope-character-v1.ico" sizes="16x16 32x32 48x48" />
+  <link rel="icon" type="image/png" href="./assets/branding/blockscope-character-v1-32.png" sizes="32x32" />
+  <link rel="apple-touch-icon" href="./assets/branding/blockscope-character-v1-180.png" sizes="180x180" />
   <style>
     :root {
       --bg: #ffffff;
@@ -5912,21 +5914,11 @@
       }
 
       .intel-brand-mark {
-        display: grid;
-        grid-template-columns: repeat(2, 8px);
-        gap: 3px;
-      }
-
-      .intel-brand-mark span {
-        width: 8px;
-        height: 8px;
-        border-radius: 2px;
-        background: #3567ff;
-      }
-
-      .intel-brand-mark span:nth-child(2),
-      .intel-brand-mark span:nth-child(3) {
-        opacity: 0.55;
+        display: block;
+        width: 48px;
+        height: 48px;
+        flex: 0 0 48px;
+        object-fit: contain;
       }
 
       .intel-header .view-switch {
@@ -6477,6 +6469,12 @@
       }
 
       @media (max-width: 980px) {
+        .intel-brand-mark {
+          width: 40px;
+          height: 40px;
+          flex-basis: 40px;
+        }
+
         .intel-header-inner {
           align-items: flex-start;
           flex-direction: column;
@@ -6784,7 +6782,7 @@
   <header class="intel-header">
     <div class="intel-header-inner">
       <button class="intel-brand" id="brandHomeButton" type="button" aria-label="블록스코프 홈">
-        <span class="intel-brand-mark" aria-hidden="true"><span></span><span></span><span></span><span></span></span>
+        <img class="intel-brand-mark" src="./assets/branding/blockscope-character-v1-192.png" width="48" height="48" alt="" decoding="async" />
         <span>블록스코프</span>
       </button>
       <div class="view-switch" id="viewSwitch">
