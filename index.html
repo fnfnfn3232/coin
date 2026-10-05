@@ -8908,6 +8908,8 @@
       const chainFeesStates = Object.fromEntries(["l1fees", "l2fees"].map((mode) => [mode, {
         data: null, promise: null, checkedAt: 0, error: "", query: "", sortKey: "total24h", sortDirection: "desc",
       }]));
+      const RESOURCE_SEARCH_SELECTOR = '#rankingSearchForm input[name="rankingQuery"], #futuresSearchForm input[name="futuresQuery"], #auditSearchForm input[name="auditQuery"], #l2FeesSearchForm input[name="query"]';
+      let resourceSearchComposingInput = null;
       let adminServerPassword = "";
       let serverUsageStats = null;
       let serverUsageError = "";
@@ -11211,7 +11213,7 @@
           ? "Perp DEX 거래량 전용 API가 유료로 전환되어, 임의 거래량 대신 DefiLlama 무료 API의 현재 미결제약정을 표시합니다."
           : "각 코인은 한 번만 표시하며, 같은 토큰의 여러 프로토콜 중 해당 지표가 가장 큰 프로토콜을 대표값으로 사용합니다.";
 
-        newsPanel.innerHTML = `
+        renderResourceSearchPanel(`
           <div class="ranking-shell">
             ${renderResourceTabs()}
             <nav class="ranking-tabs" aria-label="DefiLlama 랭킹 종류">
@@ -11219,7 +11221,7 @@
             </nav>
             <div class="ranking-toolbar">
               <form class="ranking-search" id="rankingSearchForm">
-                <input name="rankingQuery" type="search" autocomplete="off" placeholder="코인·심볼·프로토콜 검색" value="${escapeAttr(rankingQuery)}" />
+                <input name="rankingQuery" type="search" autocomplete="off" placeholder="코인·심볼·프로토콜 검색" value="${escapeAttr(rankingQuery)}" maxlength="80" />
                 <button type="submit">검색</button>
                 ${rankingQuery ? `<button type="button" data-ranking-clear>초기화</button>` : ""}
               </form>
@@ -11319,7 +11321,7 @@
               <p class="ranking-empty">${generatedAt ? "조건에 맞는 랭킹 코인이 없습니다." : "랭킹 데이터를 준비 중입니다. 다음 자동 갱신 후 표시됩니다."}</p>
             `}
           </div>
-        `;
+        `);
       }
 
       function futuresExchangeLabel(exchange) {
@@ -11425,7 +11427,7 @@
             }).join("")}</div>`
           : "";
 
-        newsPanel.innerHTML = `
+        renderResourceSearchPanel(`
           <div class="futures-shell">
             ${renderResourceTabs()}
             <nav class="futures-tabs" aria-label="선물 거래소">
@@ -11433,7 +11435,7 @@
             </nav>
             <div class="futures-toolbar">
               <form class="futures-search" id="futuresSearchForm">
-                <input name="futuresQuery" type="search" autocomplete="off" placeholder="계약·코인·심볼 검색" value="${escapeAttr(futuresQuery)}" />
+                <input name="futuresQuery" type="search" autocomplete="off" placeholder="계약·코인·심볼 검색" value="${escapeAttr(futuresQuery)}" maxlength="80" />
                 <button type="submit">검색</button>
                 ${futuresQuery ? `<button type="button" data-futures-clear>초기화</button>` : ""}
               </form>
@@ -11504,7 +11506,7 @@
               ${pagesMarkup}
             ` : `<p class="futures-empty">${data.generatedAt ? "조건에 맞는 선물 상품이 없습니다." : "선물 데이터를 준비 중입니다."}</p>`}
           </div>
-        `;
+        `);
         syncLivePriceStream();
       }
 
@@ -11695,7 +11697,7 @@
             }).join("")}</div>`
           : "";
 
-        newsPanel.innerHTML = `
+        renderResourceSearchPanel(`
           <div class="audit-shell">
             ${renderResourceTabs()}
             <div class="audit-head">
@@ -11718,7 +11720,7 @@
                 <button class="audit-filter${upbitAuditFilter === "low" ? " active" : ""}" type="button" data-audit-filter="low">보유비율 미달</button>
               </div>
               <form class="audit-search" id="auditSearchForm">
-                <input name="auditQuery" type="search" autocomplete="off" placeholder="코인명·심볼 검색" value="${escapeAttr(upbitAuditQuery)}" />
+                <input name="auditQuery" type="search" autocomplete="off" placeholder="코인명·심볼 검색" value="${escapeAttr(upbitAuditQuery)}" maxlength="80" />
                 <button type="submit">검색</button>
                 ${upbitAuditQuery ? '<button type="button" data-audit-clear>초기화</button>' : ""}
               </form>
@@ -11783,7 +11785,7 @@
               ${pagesMarkup}
             ` : '<p class="audit-empty">조건에 맞는 자산이 없습니다.</p>'}
           </div>
-        `;
+        `);
       }
 
       const EXCHANGE_HISTORY_LABELS = {
@@ -11969,6 +11971,63 @@
         `).join("")}</nav>`;
       }
 
+      function renderResourceSearchPanel(markup) {
+        // Do not replace an input while the IME is composing a Korean syllable.
+        if (resourceSearchComposingInput && newsPanel.contains(resourceSearchComposingInput)) return;
+        const active = document.activeElement;
+        const search = active?.matches(RESOURCE_SEARCH_SELECTOR) && newsPanel.contains(active) ? active : null;
+        const focusState = search ? {
+          formId: search.form.id,
+          value: search.value,
+          start: search.selectionStart,
+          end: search.selectionEnd,
+          direction: search.selectionDirection,
+        } : null;
+        newsPanel.innerHTML = markup;
+        if (!focusState) return;
+        const nextInput = newsPanel.querySelector(`#${focusState.formId} input[type="search"]`);
+        if (!nextInput) return;
+        nextInput.value = focusState.value;
+        nextInput.focus({ preventScroll: true });
+        if (focusState.start !== null && focusState.end !== null) {
+          nextInput.setSelectionRange(focusState.start, focusState.end, focusState.direction);
+        }
+      }
+
+      function applyResourceSearch(input, force = false) {
+        if (!(input instanceof HTMLInputElement) || !input.matches(RESOURCE_SEARCH_SELECTOR)) return false;
+        const query = input.value.trim().slice(0, 80);
+        switch (input.form.id) {
+          case "rankingSearchForm":
+            if (!force && rankingQuery === query) return true;
+            rankingQuery = query;
+            rankingVisibleCount = RANKING_PAGE_SIZE;
+            break;
+          case "futuresSearchForm":
+            if (!force && futuresQuery === query) return true;
+            futuresQuery = query;
+            futuresPage = 1;
+            break;
+          case "auditSearchForm":
+            if (!force && upbitAuditQuery === query) return true;
+            upbitAuditQuery = query;
+            upbitAuditPage = 1;
+            break;
+          case "l2FeesSearchForm": {
+            const fees = chainFeesStates[state.viewMode];
+            if (!fees) return false;
+            if (!force && fees.query === query) return true;
+            fees.query = query;
+            break;
+          }
+          default:
+            return false;
+        }
+        renderContentPanel();
+        writeAppHistoryState(true);
+        return true;
+      }
+
       async function requestChainFees(mode = state.viewMode, force = false) {
         const fees = chainFeesStates[mode];
         if (!fees) return;
@@ -12011,7 +12070,7 @@
           ? value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }) : "-";
         const fetchedAt = Number(fees.data?.fetchedAt) || 0;
         const date = fetchedAt ? new Date(fetchedAt).toLocaleString("ko-KR", { timeZone: "Asia/Seoul", hour12: false }) : "";
-        newsPanel.innerHTML = `<section class="l2-fees-shell">${renderResourceTabs()}
+        renderResourceSearchPanel(`<section class="l2-fees-shell">${renderResourceTabs()}
           <div class="l2-fees-head"><h2>${escapeHtml(getResourceMenuLabel(mode))}</h2><a href="https://defillama.com/fees/chains" target="_blank" rel="noopener noreferrer">DefiLlama 원본 ↗</a></div>
           <div class="l2-fees-toolbar">
             <form id="l2FeesSearchForm" class="l2-fees-search"><input type="search" name="query" aria-label="${layer} 체인 검색" placeholder="체인 검색" value="${escapeAttr(fees.query)}" maxlength="80" /><button type="submit">검색</button></form>
@@ -12023,7 +12082,7 @@
             <td>${index + 1}</td><td><a class="l2-fees-chain" href="${escapeAttr(row.url)}" target="_blank" rel="noopener noreferrer">${row.logo ? `<img src="${escapeAttr(row.logo)}" alt="" width="24" height="24" loading="lazy" referrerpolicy="no-referrer" />` : ""}<span>${escapeHtml(row.name)}</span></a></td>
             <td>${money(row.total24h)}</td><td>${money(row.total7d)}</td><td>${money(row.total30d)}</td><td>${row.change1d === null ? "-" : escapeHtml(formatRankingChange(row.change1d))}</td>
           </tr>`).join("")}</tbody></table></div>` : `<p class="l2-fees-empty">${fees.promise ? "수수료 정보를 불러오는 중입니다." : fees.data ? "검색 결과가 없습니다." : "표시할 수수료 정보가 없습니다."}</p>`}
-        </section>`;
+        </section>`);
       }
 
       function setLockCapsWarning(active) {
@@ -16694,42 +16753,10 @@
       });
 
       newsPanel.addEventListener("submit", async (event) => {
-        if (event.target.id === "l2FeesSearchForm") {
+        const resourceSearchInput = event.target.querySelector(RESOURCE_SEARCH_SELECTOR);
+        if (resourceSearchInput) {
           event.preventDefault();
-          chainFeesStates[state.viewMode].query = String(new FormData(event.target).get("query") || "").trim().slice(0, 80);
-          renderContentPanel();
-          return;
-        }
-        const auditSearchForm = event.target.closest("#auditSearchForm");
-        if (auditSearchForm) {
-          event.preventDefault();
-          const formData = new FormData(auditSearchForm);
-          upbitAuditQuery = String(formData.get("auditQuery") || "").trim().slice(0, 80);
-          upbitAuditPage = 1;
-          renderAuditPanel();
-          writeAppHistoryState(true);
-          return;
-        }
-
-        const futuresSearchForm = event.target.closest("#futuresSearchForm");
-        if (futuresSearchForm) {
-          event.preventDefault();
-          const formData = new FormData(futuresSearchForm);
-          futuresQuery = String(formData.get("futuresQuery") || "").trim().slice(0, 80);
-          futuresPage = 1;
-          renderFuturesPanel();
-          writeAppHistoryState(true);
-          return;
-        }
-
-        const rankingSearchForm = event.target.closest("#rankingSearchForm");
-        if (rankingSearchForm) {
-          event.preventDefault();
-          const formData = new FormData(rankingSearchForm);
-          rankingQuery = String(formData.get("rankingQuery") || "").trim().slice(0, 80);
-          rankingVisibleCount = RANKING_PAGE_SIZE;
-          renderRankingPanel();
-          writeAppHistoryState(true);
+          applyResourceSearch(resourceSearchInput, true);
           return;
         }
 
@@ -17682,7 +17709,26 @@
         showFreeBoardMessage("이미지/동영상 주소를 첨부파일 목록에 추가했습니다.", false);
       });
 
+      newsPanel.addEventListener("compositionstart", (event) => {
+        if (event.target.matches?.(RESOURCE_SEARCH_SELECTOR)) resourceSearchComposingInput = event.target;
+      });
+
+      newsPanel.addEventListener("compositionend", (event) => {
+        if (!event.target.matches?.(RESOURCE_SEARCH_SELECTOR)) return;
+        resourceSearchComposingInput = null;
+        applyResourceSearch(event.target, true);
+      });
+
+      newsPanel.addEventListener("search", (event) => {
+        if (!event.isComposing && resourceSearchComposingInput !== event.target) applyResourceSearch(event.target);
+      });
+
       newsPanel.addEventListener("input", (event) => {
+        if (event.target.matches?.(RESOURCE_SEARCH_SELECTOR)) {
+          if (event.isComposing || resourceSearchComposingInput === event.target) return;
+          applyResourceSearch(event.target);
+          return;
+        }
         const target = event.target instanceof Element ? event.target : event.target?.parentElement;
         const editor = target?.closest("#freeBoardRichEditor");
         if (!editor) return;
