@@ -6,14 +6,14 @@ const { chromium } = require('playwright');
 
 async function main() {
   const root = __dirname;
-  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  const html = fs.readFileSync(process.env.SEARCH_TEST_HTML || path.join(root, 'index.html'), 'utf8');
   for (const script of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)) new Function(script[1]);
   const snapshot = JSON.parse(fs.readFileSync(path.join(root, 'board_snapshot.json'), 'utf8'));
   const news = { query: '', items: [{ id: 'news-test', title: 'Bitcoin news', summary: 'Summary', publishAt: Date.now() }], total: 1, storedCount: 1, nextOffset: 1, hasMore: false };
   snapshot.news = news;
   const feeRow = (slug, name, total24h) => ({ slug, name, total24h, total7d: total24h * 7, total30d: total24h * 30, change1d: 1, url: `https://defillama.com/chain/${slug}`, logo: '' });
   const fees = {
-    l1fees: { rows: [feeRow('near', 'Near', 100), feeRow('bitcoin', 'Bitcoin', 200)] },
+    l1fees: { rows: [feeRow('near', 'Near', 100), feeRow('bitcoin', 'Bitcoin', 200), feeRow('solana', 'Solana', 300), feeRow('bsc', 'BSC', 400)] },
     l2fees: { rows: [feeRow('base', 'Base', 100), feeRow('arbitrum', 'Arbitrum', 200)] },
   };
   const calls = [];
@@ -22,7 +22,7 @@ async function main() {
     const file = path.resolve(root, '.' + (pathname === '/' ? '/index.html' : pathname));
     if (!file.startsWith(root + path.sep) || !fs.existsSync(file)) { res.writeHead(404).end(); return; }
     res.setHeader('Content-Type', file.endsWith('.html') ? 'text/html; charset=utf-8' : file.endsWith('.js') ? 'text/javascript' : 'application/json');
-    res.end(file.endsWith('data.js') ? `window.BOARD_DATA = ${JSON.stringify(snapshot)};` : fs.readFileSync(file));
+    res.end(file.endsWith('data.js') ? `window.BOARD_DATA = ${JSON.stringify(snapshot)};` : file.endsWith('index.html') ? html : fs.readFileSync(file));
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true });
@@ -56,6 +56,55 @@ async function main() {
     await page.locator('#searchInput').fill('');
     assert.ok(await page.locator('#tableBody tr').count() > 1);
     await page.locator('#resourcesMenuBtn').click();
+
+    await page.locator('[data-resource-view="l1fees"]').click();
+    await page.waitForSelector('.l2-fees-table');
+    const videoCdp = await page.context().newCDPSession(page);
+    const videoInput = page.locator('#l2FeesSearchForm input');
+    const videoRows = page.locator('.l2-fees-table tbody tr');
+    const videoInputHandle = await videoInput.elementHandle();
+    async function composeSyllables(groups) {
+      await videoInput.focus();
+      for (const group of groups) {
+        for (const text of group) {
+          await videoCdp.send('Input.imeSetComposition', { text, selectionStart: text.length, selectionEnd: text.length });
+        }
+        await videoCdp.send('Input.insertText', { text: group.at(-1) });
+        assert.ok(await videoInputHandle.evaluate(input => input.isConnected), 'video regression: the IME input must stay attached after each syllable');
+      }
+    }
+    await composeSyllables([['ㅅ', '소', '솔'], ['ㄹ', '라']]);
+    assert.equal(await videoInput.inputValue(), '솔라', 'video regression: Solana text never splits into standalone jamo');
+    assert.equal(await videoRows.count(), 1);
+    assert.match(await videoRows.textContent(), /Solana/);
+    await composeSyllables([['ㄴ', '나']]);
+    assert.equal(await videoInput.inputValue(), '솔라나');
+    for (let index = 0; index < 3; index++) await videoInput.press('Backspace');
+    assert.equal(await videoInput.inputValue(), '');
+    assert.equal(await videoRows.count(), fees.l1fees.rows.length);
+    await composeSyllables([['ㅂ', '비'], ['ㅌ', '트']]);
+    assert.equal(await videoInput.inputValue(), '비트');
+    assert.equal(await videoRows.count(), 1, 'video regression: the final syllable is applied, not only the first syllable');
+    assert.match(await videoRows.textContent(), /Bitcoin/);
+    await videoInput.press('Backspace');
+    await videoInput.press('Backspace');
+    assert.equal(await videoInput.inputValue(), '');
+    assert.equal(await videoRows.count(), fees.l1fees.rows.length, 'video regression: deleting Bitcoin restores every chain');
+    for (const width of [1440, 390, 320]) {
+      await page.setViewportSize({ width, height: 844 });
+      await videoInput.focus();
+      await videoCdp.send('Input.imeSetComposition', { text: '솔라', selectionStart: 2, selectionEnd: 2 });
+      const bounds = await videoInput.boundingBox();
+      await page.mouse.click(bounds.x + bounds.width - 24, bounds.y + bounds.height / 2);
+      assert.equal(await videoInput.inputValue(), '', `video regression: ${width}px native clear during composition`);
+      assert.equal(await videoRows.count(), fees.l1fees.rows.length);
+    }
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    console.log('PASS: video sequence Solana -> clear -> Bitcoin -> clear, syllable composition, and native clear during composition.');
+    if (process.env.SEARCH_VIDEO_ONLY) {
+      assert.deepEqual(errors, []);
+      return;
+    }
 
     const cases = [
       ['futures', '#futuresSearchForm input', '.futures-table tbody tr', 'BTC'],
@@ -120,7 +169,7 @@ async function main() {
     await cdp.send('Input.imeSetComposition', { text: '니어', selectionStart: 2, selectionEnd: 2, replacementStart: 0, replacementEnd: 2 });
     await cdp.send('Input.imeSetComposition', { text: '', selectionStart: 0, selectionEnd: 0 });
     assert.equal(await page.locator('#l2FeesSearchForm input').inputValue(), '');
-    assert.equal(await page.locator('.l2-fees-table tbody tr').count(), 2, 'clearing Korean composition restores the full list');
+    assert.equal(await page.locator('.l2-fees-table tbody tr').count(), fees.l1fees.rows.length, 'clearing Korean composition restores the full list');
     await page.locator('#l2FeesSearchForm input').evaluate(input => {
       window.composingInput = input;
       input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
@@ -143,7 +192,7 @@ async function main() {
       input.value = '';
       input.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true, inputType: 'deleteContentBackward' }));
     });
-    assert.equal(await page.locator('.l2-fees-table tbody tr').count(), 2, 'empty input restores all rows even before compositionend');
+    assert.equal(await page.locator('.l2-fees-table tbody tr').count(), fees.l1fees.rows.length, 'empty input restores all rows even before compositionend');
     await page.locator('#l2FeesSearchForm input').dispatchEvent('compositionend');
     await page.locator('#l2FeesSearchForm input').fill('니어');
     await page.locator('#l2FeesSearchForm input').evaluate(input => input.setSelectionRange(1, 1));
@@ -151,7 +200,7 @@ async function main() {
     assert.equal(await page.locator('#l2FeesSearchForm input').evaluate(input => input.selectionStart), 0);
     await page.locator('#l2FeesSearchForm input').fill('');
     await page.locator('#l2FeesSearchForm input').press('Enter');
-    assert.equal(await page.locator('.l2-fees-table tbody tr').count(), 2);
+    assert.equal(await page.locator('.l2-fees-table tbody tr').count(), fees.l1fees.rows.length);
 
     for (const width of [390, 320]) {
       await page.setViewportSize({ width, height: 844 });
@@ -162,7 +211,7 @@ async function main() {
       const bounds = await page.locator('#l2FeesSearchForm input').boundingBox();
       await page.mouse.click(bounds.x + bounds.width - 24, bounds.y + bounds.height / 2);
       assert.equal(await page.locator('#l2FeesSearchForm input').inputValue(), '');
-      assert.equal(await page.locator('.l2-fees-table tbody tr').count(), 2);
+      assert.equal(await page.locator('.l2-fees-table tbody tr').count(), fees.l1fees.rows.length);
     }
 
     await page.locator('#newsToggleBtn').click();
