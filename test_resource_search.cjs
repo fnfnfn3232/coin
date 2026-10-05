@@ -70,11 +70,18 @@ async function main() {
       const originalCount = await page.locator(rows).count();
       const historyLength = await page.evaluate(() => history.length);
       const apiCalls = calls.filter(call => /\/api\/(?:l[12]-fees|market-data)/.test(call)).length;
+      const originalInput = await page.locator(selector).elementHandle();
       await page.locator(selector).fill(query);
       assert.equal(await page.locator(selector).inputValue(), query);
       assert.ok(await page.locator(selector).evaluate(input => document.activeElement === input));
+      assert.ok(await originalInput.evaluate(input => input.isConnected), `${mode} never replaces the live search input`);
       assert.ok(await page.locator(rows).count() < originalCount, `${mode} filters without submit`);
       if (mode === 'l1fees') assert.match(await page.locator(rows).textContent(), /Near/);
+      const searchBounds = await page.locator(selector).boundingBox();
+      await page.mouse.click(searchBounds.x + searchBounds.width - 24, searchBounds.y + searchBounds.height / 2);
+      assert.equal(await page.locator(selector).inputValue(), '', `${mode} native clear button clears the field`);
+      assert.equal(await page.locator(rows).count(), originalCount, `${mode} native clear button restores all rows`);
+      await page.locator(selector).fill(query);
       await page.locator(selector).press('ControlOrMeta+A');
       await page.locator(selector).press('Backspace');
       assert.equal(await page.locator(rows).count(), originalCount, `${mode} restores all rows when cleared`);
@@ -83,7 +90,7 @@ async function main() {
       assert.equal(await page.locator(rows).count(), 0);
       await page.locator(selector).evaluate(input => {
         input.value = '';
-        input.dispatchEvent(new Event('search', { bubbles: true }));
+        input.dispatchEvent(new Event('search', { bubbles: false }));
       });
       assert.equal(await page.locator(rows).count(), originalCount, `${mode} supports the native search clear event`);
       assert.equal(await page.evaluate(() => history.length), historyLength, `${mode} does not add history per keystroke`);
@@ -94,12 +101,26 @@ async function main() {
         assert.equal(await page.evaluate(key => history.state[key], mode === 'futures' ? 'futuresPage' : 'upbitAuditPage'), 1);
         await page.locator(selector).fill('');
       }
+      if (mode !== 'l1fees' && mode !== 'l2fees') {
+        await page.locator(selector).fill(query);
+        await page.locator(`[data-${mode}-clear]`).evaluate(button => button.click());
+        assert.equal(await page.locator(selector).inputValue(), '', `${mode} reset clears even when focus stays in the input`);
+        assert.equal(await page.locator(rows).count(), originalCount);
+      }
       console.log(`PASS: ${mode} live search and clear`);
     }
 
     await page.locator('[data-resource-view="l1fees"]').click();
     await page.waitForSelector('.l2-fees-table');
     await page.locator('#l2FeesSearchForm input').focus();
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send('Input.imeSetComposition', { text: '니어', selectionStart: 2, selectionEnd: 2 });
+    await cdp.send('Input.insertText', { text: '니어' });
+    assert.equal(await page.locator('.l2-fees-table tbody tr').count(), 1);
+    await cdp.send('Input.imeSetComposition', { text: '니어', selectionStart: 2, selectionEnd: 2, replacementStart: 0, replacementEnd: 2 });
+    await cdp.send('Input.imeSetComposition', { text: '', selectionStart: 0, selectionEnd: 0 });
+    assert.equal(await page.locator('#l2FeesSearchForm input').inputValue(), '');
+    assert.equal(await page.locator('.l2-fees-table tbody tr').count(), 2, 'clearing Korean composition restores the full list');
     await page.locator('#l2FeesSearchForm input').evaluate(input => {
       window.composingInput = input;
       input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
@@ -107,7 +128,7 @@ async function main() {
       input.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true }));
     });
     assert.ok(await page.evaluate(() => composingInput.isConnected && document.activeElement === composingInput));
-    assert.equal(await page.locator('.l2-fees-table tbody tr').count(), 2);
+    assert.equal(await page.locator('.l2-fees-table tbody tr').count(), 1);
     await page.locator('[data-l2-refresh]').evaluate(button => button.click());
     await page.waitForFunction(() => !document.querySelector('[data-l2-refresh]').disabled);
     assert.ok(await page.evaluate(() => composingInput.isConnected));
@@ -117,6 +138,14 @@ async function main() {
     });
     assert.equal(await page.locator('.l2-fees-table tbody tr').count(), 1);
     assert.equal(await page.locator('#l2FeesSearchForm input').inputValue(), '니어');
+    await page.locator('#l2FeesSearchForm input').evaluate(input => {
+      input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      input.value = '';
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true, inputType: 'deleteContentBackward' }));
+    });
+    assert.equal(await page.locator('.l2-fees-table tbody tr').count(), 2, 'empty input restores all rows even before compositionend');
+    await page.locator('#l2FeesSearchForm input').dispatchEvent('compositionend');
+    await page.locator('#l2FeesSearchForm input').fill('니어');
     await page.locator('#l2FeesSearchForm input').evaluate(input => input.setSelectionRange(1, 1));
     await page.locator('#l2FeesSearchForm input').press('Backspace');
     assert.equal(await page.locator('#l2FeesSearchForm input').evaluate(input => input.selectionStart), 0);
@@ -130,7 +159,9 @@ async function main() {
       assert.equal(await page.locator('.l2-fees-table tbody tr').count(), 1);
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
       await page.screenshot({ path: path.join(process.env.TEMP || root, `blockscope-live-search-${width}.png`) });
-      await page.locator('#l2FeesSearchForm input').fill('');
+      const bounds = await page.locator('#l2FeesSearchForm input').boundingBox();
+      await page.mouse.click(bounds.x + bounds.width - 24, bounds.y + bounds.height / 2);
+      assert.equal(await page.locator('#l2FeesSearchForm input').inputValue(), '');
       assert.equal(await page.locator('.l2-fees-table tbody tr').count(), 2);
     }
 
