@@ -47,6 +47,8 @@ BINANCE_USDM_FUTURES_PRICE_ENDPOINT = "https://www.binance.com/fapi/v1/ticker/pr
 BINANCE_COINM_FUTURES_INFO_ENDPOINT = "https://www.binance.com/dapi/v1/exchangeInfo"
 BINANCE_COINM_FUTURES_PRICE_ENDPOINT = "https://www.binance.com/dapi/v1/ticker/price"
 COINBASE_FUTURES_PRODUCTS_ENDPOINT = "https://api.international.coinbase.com/api/v1/instruments"
+BYBIT_FUTURES_INFO_ENDPOINT = "https://api.bybit.com/v5/market/instruments-info"
+BYBIT_FUTURES_TICKERS_ENDPOINT = "https://api.bybit.com/v5/market/tickers?category=linear"
 COINGECKO_BINANCE_FUTURES_ENDPOINT = (
     "https://api.coingecko.com/api/v3/derivatives/exchanges/"
     "binance_futures?include_tickers=all"
@@ -574,6 +576,8 @@ def clone_previous_futures_rows(previous_payload: dict | None, exchange_name: st
         return []
     if exchange_name == "binance":
         rows = [row for row in rows if is_binance_usdt_future(row)]
+    elif exchange_name == "bybit":
+        rows = [row for row in rows if is_bybit_usdt_future(row)]
     try:
         return json.loads(json.dumps(rows, ensure_ascii=False))
     except (TypeError, ValueError):
@@ -2152,6 +2156,92 @@ def fetch_binance_futures(known_symbols: set[str] | None = None) -> list[dict]:
     except Exception:  # noqa: BLE001
         pass
     return fetch_binance_futures_coingecko(known_symbols)
+
+
+def is_bybit_usdt_future(row: object) -> bool:
+    return (
+        isinstance(row, dict)
+        and str(row.get("quoteAsset") or "").upper() == "USDT"
+        and str(row.get("marginAsset") or "").upper() == "USDT"
+        and str(row.get("contractId") or "").upper().endswith("USDT")
+        and row.get("contractType") == "PERPETUAL"
+        and row.get("exchangeStatus") == "Trading"
+        and str(row.get("symbolType") or "").lower() in {"", "innovation"}
+        and not row.get("isPreListing")
+    )
+
+
+def fetch_bybit_futures(known_symbols: set[str] | None = None) -> list[dict]:
+    instruments: dict[str, dict] = {}
+    cursor = ""
+    seen_cursors: set[str] = set()
+    for _page in range(10):
+        params = {"category": "linear", "status": "Trading", "limit": 1000}
+        if cursor:
+            params["cursor"] = cursor
+        payload = fetch_json(f"{BYBIT_FUTURES_INFO_ENDPOINT}?{urllib.parse.urlencode(params)}", retries=2)
+        if not isinstance(payload, dict) or payload.get("retCode") != 0:
+            raise RuntimeError("bybit_instruments_failed")
+        result = payload.get("result") or {}
+        if not isinstance(result.get("list"), list) or not result["list"]:
+            raise RuntimeError("bybit_instruments_empty_page")
+        for item in result["list"]:
+            if not isinstance(item, dict):
+                continue
+            if (item.get("status") != "Trading" or item.get("contractType") != "LinearPerpetual"
+                    or item.get("quoteCoin") != "USDT" or item.get("settleCoin") != "USDT"
+                    or item.get("isPreListing")
+                    or str(item.get("symbolType") or "").lower() not in {"", "innovation"}):
+                continue
+            symbol = str(item.get("symbol") or "").upper().strip()
+            if symbol.endswith("USDT") and item.get("baseCoin"):
+                instruments[symbol] = item
+        cursor = str(result.get("nextPageCursor") or "")
+        if not cursor:
+            break
+        if cursor in seen_cursors:
+            raise RuntimeError("bybit_instruments_repeated_cursor")
+        seen_cursors.add(cursor)
+    else:
+        raise RuntimeError("bybit_instruments_pagination_incomplete")
+
+    payload = fetch_json(BYBIT_FUTURES_TICKERS_ENDPOINT, retries=2)
+    if not isinstance(payload, dict) or payload.get("retCode") != 0:
+        raise RuntimeError("bybit_tickers_failed")
+    tickers = (payload.get("result") or {}).get("list")
+    if not isinstance(tickers, list) or not tickers:
+        raise RuntimeError("bybit_tickers_empty")
+    price_map = {str(item.get("symbol") or "").upper(): item for item in tickers if isinstance(item, dict)}
+    rows: list[dict] = []
+    for contract_id, item in instruments.items():
+        raw_underlying = str(item["baseCoin"]).upper().strip()
+        underlying = normalize_futures_underlying_symbol(raw_underlying, known_symbols)
+        if raw_underlying.startswith("10000") and raw_underlying[5:] in (known_symbols or set()):
+            underlying = raw_underlying[5:]
+        ticker = price_map.get(contract_id, {})
+        price_usd = to_float(ticker.get("lastPrice"))
+        if price_usd is not None and price_usd <= 0:
+            price_usd = None
+        rows.append({
+            "exchange": "bybit", "contractId": contract_id, "pair": contract_id,
+            "symbol": underlying, "rawUnderlyingSymbol": raw_underlying,
+            "name": underlying, "englishName": underlying, "koreanName": underlying,
+            "contractType": "PERPETUAL", "contractTypeLabel": "무기한", "contractMarket": "USDT-M",
+            "quoteAsset": "USDT", "marginAsset": "USDT", "nativeCurrency": "USD",
+            "exchangeStatus": item["status"], "symbolType": item.get("symbolType") or "",
+            "isPreListing": False, "priceUsd": price_usd,
+            "priceKrw": price_usd * FX_USD_KRW if price_usd is not None else None,
+            "priceSource": "bybit_linear_futures_ticker",
+            "marketCapUsd": None, "marketCapKrw": None, "marketCapRank": None,
+            "circulatingSupply": None, "totalSupply": None, "fdvUsd": None, "fdvKrw": None,
+            "circulatingRatio": None, "expiryAt": None,
+            "onboardAt": int(to_float(item.get("launchTime")) or 0) or None,
+            "openInterest": to_float(ticker.get("openInterest")),
+            "capSource": "futures_underlying_missing", "capSourceDetail": "futures_underlying_market_cap_missing",
+            "status": "missing", "riskFlags": [],
+            "nameKeys": list(build_name_keys(underlying, underlying, underlying)),
+        })
+    return rows
 
 
 def fetch_coinbase_futures(known_symbols: set[str] | None = None) -> list[dict]:
@@ -4260,10 +4350,11 @@ def make_payload(previous_payload: dict | None = None) -> dict:
         for symbol in row_symbols(row)
     }
     futures_rows: dict[str, list[dict]] = {}
-    minimum_futures_rows = {"binance": 100, "coinbase": 50}
+    minimum_futures_rows = {"binance": 100, "coinbase": 50, "bybit": 100}
     for exchange_name, fetcher in (
         ("binance", fetch_binance_futures),
         ("coinbase", fetch_coinbase_futures),
+        ("bybit", fetch_bybit_futures),
     ):
         try:
             fetched_rows = fetcher(known_symbols)
@@ -4283,21 +4374,13 @@ def make_payload(previous_payload: dict | None = None) -> dict:
                     str(row.get("contractId") or "").endswith("-PERP")
                     for row in cached_rows
                 )
-            if not cached_rows_are_valid:
+            if not cached_rows_are_valid and exchange_name != "bybit":
                 raise RuntimeError(f"{exchange_name}_futures_fetch_failed:{error}") from error
             futures_rows[exchange_name] = cached_rows
             refresh_issues[f"{exchange_name}_futures"] = f"fallback_previous_payload:{error}"
 
-    apply_futures_underlying_market_data(
-        futures_rows.get("binance", []),
-        spot_reference_groups,
-        coingecko_supply_candidates,
-    )
-    apply_futures_underlying_market_data(
-        futures_rows.get("coinbase", []),
-        spot_reference_groups,
-        coingecko_supply_candidates,
-    )
+    for rows in futures_rows.values():
+        apply_futures_underlying_market_data(rows, spot_reference_groups, coingecko_supply_candidates)
     futures_missing_cap_symbols = {
         str(row.get("symbol") or "").upper()
         for rows in futures_rows.values()
@@ -4311,16 +4394,8 @@ def make_payload(previous_payload: dict | None = None) -> dict:
             futures_market_candidates = fetch_coingecko_supply_candidates(
                 futures_missing_cap_symbols
             )
-            apply_futures_underlying_market_data(
-                futures_rows.get("binance", []),
-                spot_reference_groups,
-                futures_market_candidates,
-            )
-            apply_futures_underlying_market_data(
-                futures_rows.get("coinbase", []),
-                spot_reference_groups,
-                futures_market_candidates,
-            )
+            for rows in futures_rows.values():
+                apply_futures_underlying_market_data(rows, spot_reference_groups, futures_market_candidates)
         except Exception as error:  # noqa: BLE001
             refresh_issues["futures_coingecko"] = f"fetch_failed:{error}"
 
@@ -4366,6 +4441,7 @@ def make_payload(previous_payload: dict | None = None) -> dict:
     futures = {
         "binance": finalize_rows(futures_rows.get("binance", [])),
         "coinbase": finalize_rows(futures_rows.get("coinbase", [])),
+        "bybit": finalize_rows(futures_rows.get("bybit", [])),
     }
     for board_name, rows in boards.items():
         ensure_listing_coverage(board_name, expected_pairs[board_name], rows)

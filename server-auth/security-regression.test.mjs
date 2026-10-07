@@ -3,9 +3,14 @@ import { readFile } from "node:fs/promises";
 
 const workerUrl = new URL("./cloudflare-worker.js", import.meta.url);
 const source = await readFile(workerUrl, "utf8");
-const testSource = `${source}\nexport { hasUnsafeBoardHtml, mediaHeaders, cleanBoardMediaFileName };`;
+const testSource = `${source}\nexport { hasUnsafeBoardHtml, mediaHeaders, cleanBoardMediaFileName, normalizeMarketDataPayload, emptyMarketDataPayload };`;
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(testSource).toString("base64")}`;
-const { hasUnsafeBoardHtml, mediaHeaders, cleanBoardMediaFileName } = await import(moduleUrl);
+const { hasUnsafeBoardHtml, mediaHeaders, cleanBoardMediaFileName, normalizeMarketDataPayload, emptyMarketDataPayload } = await import(moduleUrl);
+
+const bybitRows = [{ contractId: "BTCUSDT", quoteAsset: "USDT", priceUsd: 100, marketCapUsd: 1000 }];
+assert.deepEqual(normalizeMarketDataPayload({ boards: {}, futures: { bybit: bybitRows } }).futures.bybit, bybitRows);
+assert.deepEqual(normalizeMarketDataPayload({ boards: {}, futures: {} }).futures.bybit, []);
+assert.deepEqual(emptyMarketDataPayload().futures.bybit, []);
 
 assert.equal(hasUnsafeBoardHtml({ htmlEnabled: true, body: "<p><strong>safe</strong></p>" }), false);
 assert.equal(hasUnsafeBoardHtml({ htmlEnabled: true, body: "<script>alert(1)</script>" }), true);
