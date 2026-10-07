@@ -9,6 +9,22 @@ async function main() {
   const html = fs.readFileSync(process.env.SEARCH_TEST_HTML || path.join(root, 'index.html'), 'utf8');
   for (const script of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)) new Function(script[1]);
   const snapshot = JSON.parse(fs.readFileSync(path.join(root, 'board_snapshot.json'), 'utf8'));
+  const deriveSource = html.match(/      function recomputeDerivedFields\([\s\S]*?(?=      function normalizeKnownAssetIdentities)/)[0];
+  const positive = value => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : null;
+  const derive = new Function('data', 'toPositiveNumber', 'computeCirculatingRatio', `${deriveSource}; return recomputeDerivedFields;`)(
+    { fxUsdKrw: 1350 }, positive, (a, b) => a && b ? a / b : null);
+  const authoritative = { priceUsd: 0.379, circulatingSupply: 190000000, marketCapUsd: 71947107.75,
+    marketCapKrw: 71947107.75 * 1350, supplyIdentityVerified: true };
+  derive(authoritative, { preferComputedCap: true });
+  assert.equal(authoritative.marketCapUsd, 71947107.75, 'live prices never replace the authoritative spot market cap');
+  const untrusted = { priceUsd: 0.379, circulatingSupply: 365386617983886, marketCapUsd: null, marketCapKrw: null };
+  derive(untrusted, { preferComputedCap: true });
+  assert.equal(untrusted.marketCapUsd, null, 'unverified supply cannot generate a fabricated market cap');
+  const poisoned = { symbol: 'CT', name: 'CT', englishName: 'Concrete', contractId: 'CTUSDT', quoteAsset: 'USDT',
+    priceUsd: 0.379, marketCapUsd: 138230000000000, marketCapKrw: 138230000000000 * 1350,
+    circulatingSupply: 365386617983886, sortCapUsd: 138230000000000, nativeCurrency: 'USD' };
+  snapshot.futures.binance.push({ ...poisoned, capSource: 'futures_underlying_coinbase' });
+  snapshot.boards.coinbase.push({ ...poisoned, pair: 'CT/USD', capSource: 'coinbase_coingecko_market_cap' });
   const bybitFixture = Array.from({ length: 60 }, (_, index) => ({
     exchange: 'bybit', contractId: index === 0 ? 'BTCUSDT' : `TEST${index}USDT`,
     symbol: index === 0 ? 'BTC' : `TEST${index}`, name: index === 0 ? '비트코인' : `Test ${index}`,
@@ -17,6 +33,11 @@ async function main() {
     priceUsd: 100, priceKrw: 135000, marketCapUsd: 1000000 - index * 1000,
     marketCapKrw: (1000000 - index * 1000) * 1350, sortCapUsd: 1000000 - index * 1000,
   }));
+  if (!process.env.BYBIT_LIVE_TEST) {
+    for (const rows of [...Object.values(snapshot.boards), ...Object.values(snapshot.futures)]) {
+      for (const row of rows) if (row.symbol === 'BTC') { row.priceUsd = 100; row.priceKrw = 135000; }
+    }
+  }
   bybitFixture[58].contractId = '1000TEST58USDT';
   bybitFixture[58].rawUnderlyingSymbol = '1000TEST58';
   snapshot.boards.binance.push(...bybitFixture.slice(1, 59).map(row => ({ ...row, exchange: 'binance', pair: `${row.symbol}/USDT` })));
@@ -111,7 +132,7 @@ async function main() {
           ? url.searchParams.get('cursor') === 'page2'
             ? { list: bybitInstruments.slice(45), nextPageCursor: '' }
             : { list: bybitInstruments.slice(0, 45), nextPageCursor: 'page2' }
-          : { list: bybitFixture.map(row => ({ symbol: row.contractId, lastPrice: '100' })) };
+          : { list: bybitFixture.map(row => ({ symbol: row.contractId, lastPrice: row.contractId.startsWith('1000') ? '100000' : '100' })) };
         return route.fulfill({ json: { retCode: 0, result }, headers: { 'Access-Control-Allow-Origin': origin } });
       }
       if (url.hostname !== 'coin-board-auth.dlatl20000.workers.dev') return route.fulfill({ body: '' });
@@ -229,6 +250,10 @@ async function main() {
 
     await openResource('futures');
     assert.equal(await page.locator('.futures-tab').count(), 3);
+    await page.locator('#futuresSearchForm input').fill('CTUSDT');
+    const legacyCt = page.locator('tr[data-live-product="CTUSDT"] .futures-cap').last();
+    assert.doesNotMatch(await legacyCt.textContent(), /138\.23|33,656|\$0/, 'legacy poisoned CT cap is not rendered or treated as zero');
+    await page.locator('#futuresSearchForm input').fill('');
     await page.locator('[data-futures-exchange="bybit"]').click();
     const bybitRows = page.locator('.futures-table tbody tr');
     await page.waitForFunction(() => document.querySelectorAll('.futures-table tbody tr').length === 50);

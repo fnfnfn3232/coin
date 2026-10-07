@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import html
 import hashlib
+import math
 import re
 import time
 import urllib.parse
@@ -562,7 +563,9 @@ def clone_previous_board_rows(previous_payload: dict | None, board_name: str) ->
         return []
     try:
         # JSON round-trip to safely deep-copy nested structures.
-        return json.loads(json.dumps(rows, ensure_ascii=False))
+        cloned = json.loads(json.dumps(rows, ensure_ascii=False))
+        invalidate_unverified_legacy_market_data(cloned)
+        return cloned
     except (TypeError, ValueError):
         return []
 
@@ -579,7 +582,9 @@ def clone_previous_futures_rows(previous_payload: dict | None, exchange_name: st
     elif exchange_name == "bybit":
         rows = [row for row in rows if is_bybit_usdt_future(row)]
     try:
-        return json.loads(json.dumps(rows, ensure_ascii=False))
+        cloned = json.loads(json.dumps(rows, ensure_ascii=False))
+        invalidate_unverified_legacy_market_data(cloned)
+        return cloned
     except (TypeError, ValueError):
         return []
 
@@ -693,7 +698,7 @@ def to_float(value: object) -> float | None:
         number = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
-    if number <= 0:
+    if not math.isfinite(number) or number <= 0:
         return None
     return number
 
@@ -1871,8 +1876,17 @@ def fetch_coinbase() -> list[dict]:
             if isinstance(currencies_payload, list)
             else {}
         )
+        currency_contract_map = {
+            str(currency.get("id") or "").upper(): [
+                str(network.get("contract_address") or "").strip()
+                for network in (currency.get("supported_networks") or [])
+                if isinstance(network, dict) and network.get("contract_address")
+            ]
+            for currency in currencies_payload if isinstance(currency, dict)
+        } if isinstance(currencies_payload, list) else {}
     except Exception:  # noqa: BLE001
         currency_name_map = {}
+        currency_contract_map = {}
 
     products = payload
     if not isinstance(products, list):
@@ -1924,7 +1938,8 @@ def fetch_coinbase() -> list[dict]:
                 "compareSymbol": compare_symbol,
                 "symbolAliasOf": symbol_alias_of,
                 "name": display_name,
-                "englishName": display_name,
+                "englishName": currency_name,
+                "contractAddresses": currency_contract_map.get(base_currency, []),
                 "koreanName": "젠신" if base_currency == GENSYN_SYMBOL else base_currency,
                 "marketCapUsd": None,
                 "marketCapKrw": None,
@@ -2341,17 +2356,14 @@ def apply_futures_underlying_market_data(
             (
                 (board_name, candidate)
                 for board_name, candidate in references
-                if to_float(candidate.get("marketCapUsd")) is not None
-                or to_float(candidate.get("marketCapKrw")) is not None
+                if (to_float(candidate.get("marketCapUsd")) is not None
+                    or to_float(candidate.get("marketCapKrw")) is not None)
+                and market_prices_compatible(row, candidate) and market_names_compatible(row, candidate)
             ),
             None,
         )
         if market_reference_pair is None:
-            external = max(
-                external_candidates.get(symbol, []),
-                key=lambda candidate: to_float(candidate.get("marketCapUsd")) or 0,
-                default=None,
-            )
+            external = pick_verified_market_candidate(row, external_candidates.get(symbol, []))
             if external is not None:
                 market_reference_pair = ("coingecko", external)
 
@@ -2363,6 +2375,7 @@ def apply_futures_underlying_market_data(
             )
             row["koreanName"] = identity_reference.get("koreanName") or row.get("koreanName")
             row["englishName"] = identity_reference.get("englishName") or row.get("englishName")
+            row["contractAddresses"] = identity_reference.get("contractAddresses") or []
 
         if market_reference_pair is not None:
             board_name, market_reference = market_reference_pair
@@ -2391,6 +2404,9 @@ def apply_futures_underlying_market_data(
                 or board_name
             )
             row["status"] = "ok"
+            row["marketIdentityVerified"] = True
+            row["supplyIdentityVerified"] = market_reference.get("supplyIdentityVerified", board_name != "coingecko")
+            row["marketIdentitySource"] = f"spot:{board_name}" if board_name != "coingecko" else "external_identity"
 
         row["nameKeys"] = list(
             build_name_keys(
@@ -2458,6 +2474,8 @@ def derive_circulating_supply(
 
 
 def pick_reference_market_candidate(target_row: dict, candidate_rows: list[dict]) -> dict | None:
+    candidate_rows = [row for row in candidate_rows
+                      if market_prices_compatible(target_row, row) and market_names_compatible(target_row, row)]
     symbol = str(target_row.get("compareSymbol") or target_row.get("symbol") or "").upper()
     if symbol in AMBIGUOUS_SYMBOLS_REQUIRE_NAME_OVERLAP:
         return next(
@@ -2478,6 +2496,8 @@ def pick_reference_market_candidate(target_row: dict, candidate_rows: list[dict]
 
 
 def pick_reference_supply_candidate(target_row: dict, candidate_rows: list[dict]) -> dict | None:
+    candidate_rows = [row for row in candidate_rows
+                      if market_prices_compatible(target_row, row) and market_names_compatible(target_row, row)]
     symbol = str(target_row.get("compareSymbol") or target_row.get("symbol") or "").upper()
     if symbol in AMBIGUOUS_SYMBOLS_REQUIRE_NAME_OVERLAP:
         return pick_supply_fill_candidate(target_row, candidate_rows)
@@ -2577,6 +2597,9 @@ def apply_coinbase_reference_fills(
             coinbase_row["capSourceDetail"] = f"coinbase_price|supply:{supply_source_detail or market_source_detail}"
         if to_float(coinbase_row.get("marketCapUsd")) is not None or to_float(coinbase_row.get("marketCapKrw")) is not None:
             coinbase_row["status"] = "ok"
+            coinbase_row["marketIdentityVerified"] = True
+            coinbase_row["supplyIdentityVerified"] = supply_candidate is not None
+            coinbase_row["marketIdentitySource"] = f"spot_reference:{market_source_detail or supply_source_detail}"
 
 
 def apply_upbit_targeted_fills(upbit_rows: list[dict], bithumb_rows: list[dict]) -> None:
@@ -3003,6 +3026,7 @@ def fetch_coinmarketcap_market_candidates(target_symbols: set[str]) -> dict[str,
                 "marketCapRank": item.get("cmc_rank"),
                 "supplyDetail": f"coinmarketcap_quotes:{cmc_id}",
                 "sourceId": cmc_id,
+                "contractAddresses": [str((item.get("platform") or {}).get("token_address") or "").strip()],
                 "logo": f"https://s2.coinmarketcap.com/static/img/coins/64x64/{cmc_id}.png" if cmc_id.isdigit() else "",
                 "nameKeys": list(build_name_keys(symbol, name, name)),
             }
@@ -3024,14 +3048,16 @@ def pick_coingecko_supply_candidate(target_row: dict, candidate_rows: list[dict]
     target_keys = set(target_row.get("nameKeys") or [])
     non_symbol_keys = target_keys - symbol_keys
 
-    for candidate in candidate_rows:
-        candidate_keys = set(candidate.get("nameKeys") or [])
-        if non_symbol_keys and (non_symbol_keys & candidate_keys):
-            return candidate
+    matched = [candidate for candidate in candidate_rows
+               if non_symbol_keys.intersection(set(candidate.get("nameKeys") or []))
+               and market_prices_compatible(target_row, candidate)]
+    identities = {str(candidate.get("sourceId") or candidate.get("contractAddress") or candidate.get("name")) for candidate in matched}
+    if len(identities) == 1:
+        return matched[0]
 
     if len(candidate_rows) == 1:
         symbol = next(iter(symbols), "")
-        if symbol not in AMBIGUOUS_SYMBOLS_REQUIRE_NAME_OVERLAP:
+        if symbol not in AMBIGUOUS_SYMBOLS_REQUIRE_NAME_OVERLAP and not non_symbol_keys and market_prices_compatible(target_row, candidate_rows[0]):
             return candidate_rows[0]
 
     return None
@@ -3065,23 +3091,75 @@ def apply_coingecko_supply_fills(board_name: str, rows: list[dict], candidates_b
         row["totalSupply"] = total_supply
         row["circulatingRatio"] = compute_circulating_ratio(circulating_supply, total_supply)
         row["supplyDetail"] = f"{board_name}_supply_fill:{candidate.get('supplyDetail')}"
+        row["supplyIdentityVerified"] = True
         if fdv_usd is not None:
             row["fdvUsd"] = fdv_usd
             row["fdvKrw"] = fdv_usd * FX_USD_KRW
 
 
-def pick_largest_market_candidate(candidate_rows: list[dict]) -> dict | None:
-    ranked_candidates = [
-        candidate
-        for candidate in candidate_rows
-        if to_float(candidate.get("marketCapUsd")) is not None
-    ]
-    if not ranked_candidates:
-        return None
-    return max(
-        ranked_candidates,
-        key=lambda candidate: to_float(candidate.get("marketCapUsd")) or 0.0,
+def market_prices_compatible(target_row: dict, candidate: dict) -> bool:
+    price = to_float(target_row.get("priceUsd")) or safe_div(to_float(target_row.get("priceKrw")), FX_USD_KRW)
+    candidate_price = to_float(candidate.get("priceUsd")) or safe_div(to_float(candidate.get("priceKrw")), FX_USD_KRW)
+    symbol = str(target_row.get("symbol") or "").upper()
+    raw = str(target_row.get("rawUnderlyingSymbol") or symbol).upper()
+    for multiplier in (1000000, 10000, 1000):
+        if raw == f"{multiplier}{symbol}" and price is not None:
+            price /= multiplier
+            break
+    return price is None or candidate_price is None or 0.2 <= price / candidate_price <= 5
+
+
+def invalidate_unverified_legacy_market_data(rows: list[dict]) -> None:
+    for row in rows:
+        source = str(row.get("capSource") or "")
+        if row.get("marketIdentityVerified") is True or not source.startswith((
+            "coinbase_coingecko", "coinbase_coinmarketcap", "coinbase_fill_same_symbol", "coinbase_market_products",
+            "bithumb_coingecko", "bithumb_coinmarketcap_highest", "futures_underlying",
+        )):
+            continue
+        for key in ("marketCapUsd", "marketCapKrw", "marketCapRank", "sortCapUsd", "circulatingSupply",
+                    "totalSupply", "fdvUsd", "fdvKrw", "circulatingRatio", "logo"):
+            row[key] = None
+        row["marketIdentityVerified"] = False
+        row["supplyIdentityVerified"] = False
+        row["status"] = "missing"
+
+
+def market_identity_keys(row: dict) -> set[str]:
+    symbols = {normalize_text(symbol) for symbol in row_symbols(row)}
+    names = set(row.get("nameKeys") or []) | build_name_keys(
+        str(row.get("name") or ""), str(row.get("englishName") or ""), str(row.get("koreanName") or "")
     )
+    return names - symbols
+
+
+def market_names_compatible(target_row: dict, candidate: dict) -> bool:
+    keys = {key for key in market_identity_keys(target_row) if key.isascii()}
+    candidate_keys = {key for key in market_identity_keys(candidate) if key.isascii()}
+    return not keys or not candidate_keys or bool(keys.intersection(candidate_keys))
+
+
+def market_contracts(row: dict) -> set[str]:
+    addresses = list(row.get("contractAddresses") or []) + [row.get("contractAddress")]
+    return {address.lower() if address.startswith("0x") else address
+            for value in addresses if (address := str(value or "").strip())}
+
+
+def pick_verified_market_candidate(target_row: dict, candidate_rows: list[dict], preferred_source_id: str | None = None) -> dict | None:
+    # A shared ticker or a larger market cap is not proof of the same asset.
+    valid = [candidate for candidate in candidate_rows
+             if to_float(candidate.get("marketCapUsd")) is not None and market_prices_compatible(target_row, candidate)]
+    contracts = market_contracts(target_row)
+    keys = market_identity_keys(target_row)
+    matched = [candidate for candidate in valid if preferred_source_id and str(candidate.get("sourceId") or "") == preferred_source_id]
+    if not matched:
+        matched = [candidate for candidate in valid if contracts and contracts.intersection(market_contracts(candidate))]
+    if not matched:
+        matched = [candidate for candidate in valid if keys and keys.intersection(market_identity_keys(candidate))]
+    if not matched and not keys and len(candidate_rows) == 1:
+        matched = valid
+    identities = {str(candidate.get("sourceId") or candidate.get("coingeckoId") or candidate.get("name")) for candidate in matched}
+    return matched[0] if len(identities) == 1 else None
 
 
 def pick_name_matched_market_candidate(target_row: dict, candidate_rows: list[dict]) -> dict | None:
@@ -3096,7 +3174,7 @@ def pick_name_matched_market_candidate(target_row: dict, candidate_rows: list[di
         if to_float(candidate.get("marketCapUsd")) is not None
         and target_name_keys.intersection(set(candidate.get("nameKeys") or []))
     ]
-    return pick_largest_market_candidate(matched_candidates)
+    return pick_verified_market_candidate(target_row, matched_candidates)
 
 
 def apply_external_market_cap_fills(
@@ -3118,20 +3196,7 @@ def apply_external_market_cap_fills(
             for candidate_row in candidates_by_symbol.get(symbol, [])
         ]
         preferred_source_id = (preferred_source_ids or {}).get(str(row.get("symbol") or "").upper())
-        candidate = next(
-            (
-                candidate_row
-                for candidate_row in candidate_rows
-                if preferred_source_id
-                and str(candidate_row.get("sourceId") or "") == preferred_source_id
-                and to_float(candidate_row.get("marketCapUsd")) is not None
-            ),
-            None,
-        )
-        if candidate is None:
-            candidate = pick_name_matched_market_candidate(row, candidate_rows)
-        if candidate is None:
-            candidate = pick_largest_market_candidate(candidate_rows)
+        candidate = pick_verified_market_candidate(row, candidate_rows, preferred_source_id)
         if candidate is None:
             continue
         matched_symbol = str(candidate.get("symbol") or "")
@@ -3140,14 +3205,8 @@ def apply_external_market_cap_fills(
         if market_cap_usd is None:
             continue
 
-        circulating_supply = (
-            to_float(row.get("circulatingSupply"))
-            or to_float(candidate.get("circulatingSupply"))
-        )
-        total_supply = (
-            to_float(row.get("totalSupply"))
-            or to_float(candidate.get("totalSupply"))
-        )
+        circulating_supply = to_float(candidate.get("circulatingSupply"))
+        total_supply = to_float(candidate.get("totalSupply"))
         fdv_usd = to_float(candidate.get("fdvUsd"))
 
         row["marketCapUsd"] = market_cap_usd
@@ -3165,6 +3224,9 @@ def apply_external_market_cap_fills(
         )
         row["supplyDetail"] = f"{board_name}_supply_fill:{candidate.get('supplyDetail') or ''}"
         row["status"] = "ok"
+        row["marketIdentityVerified"] = True
+        row["supplyIdentityVerified"] = True
+        row["marketIdentitySource"] = str(candidate.get("supplyDetail") or candidate.get("sourceId") or "")
 
 
 def apply_futures_external_market_cap_overrides(
@@ -3180,9 +3242,7 @@ def apply_futures_external_market_cap_overrides(
             for symbol in row_symbols(row)
             for candidate_row in candidates_by_symbol.get(symbol, [])
         ]
-        candidate = pick_name_matched_market_candidate(row, candidate_rows)
-        if candidate is None:
-            candidate = pick_largest_market_candidate(candidate_rows)
+        candidate = pick_verified_market_candidate(row, candidate_rows)
         if candidate is None:
             continue
 
@@ -3203,13 +3263,16 @@ def apply_futures_external_market_cap_overrides(
         row["fdvKrw"] = fdv_usd * FX_USD_KRW if fdv_usd is not None else None
         row["capSource"] = "futures_underlying_coinmarketcap"
         row["capSourceDetail"] = (
-            "coinmarketcap_active_highest_market_cap:"
+            "coinmarketcap_verified_identity:"
             f"{candidate.get('symbol') or ''}:{candidate.get('sourceId') or ''}"
         )
         row["supplyDetail"] = f"futures_supply:{candidate.get('supplyDetail') or ''}"
         row["marketCapStale"] = False
         row["marketCapUpdatedAt"] = int(time.time())
         row["status"] = "ok"
+        row["marketIdentityVerified"] = True
+        row["supplyIdentityVerified"] = True
+        row["marketIdentitySource"] = str(candidate.get("supplyDetail") or "")
 
 
 def apply_previous_futures_coinmarketcap_fallback(
@@ -3254,6 +3317,8 @@ def apply_previous_futures_coinmarketcap_fallback(
             continue
 
         previous_source = str(previous_row.get("capSource") or "")
+        if previous_row.get("marketIdentityVerified") is not True or not market_prices_compatible(row, previous_row):
+            continue
         if not previous_source.startswith("futures_underlying_coinmarketcap"):
             continue
         if to_float(previous_row.get("marketCapUsd")) is None:
@@ -3271,6 +3336,9 @@ def apply_previous_futures_coinmarketcap_fallback(
             previous_row.get("marketCapUpdatedAt") or previous_generated_at
         )
         row["status"] = "ok"
+        row["marketIdentityVerified"] = True
+        row["supplyIdentityVerified"] = previous_row.get("supplyIdentityVerified") is True
+        row["marketIdentitySource"] = previous_row.get("marketIdentitySource")
 
 
 def fetch_erc20_total_supply(address: str) -> float | None:
@@ -4296,8 +4364,8 @@ def make_payload(previous_payload: dict | None = None) -> dict:
                 "bithumb",
                 bithumb_rows,
                 coinmarketcap_candidates,
-                cap_source="bithumb_coinmarketcap_highest_market_cap",
-                detail_prefix="coinmarketcap_highest_market_cap",
+                cap_source="bithumb_coinmarketcap_verified",
+                detail_prefix="coinmarketcap_verified_identity",
             )
         except Exception as error:  # noqa: BLE001
             refresh_issues["bithumb_coinmarketcap"] = f"fetch_failed:{error}"
@@ -4328,8 +4396,8 @@ def make_payload(previous_payload: dict | None = None) -> dict:
                 "coinbase",
                 coinbase_rows,
                 coinmarketcap_candidates,
-                cap_source="coinbase_coinmarketcap_highest_market_cap",
-                detail_prefix="coinmarketcap_highest_market_cap",
+                cap_source="coinbase_coinmarketcap_verified",
+                detail_prefix="coinmarketcap_verified_identity",
             )
         except Exception as error:  # noqa: BLE001
             refresh_issues["coinbase_coinmarketcap"] = f"fetch_failed:{error}"
@@ -4527,6 +4595,15 @@ def main() -> None:
     SNAPSHOT_JSON_PATH.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     print(f"Saved {DATA_JS_PATH}")
     print("Futures:", json.dumps(payload["futuresStats"], ensure_ascii=False))
+    all_rows = [row for section in (payload["boards"], payload["futures"]) for rows in section.values() for row in rows]
+    print("Market identity audit:", json.dumps({
+        "rows": len(all_rows),
+        "verifiedExternalCaps": sum(row.get("marketIdentityVerified") is True and to_float(row.get("marketCapUsd")) is not None for row in all_rows),
+        "unverifiedLegacyCaps": sum(row.get("marketIdentityVerified") is False and to_float(row.get("marketCapUsd")) is not None for row in all_rows),
+        "CT": [{"exchange": row.get("exchange") or row.get("pair"), "name": row.get("englishName"),
+                "capUsd": row.get("marketCapUsd"), "supply": row.get("circulatingSupply"),
+                "source": row.get("capSourceDetail")} for row in all_rows if row.get("symbol") == "CT"],
+    }, ensure_ascii=False))
     if payload.get("refreshIssues", {}).get("bybit_futures"):
         print("Bybit refresh issue:", payload["refreshIssues"]["bybit_futures"])
     print(

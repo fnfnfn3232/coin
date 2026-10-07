@@ -11408,7 +11408,7 @@
           row.koreanName = named.koreanName || "";
           row.englishName = named.englishName || "";
           row.logo = references.find((item) => item.logo)?.logo || "";
-          const cap = references.find((item) => toPositiveNumber(item.marketCapUsd) !== null);
+          const cap = references.find((item) => toPositiveNumber(item.marketCapUsd) !== null && marketReferenceCompatible(row, item));
           for (const key of ["marketCapUsd", "marketCapKrw", "marketCapRank", "circulatingSupply",
             "totalSupply", "fdvUsd", "fdvKrw", "circulatingRatio", "capSourceDetail", "supplyDetail"]) {
             row[key] = cap?.[key] ?? null;
@@ -13861,13 +13861,13 @@
     function capDisplay(row) {
       if (row.nativeCurrency === "KRW") {
         return {
-          main: formatKrwShort(Number(row.marketCapKrw)),
-          sub: formatUsdShort(Number(row.marketCapUsd)),
+          main: formatKrwShort(toPositiveNumber(row.marketCapKrw) ?? Number.NaN),
+          sub: formatUsdShort(toPositiveNumber(row.marketCapUsd) ?? Number.NaN),
         };
       }
       return {
-        main: formatUsdShort(Number(row.marketCapUsd)),
-        sub: formatKrwShort(Number(row.marketCapKrw)),
+        main: formatUsdShort(toPositiveNumber(row.marketCapUsd) ?? Number.NaN),
+        sub: formatKrwShort(toPositiveNumber(row.marketCapKrw) ?? Number.NaN),
       };
     }
 
@@ -15041,9 +15041,28 @@
         if (value !== null) target[key] = value;
       }
 
+      function marketReferenceCompatible(row, candidate) {
+        if (candidate.marketIdentityVerified === false) return false;
+        const names = (item) => [...new Set([item.englishName, item.name, ...(item.nameKeys || [])]
+          .map((value) => String(value || "").toLowerCase().replace(/[^a-z0-9가-힣]/g, ""))
+          .filter((value) => /^[a-z0-9]+$/.test(value) && !normalizedListingSymbols(item).some((symbol) => symbol.toLowerCase() === value)))];
+        const aNames = names(row);
+        const bNames = names(candidate);
+        if (aNames.length && bNames.length && !aNames.some((name) => bNames.includes(name))) return false;
+        let price = toPositiveNumber(row.priceUsd);
+        const symbol = String(row.symbol || "").toUpperCase();
+        const raw = String(row.rawUnderlyingSymbol || symbol).toUpperCase();
+        for (const multiplier of [1000000, 10000, 1000]) {
+          if (raw === `${multiplier}${symbol}` && price !== null) { price /= multiplier; break; }
+        }
+        const referencePrice = toPositiveNumber(candidate.priceUsd);
+        return price === null || referencePrice === null || (price / referencePrice >= 0.2 && price / referencePrice <= 5);
+      }
+
       function recomputeDerivedFields(row, options = {}) {
         const opts = options || {};
-        const preferComputedCap = Boolean(opts.preferComputedCap);
+        const preferComputedCap = Boolean(opts.preferComputedCap) && row.supplyIdentityVerified === true
+          && toPositiveNumber(row.marketCapUsd) === null && toPositiveNumber(row.marketCapKrw) === null;
         const fx = toPositiveNumber(data.fxUsdKrw);
 
         let priceUsd = toPositiveNumber(row.priceUsd);
@@ -15074,15 +15093,15 @@
               row.marketCapKrw = priceUsd * circulatingSupply * fx;
             }
           }
-          if (!Number.isFinite(Number(row.marketCapUsd)) && priceUsd !== null) {
+          if (preferComputedCap && toPositiveNumber(row.marketCapUsd) === null && priceUsd !== null) {
             row.marketCapUsd = priceUsd * circulatingSupply;
           }
         }
 
-        if (!Number.isFinite(Number(row.marketCapKrw)) && Number.isFinite(Number(row.marketCapUsd)) && fx !== null) {
+        if (toPositiveNumber(row.marketCapKrw) === null && toPositiveNumber(row.marketCapUsd) !== null && fx !== null) {
           row.marketCapKrw = Number(row.marketCapUsd) * fx;
         }
-        if (!Number.isFinite(Number(row.marketCapUsd)) && Number.isFinite(Number(row.marketCapKrw)) && fx !== null) {
+        if (toPositiveNumber(row.marketCapUsd) === null && toPositiveNumber(row.marketCapKrw) !== null && fx !== null) {
           row.marketCapUsd = Number(row.marketCapKrw) / fx;
         }
 
@@ -15116,6 +15135,15 @@
 
       function normalizeKnownAssetIdentities() {
         let changed = 0;
+        for (const rows of [...Object.values(data.boards || {}), ...Object.values(data.futures || {})]) {
+          for (const row of rows || []) {
+            if (row.marketIdentityVerified === true || !/^(coinbase_coingecko|coinbase_coinmarketcap|coinbase_fill_same_symbol|coinbase_market_products|bithumb_coingecko|bithumb_coinmarketcap_highest|futures_underlying)/.test(row.capSource || "")) continue;
+            for (const key of ["marketCapUsd", "marketCapKrw", "marketCapRank", "sortCapUsd", "circulatingSupply", "totalSupply", "fdvUsd", "fdvKrw", "circulatingRatio", "logo"]) row[key] = null;
+            row.marketIdentityVerified = false;
+            row.supplyIdentityVerified = false;
+            row.status = "missing";
+          }
+        }
         const boards = data.boards || {};
         const binanceRows = Array.isArray(boards.binance) ? boards.binance : [];
         const filteredBinanceRows = binanceRows.filter((row) =>
@@ -15474,7 +15502,7 @@
           const findReference = (predicate) => {
             for (const source of symbolMaps) {
               for (const hit of source.map.get(symbol) || []) {
-                if (predicate(hit)) {
+                if (marketReferenceCompatible(row, hit) && predicate(hit)) {
                   return { row: hit, boardName: source.boardName };
                 }
               }

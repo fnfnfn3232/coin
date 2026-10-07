@@ -11,6 +11,7 @@ on:
       - "test_coin_logos.py"
       - "test_binance_futures.py"
       - "test_bybit_futures.py"
+      - "test_market_identity.py"
   schedule:
     # GitHub scheduled workflows can be delayed or skipped, so request the
     # shortest supported cadence and let concurrency keep only one run active.
@@ -63,7 +64,7 @@ jobs:
           fi
 
       - name: Verify coin logos and USDT futures
-        run: python -m unittest test_coin_logos.py test_binance_futures.py test_bybit_futures.py
+        run: python -m unittest test_coin_logos.py test_binance_futures.py test_bybit_futures.py test_market_identity.py
 
       - name: Rebuild data (retry)
         run: |
