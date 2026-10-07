@@ -9,7 +9,7 @@ async function main() {
   const html = fs.readFileSync(process.env.SEARCH_TEST_HTML || path.join(root, 'index.html'), 'utf8');
   for (const script of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)) new Function(script[1]);
   const snapshot = JSON.parse(fs.readFileSync(path.join(root, 'board_snapshot.json'), 'utf8'));
-  snapshot.futures.bybit = Array.from({ length: 60 }, (_, index) => ({
+  const bybitFixture = Array.from({ length: 60 }, (_, index) => ({
     exchange: 'bybit', contractId: index === 0 ? 'BTCUSDT' : `TEST${index}USDT`,
     symbol: index === 0 ? 'BTC' : `TEST${index}`, name: index === 0 ? '비트코인' : `Test ${index}`,
     contractType: 'PERPETUAL', contractTypeLabel: '무기한', contractMarket: 'USDT-M',
@@ -17,10 +17,20 @@ async function main() {
     priceUsd: 100, priceKrw: 135000, marketCapUsd: 1000000 - index * 1000,
     marketCapKrw: (1000000 - index * 1000) * 1350, sortCapUsd: 1000000 - index * 1000,
   }));
-  snapshot.futures.bybit.push(...[
+  snapshot.boards.binance.push(...bybitFixture.slice(1).map(row => ({ ...row, exchange: 'binance', pair: `${row.symbol}/USDT` })));
+  bybitFixture.push(...[
     { quoteAsset: 'USDC' }, { marginAsset: 'BTC' }, { contractType: 'FUTURES' },
     { exchangeStatus: 'Closed' }, { isPreListing: true }, { symbolType: 'stock' },
-  ].map((extra, index) => ({ ...snapshot.futures.bybit[0], contractId: `INVALID${index}USDT`, ...extra })));
+  ].map((extra, index) => ({ ...bybitFixture[0], contractId: `INVALID${index}USDT`, ...extra })));
+  snapshot.futures.bybit = [];
+  snapshot.refreshIssues = { ...snapshot.refreshIssues, bybit_futures: 'fallback_previous_payload:HTTP Error 403: Forbidden' };
+  const bybitInstruments = bybitFixture.map(row => ({
+    symbol: row.contractId, baseCoin: row.symbol, quoteCoin: row.quoteAsset, settleCoin: row.marginAsset,
+    status: row.exchangeStatus, contractType: row.contractType === 'PERPETUAL' ? 'LinearPerpetual' : 'LinearFutures',
+    isPreListing: !!row.isPreListing, symbolType: row.symbolType,
+  }));
+  const bybitCalls = [];
+  let failBybitPage = false;
   const news = { query: '', items: [{ id: 'news-test', title: 'Bitcoin news', summary: 'Summary', publishAt: Date.now() }], total: 1, storedCount: 1, nextOffset: 1, hasMore: false };
   snapshot.news = news;
   const feeRow = (slug, name, total24h) => ({ slug, name, total24h, total7d: total24h * 7, total30d: total24h * 30, change1d: 1, url: `https://defillama.com/chain/${slug}`, logo: '' });
@@ -50,6 +60,9 @@ async function main() {
       }
     }, legacySettings);
     await page.addInitScript(() => {
+      const nativeNow = Date.now;
+      window.testTimeOffset = 0;
+      Date.now = () => nativeNow() + window.testTimeOffset;
       const NativeWebSocket = window.WebSocket;
       const nativeInterval = window.setInterval;
       const nativeClear = window.clearInterval;
@@ -76,9 +89,29 @@ async function main() {
     });
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
-    const origin = `http://127.0.0.1:${server.address().port}`;
+    const origin = process.env.BYBIT_LIVE_TEST ? 'https://fnfnfn3232.github.io' : `http://127.0.0.1:${server.address().port}`;
     await page.route('https://**/*', route => {
       const url = new URL(route.request().url());
+      if (process.env.BYBIT_LIVE_TEST && url.hostname === 'fnfnfn3232.github.io') {
+        if (url.pathname.endsWith('data.js')) return route.fulfill({ body: `window.BOARD_DATA = ${JSON.stringify(snapshot)};`, contentType: 'text/javascript' });
+        if (url.pathname === '/coin/' || url.pathname.endsWith('/index.html')) return route.fulfill({ body: html, contentType: 'text/html; charset=utf-8' });
+        const file = path.resolve(root, '.' + url.pathname.replace(/^\/coin/, ''));
+        return route.fulfill({ body: file.startsWith(root + path.sep) && fs.existsSync(file) ? fs.readFileSync(file) : '', contentType: url.pathname.endsWith('.js') ? 'text/javascript' : 'application/octet-stream' });
+      }
+      if (url.hostname === 'api.bybit.com') {
+        if (process.env.BYBIT_LIVE_TEST) return route.continue();
+        bybitCalls.push(url.pathname + url.search);
+        assert.equal(route.request().headers().cookie, undefined, 'public API never receives login cookies');
+        if (failBybitPage && url.searchParams.get('cursor') === 'page2') {
+          return route.fulfill({ status: 503, body: 'unavailable', headers: { 'Access-Control-Allow-Origin': origin } });
+        }
+        const result = url.pathname.endsWith('instruments-info')
+          ? url.searchParams.get('cursor') === 'page2'
+            ? { list: bybitInstruments.slice(45), nextPageCursor: '' }
+            : { list: bybitInstruments.slice(0, 45), nextPageCursor: 'page2' }
+          : { list: bybitFixture.map(row => ({ symbol: row.contractId, lastPrice: '100' })) };
+        return route.fulfill({ json: { retCode: 0, result }, headers: { 'Access-Control-Allow-Origin': origin } });
+      }
       if (url.hostname !== 'coin-board-auth.dlatl20000.workers.dev') return route.fulfill({ body: '' });
       calls.push(url.pathname + url.search);
       let data = {};
@@ -93,7 +126,7 @@ async function main() {
       else if (url.pathname === '/api/live-prices') data = { boards: {}, futures: {} };
       return route.fulfill({ json: data, headers: { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true' } });
     });
-    await page.goto(origin);
+    await page.goto(process.env.BYBIT_LIVE_TEST ? `${origin}/coin/` : origin);
     await page.waitForFunction(() => !document.body.classList.contains('locked'));
     await page.locator('#marketToggleBtn').click();
     await page.waitForSelector('#tableBody .coin-mark');
@@ -196,7 +229,29 @@ async function main() {
     assert.equal(await page.locator('.futures-tab').count(), 3);
     await page.locator('[data-futures-exchange="bybit"]').click();
     const bybitRows = page.locator('.futures-table tbody tr');
+    await page.waitForFunction(() => document.querySelectorAll('.futures-table tbody tr').length === 50);
     assert.equal(await bybitRows.count(), 50);
+    if (process.env.BYBIT_LIVE_TEST) {
+      const meta = await page.locator('.futures-meta').textContent();
+      assert.ok(Number(meta.match(/총 ([\d,]+)개/)[1].replaceAll(',', '')) > 100);
+      await page.locator('#futuresSearchForm input').fill('BTCUSDT');
+      const btcRow = page.locator('tr[data-live-product="BTCUSDT"]');
+      assert.equal(await btcRow.count(), 1);
+      assert.match(await btcRow.textContent(), /비트코인/);
+      assert.ok(!/\$0(?:\s|원)/.test(await btcRow.locator('[data-live-price-main]').textContent()));
+      assert.equal(await page.locator('.futures-note[role="status"]').count(), 0);
+      await page.locator('#futuresSearchForm input').fill('');
+      for (const width of [1440, 390]) {
+        await page.setViewportSize({ width, height: 844 });
+        assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+        await page.screenshot({ path: path.join(process.env.TEMP || root, `blockscope-bybit-live-${width}.png`) });
+      }
+      assert.deepEqual(errors, []);
+      console.log(`PASS: real Bybit public REST, production browser origin/CORS, live contract prices, spot cap linkage and desktop/mobile layout: ${meta}`);
+      return;
+    }
+    assert.equal(bybitCalls.length, 3, 'all instrument pages and one bulk ticker request, even with an empty server snapshot');
+    assert.equal(await page.locator('.futures-note[role="status"]').count(), 0, 'server-region 403 does not override successful public quotes');
     assert.ok(!(await bybitRows.allTextContents()).some(text => text.includes('INVALID')));
     const topics = await page.evaluate(() => bybitSockets.at(-1).sent.find(message => message.op === 'subscribe').args);
     assert.equal(topics.length, 50);
@@ -228,6 +283,7 @@ async function main() {
     assert.match(await bybitRows.first().textContent(), /TEST59USDT/);
     await page.locator('[data-futures-sort]').click();
     assert.match(await bybitRows.first().textContent(), /BTCUSDT/);
+    assert.equal(bybitCalls.length, 3, 'search, pagination and sorting use memory, not additional API requests');
     await page.reload();
     await page.waitForSelector('.futures-table');
     assert.equal(await page.locator('.futures-tab.active').getAttribute('data-futures-exchange'), 'bybit');
@@ -242,11 +298,29 @@ async function main() {
       await page.screenshot({ path: path.join(process.env.TEMP || root, `blockscope-bybit-${width}.png`) });
     }
     await page.setViewportSize({ width: 1440, height: 1000 });
+    failBybitPage = true;
+    await page.evaluate(() => { window.testTimeOffset = 600001; });
+    await page.locator('[data-futures-exchange="binance"]').click();
+    await page.locator('[data-futures-exchange="bybit"]').click();
+    await page.waitForSelector('.futures-note[role="status"]');
+    assert.equal(await bybitRows.count(), 50, 'partial API refresh cannot erase the last complete list');
+    assert.match(await page.locator('.futures-meta').textContent(), /총 60개/);
+    const failedCalls = bybitCalls.length;
+    await page.locator('#futuresSearchForm input').fill('비트코인');
+    await page.locator('#futuresSearchForm input').fill('');
+    assert.equal(bybitCalls.length, failedCalls, 'failed requests have a cooldown, including search rerenders');
+    failBybitPage = false;
+    await page.evaluate(() => { window.testTimeOffset += 60001; });
+    await page.locator('[data-futures-exchange="binance"]').click();
+    await page.locator('[data-futures-exchange="bybit"]').click();
+    await page.waitForFunction(() => !document.querySelector('.futures-note[role="status"]'));
+    assert.equal(await bybitRows.count(), 50, 'successful retry restores the complete list and clears the warning');
+    await page.evaluate(() => { window.testTimeOffset = 0; });
     await page.locator('[data-futures-exchange="coinbase"]').click();
     assert.equal(await page.evaluate(() => bybitIntervals.size), 0, 'leaving Bybit stops its heartbeat');
     assert.ok(await page.evaluate(() => bybitSockets.every(socket => socket.readyState === 3)), 'leaving Bybit closes every Bybit socket');
     await page.locator('[data-futures-exchange="binance"]').click();
-    console.log('PASS: Bybit filters, pagination, sorting, history/reload, realtime snapshot/delta, subscriptions, heartbeat cleanup, and desktop/mobile layout.');
+    console.log('PASS: Bybit browser-direct bulk API, all instrument pages, empty server snapshot, spot cap linkage, filters, cached search, pagination, sorting, history/reload, realtime snapshot/delta, heartbeat cleanup, and desktop/mobile layout.');
 
     const cases = [
       ['futures', '#futuresSearchForm input', '.futures-table tbody tr', 'BTC'],
