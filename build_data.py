@@ -4526,6 +4526,9 @@ def main() -> None:
     DATA_JS_PATH.write_text("window.BOARD_DATA = " + json.dumps(payload, ensure_ascii=False) + ";\n", encoding="utf-8")
     SNAPSHOT_JSON_PATH.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     print(f"Saved {DATA_JS_PATH}")
+    print("Futures:", json.dumps(payload["futuresStats"], ensure_ascii=False))
+    if payload.get("refreshIssues", {}).get("bybit_futures"):
+        print("Bybit refresh issue:", payload["refreshIssues"]["bybit_futures"])
     print(
         "Rows:",
         len(payload["boards"]["binance"]),
