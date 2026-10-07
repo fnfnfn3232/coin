@@ -9,6 +9,18 @@ async function main() {
   const html = fs.readFileSync(process.env.SEARCH_TEST_HTML || path.join(root, 'index.html'), 'utf8');
   for (const script of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)) new Function(script[1]);
   const snapshot = JSON.parse(fs.readFileSync(path.join(root, 'board_snapshot.json'), 'utf8'));
+  snapshot.futures.bybit = Array.from({ length: 60 }, (_, index) => ({
+    exchange: 'bybit', contractId: index === 0 ? 'BTCUSDT' : `TEST${index}USDT`,
+    symbol: index === 0 ? 'BTC' : `TEST${index}`, name: index === 0 ? '비트코인' : `Test ${index}`,
+    contractType: 'PERPETUAL', contractTypeLabel: '무기한', contractMarket: 'USDT-M',
+    quoteAsset: 'USDT', marginAsset: 'USDT', exchangeStatus: 'Trading', symbolType: '',
+    priceUsd: 100, priceKrw: 135000, marketCapUsd: 1000000 - index * 1000,
+    marketCapKrw: (1000000 - index * 1000) * 1350, sortCapUsd: 1000000 - index * 1000,
+  }));
+  snapshot.futures.bybit.push(...[
+    { quoteAsset: 'USDC' }, { marginAsset: 'BTC' }, { contractType: 'FUTURES' },
+    { exchangeStatus: 'Closed' }, { isPreListing: true }, { symbolType: 'stock' },
+  ].map((extra, index) => ({ ...snapshot.futures.bybit[0], contractId: `INVALID${index}USDT`, ...extra })));
   const news = { query: '', items: [{ id: 'news-test', title: 'Bitcoin news', summary: 'Summary', publishAt: Date.now() }], total: 1, storedCount: 1, nextOffset: 1, hasMore: false };
   snapshot.news = news;
   const feeRow = (slug, name, total24h) => ({ slug, name, total24h, total7d: total24h * 7, total30d: total24h * 30, change1d: 1, url: `https://defillama.com/chain/${slug}`, logo: '' });
@@ -37,6 +49,31 @@ async function main() {
         localStorage.setItem('fdv_screen_settings_v1', JSON.stringify(settings));
       }
     }, legacySettings);
+    await page.addInitScript(() => {
+      const NativeWebSocket = window.WebSocket;
+      const nativeInterval = window.setInterval;
+      const nativeClear = window.clearInterval;
+      window.bybitSockets = [];
+      window.bybitIntervals = new Map();
+      window.setInterval = (callback, delay, ...args) => {
+        const id = nativeInterval(callback, delay, ...args);
+        if (delay === 20000) window.bybitIntervals.set(id, callback);
+        return id;
+      };
+      window.clearInterval = id => { window.bybitIntervals.delete(id); nativeClear(id); };
+      function MockWebSocket(url) {
+        if (!url.includes('stream.bybit.com')) return new NativeWebSocket(url);
+        const socket = { url, readyState: 1, sent: [],
+          send(message) { socket.sent.push(JSON.parse(message)); },
+          close() { socket.readyState = 3; socket.onclose?.(); },
+        };
+        window.bybitSockets.push(socket);
+        queueMicrotask(() => socket.onopen?.());
+        return socket;
+      }
+      MockWebSocket.OPEN = NativeWebSocket.OPEN;
+      window.WebSocket = MockWebSocket;
+    });
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     const origin = `http://127.0.0.1:${server.address().port}`;
@@ -154,6 +191,62 @@ async function main() {
       assert.deepEqual(errors, []);
       return;
     }
+
+    await openResource('futures');
+    assert.equal(await page.locator('.futures-tab').count(), 3);
+    await page.locator('[data-futures-exchange="bybit"]').click();
+    const bybitRows = page.locator('.futures-table tbody tr');
+    assert.equal(await bybitRows.count(), 50);
+    assert.ok(!(await bybitRows.allTextContents()).some(text => text.includes('INVALID')));
+    const topics = await page.evaluate(() => bybitSockets.at(-1).sent.find(message => message.op === 'subscribe').args);
+    assert.equal(topics.length, 50);
+    assert.ok(topics.every(topic => topic.startsWith('tickers.') && topic.endsWith('USDT')));
+    await page.locator('#futuresSearchForm input').fill('비트코인');
+    assert.equal(await bybitRows.count(), 1);
+    await page.evaluate(() => {
+      const socket = bybitSockets.at(-1);
+      socket.onmessage({ data: JSON.stringify({ topic: 'tickers.BTCUSDT', type: 'snapshot', data: { symbol: 'BTCUSDT', lastPrice: '432.1' } }) });
+    });
+    await page.waitForFunction(() => document.querySelector('[data-live-price-main]')?.textContent.includes('432.1'));
+    const price = await bybitRows.locator('[data-live-price-main]').textContent();
+    await page.evaluate(() => {
+      bybitSockets.at(-1).onmessage({ data: JSON.stringify({ topic: 'tickers.BTCUSDT', type: 'delta', data: { fundingRate: '0.001' } }) });
+    });
+    assert.equal(await bybitRows.locator('[data-live-price-main]').textContent(), price, 'deltas without lastPrice never erase the price');
+    await page.evaluate(() => {
+      for (const callback of bybitIntervals.values()) callback();
+      bybitSockets.at(-1).onmessage({ data: JSON.stringify({ topic: 'tickers.BTCUSDT', type: 'delta', data: { lastPrice: '500' } }) });
+    });
+    await page.waitForFunction(() => document.querySelector('[data-live-price-main]')?.textContent.includes('500'));
+    assert.ok(await page.evaluate(() => bybitSockets.at(-1).sent.some(message => message.op === 'ping')));
+    await page.locator('#futuresSearchForm input').fill('');
+    assert.equal(await bybitRows.count(), 50);
+    await page.locator('[data-futures-page="2"]').click();
+    assert.equal(await bybitRows.count(), 10);
+    await page.locator('[data-futures-sort]').click();
+    assert.equal(await bybitRows.count(), 50);
+    assert.match(await bybitRows.first().textContent(), /TEST59USDT/);
+    await page.locator('[data-futures-sort]').click();
+    assert.match(await bybitRows.first().textContent(), /BTCUSDT/);
+    await page.reload();
+    await page.waitForSelector('.futures-table');
+    assert.equal(await page.locator('.futures-tab.active').getAttribute('data-futures-exchange'), 'bybit');
+    for (const width of [1440, 390, 320]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.locator('[data-futures-exchange="binance"]').click();
+      await page.locator('[data-futures-exchange="bybit"]').click();
+      const tab = await page.locator('.futures-tab.active').boundingBox();
+      const nav = await page.locator('.futures-tabs').boundingBox();
+      assert.ok(tab.x >= nav.x - 1 && tab.x + tab.width <= nav.x + nav.width + 1);
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+      await page.screenshot({ path: path.join(process.env.TEMP || root, `blockscope-bybit-${width}.png`) });
+    }
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.locator('[data-futures-exchange="coinbase"]').click();
+    assert.equal(await page.evaluate(() => bybitIntervals.size), 0, 'leaving Bybit stops its heartbeat');
+    assert.ok(await page.evaluate(() => bybitSockets.every(socket => socket.readyState === 3)), 'leaving Bybit closes every Bybit socket');
+    await page.locator('[data-futures-exchange="binance"]').click();
+    console.log('PASS: Bybit filters, pagination, sorting, history/reload, realtime snapshot/delta, subscriptions, heartbeat cleanup, and desktop/mobile layout.');
 
     const cases = [
       ['futures', '#futuresSearchForm input', '.futures-table tbody tr', 'BTC'],

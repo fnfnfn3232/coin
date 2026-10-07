@@ -2274,7 +2274,7 @@ function emptyMarketDataPayload() {
     fxUsdKrw: 0,
     fxSource: "worker_protected",
     boards: { binance: [], upbit: [], bithumb: [], coinbase: [] },
-    futures: { binance: [], coinbase: [] },
+    futures: { binance: [], coinbase: [], bybit: [] },
     coinInfo: {},
     news: {
       source: "worker_protected",
@@ -2293,6 +2293,7 @@ function emptyMarketDataPayload() {
     futuresStats: {
       binance: { total: 0, withCap: 0 },
       coinbase: { total: 0, withCap: 0 },
+      bybit: { total: 0, withCap: 0 },
     },
     changes: {},
     notes: {},
@@ -2316,6 +2317,7 @@ function normalizeMarketDataPayload(payload) {
     futures: {
       binance: Array.isArray(payload.futures?.binance) ? payload.futures.binance : [],
       coinbase: Array.isArray(payload.futures?.coinbase) ? payload.futures.coinbase : [],
+      bybit: Array.isArray(payload.futures?.bybit) ? payload.futures.bybit : [],
     },
     coinInfo: payload.coinInfo && typeof payload.coinInfo === "object" ? payload.coinInfo : {},
     stats: payload.stats && typeof payload.stats === "object" ? payload.stats : {},

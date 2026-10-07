@@ -10,6 +10,7 @@ on:
       - "mapping.json"
       - "test_coin_logos.py"
       - "test_binance_futures.py"
+      - "test_bybit_futures.py"
   schedule:
     # GitHub scheduled workflows can be delayed or skipped, so request the
     # shortest supported cadence and let concurrency keep only one run active.
@@ -61,8 +62,8 @@ jobs:
             echo "Previous protected snapshot unavailable; continuing without it"
           fi
 
-      - name: Verify coin logos and Binance USDT futures
-        run: python -m unittest test_coin_logos.py test_binance_futures.py
+      - name: Verify coin logos and USDT futures
+        run: python -m unittest test_coin_logos.py test_binance_futures.py test_bybit_futures.py
 
       - name: Rebuild data (retry)
         run: |
