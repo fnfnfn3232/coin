@@ -15585,14 +15585,17 @@
           if (referenceBoardName) {
             row.capSource = "coinbase_fill_same_symbol";
             row.capSourceDetail = `coinbase_exchange_markets|${detailForBoard(referenceBoardName)}`;
+            row.marketIdentityVerified = toPositiveNumber(row.marketCapUsd) !== null || toPositiveNumber(row.marketCapKrw) !== null;
+            row.supplyIdentityVerified = Boolean(supplyRef);
           }
 
+          const hadSourceCap = toPositiveNumber(row.marketCapUsd) !== null || toPositiveNumber(row.marketCapKrw) !== null;
           recomputeDerivedFields(row, { preferComputedCap: coinbasePriceUsd !== null });
-          if (coinbasePriceUsd !== null && toPositiveNumber(row.circulatingSupply) !== null) {
+          if (!hadSourceCap && coinbasePriceUsd !== null && row.supplyIdentityVerified === true && toPositiveNumber(row.marketCapUsd) !== null) {
             row.capSource = "coinbase_market_products";
             row.capSourceDetail = `coinbase_price|supply:${supplyRef ? detailForBoard(supplyRef.boardName) : detailForBoard(referenceBoardName)}`;
           }
-          if (Number.isFinite(Number(row.marketCapUsd)) || Number.isFinite(Number(row.marketCapKrw))) {
+          if (toPositiveNumber(row.marketCapUsd) !== null || toPositiveNumber(row.marketCapKrw) !== null) {
             row.status = "ok";
           }
 
