@@ -17,6 +17,8 @@ async function main() {
     priceUsd: 100, priceKrw: 135000, marketCapUsd: 1000000 - index * 1000,
     marketCapKrw: (1000000 - index * 1000) * 1350, sortCapUsd: 1000000 - index * 1000,
   }));
+  bybitFixture[58].contractId = '1000TEST58USDT';
+  bybitFixture[58].rawUnderlyingSymbol = '1000TEST58';
   snapshot.boards.binance.push(...bybitFixture.slice(1, 59).map(row => ({ ...row, exchange: 'binance', pair: `${row.symbol}/USDT` })));
   bybitFixture.push(...[
     { quoteAsset: 'USDC' }, { marginAsset: 'BTC' }, { contractType: 'FUTURES' },
@@ -25,7 +27,7 @@ async function main() {
   snapshot.futures.bybit = [];
   snapshot.refreshIssues = { ...snapshot.refreshIssues, bybit_futures: 'fallback_previous_payload:HTTP Error 403: Forbidden' };
   const bybitInstruments = bybitFixture.map(row => ({
-    symbol: row.contractId, baseCoin: row.symbol, quoteCoin: row.quoteAsset, settleCoin: row.marginAsset,
+    symbol: row.contractId, baseCoin: row.rawUnderlyingSymbol || row.symbol, quoteCoin: row.quoteAsset, settleCoin: row.marginAsset,
     status: row.exchangeStatus, contractType: row.contractType === 'PERPETUAL' ? 'LinearPerpetual' : 'LinearFutures',
     isPreListing: !!row.isPreListing, symbolType: row.symbolType,
   }));
@@ -281,6 +283,7 @@ async function main() {
     await page.locator('[data-futures-sort]').click();
     assert.equal(await bybitRows.count(), 50);
     assert.match(await bybitRows.first().textContent(), /TEST58USDT/);
+    assert.equal(await bybitRows.first().locator('.futures-underlying > span').textContent(), 'TEST58', 'bundled contracts link to the underlying coin, not a multiplied token supply');
     await page.locator('[data-futures-sort]').click();
     assert.match(await bybitRows.first().textContent(), /BTCUSDT/);
     await page.locator('#futuresSearchForm input').fill('TEST59');
