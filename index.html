@@ -2288,6 +2288,7 @@
 
       .ranking-tab {
         flex: 0 0 auto;
+        white-space: nowrap;
         min-height: 44px;
         padding: 0 2px;
         border: 0;
@@ -2303,6 +2304,10 @@
       .ranking-tab.active {
         border-bottom-color: var(--accent);
         color: var(--accent);
+      }
+
+      .l2-fees-shell .defi-tabs {
+        margin-bottom: 22px;
       }
 
       .ranking-toolbar {
@@ -6801,8 +6806,6 @@
             <button id="futuresToggleBtn" type="button" role="menuitem"></button>
             <button id="rankingToggleBtn" type="button" role="menuitem"></button>
             <button id="auditToggleBtn" type="button" role="menuitem"></button>
-            <button id="l2FeesToggleBtn" type="button" role="menuitem"></button>
-            <button id="l1FeesToggleBtn" type="button" role="menuitem"></button>
           </div>
         </div>
       </div>
@@ -7275,9 +7278,11 @@
     const MARKET_BOARDS = ["binance", "upbit", "bithumb", "coinbase"];
     const SCREEN_NAV_ITEMS = ["market", "news", "board", "resources"];
     const RESOURCE_MENU_ITEMS = ["futures", "ranking", "audit", "l2fees", "l1fees"];
+    const RESOURCE_TOP_LEVEL_ITEMS = ["futures", "ranking", "audit"];
+    const DEFI_VIEW_MODES = ["ranking", "l2fees", "l1fees"];
     const RESOURCE_MENU_LABEL_DEFAULTS = {
       futures: "선물",
-      ranking: "랭킹",
+      ranking: "디파이",
       audit: "실사 보유량",
       l2fees: "L2 수수료",
       l1fees: "L1 수수료",
@@ -7408,7 +7413,7 @@
         marketOpen: "\uC2DC\uCD1D",
         newsOpen: "\uB274\uC2A4",
         boardOpen: "\uAC8C\uC2DC\uD310",
-        rankingOpen: "\uB7AD\uD0B9",
+        rankingOpen: "디파이",
         futuresOpen: "\uC120\uBB3C",
         auditOpen: "\uC2E4\uC0AC \uBCF4\uC720\uB7C9",
         newsTitle: "",
@@ -7590,8 +7595,6 @@
       const rankingToggleBtn = document.getElementById("rankingToggleBtn");
       const futuresToggleBtn = document.getElementById("futuresToggleBtn");
       const auditToggleBtn = document.getElementById("auditToggleBtn");
-      const l2FeesToggleBtn = document.getElementById("l2FeesToggleBtn");
-      const l1FeesToggleBtn = document.getElementById("l1FeesToggleBtn");
       const resourcesMenuBtn = document.getElementById("resourcesMenuBtn");
       const screenSettingsSaveBtn = document.getElementById("screenSettingsSaveBtn");
       const screenSettingsResetBtn = document.getElementById("screenSettingsResetBtn");
@@ -11198,13 +11201,6 @@
               hour12: false,
             })
           : "";
-        const categoryTabs = Object.entries(DEFILLAMA_RANKING_CATEGORIES)
-          .map(([key, item]) => `
-            <button class="ranking-tab${key === rankingCategory ? " active" : ""}" type="button" data-ranking-category="${escapeAttr(key)}">
-              ${escapeHtml(item.label)}
-            </button>
-          `)
-          .join("");
         const sourceUrl = isSafeHttpUrl(rankingData.sourceUrl)
           ? rankingData.sourceUrl
           : "https://defillama.com/";
@@ -11215,9 +11211,7 @@
         renderResourceSearchPanel(`
           <div class="ranking-shell">
             ${renderResourceTabs()}
-            <nav class="ranking-tabs" aria-label="DefiLlama 랭킹 종류">
-              ${categoryTabs}
-            </nav>
+            ${renderDefiTabs()}
             <div class="ranking-toolbar">
               <form class="ranking-search" id="rankingSearchForm">
                 <input name="rankingQuery" type="search" autocomplete="off" placeholder="코인·심볼·프로토콜 검색" value="${escapeAttr(rankingQuery)}" maxlength="80" />
@@ -11943,14 +11937,14 @@
           } else {
             renderAuditPanel();
           }
-          const tabs = newsPanel.querySelector(".resource-tabs");
-          const activeTab = tabs?.querySelector(".resource-tab.active");
-          if (activeTab) {
+          newsPanel.querySelectorAll(".resource-tabs, .defi-tabs").forEach((tabs) => {
+            const activeTab = tabs.querySelector(".active");
+            if (!activeTab) return;
             const tabBounds = activeTab.getBoundingClientRect();
             const bounds = tabs.getBoundingClientRect();
             if (tabBounds.right > bounds.right) tabs.scrollLeft += tabBounds.right - bounds.right;
             else if (tabBounds.left < bounds.left) tabs.scrollLeft += tabBounds.left - bounds.left;
-          }
+          });
           return;
         }
         if (state.viewMode === "exchange-history") {
@@ -11965,9 +11959,22 @@
       }
 
       function renderResourceTabs() {
+        const activeView = DEFI_VIEW_MODES.includes(state.viewMode) ? "ranking" : state.viewMode;
         return `<nav class="resource-tabs" aria-label="자료 분류">${orderedResourceMenuItems().map((item) => `
-          <button type="button" class="resource-tab${state.viewMode === item ? " active" : ""}" data-resource-view="${item}" aria-pressed="${state.viewMode === item}">${escapeHtml(getResourceMenuLabel(item))}</button>
+          <button type="button" class="resource-tab${activeView === item ? " active" : ""}" data-resource-view="${item}" aria-pressed="${activeView === item}">${escapeHtml(getResourceMenuLabel(item))}</button>
         `).join("")}</nav>`;
+      }
+
+      function renderDefiTabs() {
+        const categories = Object.entries(DEFILLAMA_RANKING_CATEGORIES).map(([key, item]) => {
+          const active = state.viewMode === "ranking" && key === rankingCategory;
+          return `<button class="ranking-tab${active ? " active" : ""}" type="button" data-ranking-category="${escapeAttr(key)}" aria-pressed="${active}">${escapeHtml(item.label)}</button>`;
+        }).join("");
+        const fees = ["l2fees", "l1fees"].map((mode) => {
+          const active = state.viewMode === mode;
+          return `<button class="ranking-tab${active ? " active" : ""}" type="button" data-defi-view="${mode}" aria-pressed="${active}">${escapeHtml(getResourceMenuLabel(mode))}</button>`;
+        }).join("");
+        return `<nav class="ranking-tabs defi-tabs" aria-label="디파이 분류">${categories}${fees}</nav>`;
       }
 
       function renderResourceSearchPanel(markup) {
@@ -12081,6 +12088,7 @@
         const fetchedAt = Number(fees.data?.fetchedAt) || 0;
         const date = fetchedAt ? new Date(fetchedAt).toLocaleString("ko-KR", { timeZone: "Asia/Seoul", hour12: false }) : "";
         renderResourceSearchPanel(`<section class="l2-fees-shell">${renderResourceTabs()}
+          ${renderDefiTabs()}
           <div class="l2-fees-head"><h2>${escapeHtml(getResourceMenuLabel(mode))}</h2><a href="https://defillama.com/fees/chains" target="_blank" rel="noopener noreferrer">DefiLlama 원본 ↗</a></div>
           <div class="l2-fees-toolbar">
             <form id="l2FeesSearchForm" class="l2-fees-search"><input type="search" name="query" aria-label="${layer} 체인 검색" placeholder="체인 검색" value="${escapeAttr(fees.query)}" maxlength="80" /><button type="submit">검색</button></form>
@@ -14202,7 +14210,8 @@
         const resourceLabels = {};
         RESOURCE_MENU_ITEMS.forEach((item) => {
           const label = String(source.resourceLabels?.[item] || "").replace(/[\0\r\n]/g, " ").trim().slice(0, 20);
-          resourceLabels[item] = label || RESOURCE_MENU_LABEL_DEFAULTS[item];
+          const legacyDefiLabel = item === "ranking" && ["랭킹", "디파이라마", "defillama"].includes(label.toLowerCase());
+          resourceLabels[item] = legacyDefiLabel ? RESOURCE_MENU_LABEL_DEFAULTS[item] : label || RESOURCE_MENU_LABEL_DEFAULTS[item];
         });
 
         const rawOrder = Array.isArray(source.boardOrder) ? source.boardOrder : SCREEN_SETTINGS_DEFAULT.boardOrder;
@@ -14286,7 +14295,7 @@
       }
 
       function orderedResourceMenuItems(settings = screenSettings) {
-        return normalizeScreenSettings(settings).resourceOrder;
+        return normalizeScreenSettings(settings).resourceOrder.filter((item) => RESOURCE_TOP_LEVEL_ITEMS.includes(item));
       }
 
       function getResourceMenuLabel(item, settings = screenSettings) {
@@ -14357,8 +14366,6 @@
           futures: futuresToggleBtn,
           ranking: rankingToggleBtn,
           audit: auditToggleBtn,
-          l2fees: l2FeesToggleBtn,
-          l1fees: l1FeesToggleBtn,
         };
         orderedResourceMenuItems().forEach((item) => {
           const button = resourceButtons[item];
@@ -16248,13 +16255,11 @@
         marketToggleBtn.classList.toggle("active", isMarketMode || isExchangeHistoryMode);
         newsToggleBtn.classList.toggle("active", isNewsMode);
         boardToggleBtn.classList.toggle("active", isBoardMode);
-        rankingToggleBtn.classList.toggle("active", isRankingMode);
+        rankingToggleBtn.classList.toggle("active", DEFI_VIEW_MODES.includes(state.viewMode));
         futuresToggleBtn.classList.toggle("active", isFuturesMode);
         auditToggleBtn.classList.toggle("active", isAuditMode);
         const isResourcesMode = state.viewMode === "resources" || RESOURCE_MENU_ITEMS.includes(state.viewMode);
         appShell.classList.toggle("resource-mode", isResourcesMode);
-        l2FeesToggleBtn.classList.toggle("active", state.viewMode === "l2fees");
-        l1FeesToggleBtn.classList.toggle("active", state.viewMode === "l1fees");
         resourcesMenuBtn?.classList.toggle("active", isResourcesMode);
         if (isMarketMode) {
           scheduleMarketChart();
@@ -17184,10 +17189,15 @@
         if (rankingCategoryButton) {
           const nextCategory = String(rankingCategoryButton.dataset.rankingCategory || "");
           if (DEFILLAMA_RANKING_CATEGORIES[nextCategory]) {
+            const enteringRanking = state.viewMode !== "ranking";
+            if (enteringRanking) resetViewSearchState("ranking");
             rankingCategory = nextCategory;
             rankingVisibleCount = RANKING_PAGE_SIZE;
-            renderRankingPanel();
-            writeAppHistoryState(true);
+            if (enteringRanking) setViewMode("ranking");
+            else {
+              renderRankingPanel();
+              writeAppHistoryState(true);
+            }
           }
           return;
         }
@@ -17835,22 +17845,15 @@
         setViewMode("audit");
       });
 
-      l2FeesToggleBtn.addEventListener("click", () => {
-        resetViewSearchState("l2fees");
-        setViewMode("l2fees");
-      });
-
-      l1FeesToggleBtn.addEventListener("click", () => {
-        resetViewSearchState("l1fees");
-        setViewMode("l1fees");
-      });
-
       newsPanel.addEventListener("click", (event) => {
         const button = event.target.closest("button");
         if (!button) return;
         if (RESOURCE_MENU_ITEMS.includes(button.dataset.resourceView)) {
           resetViewSearchState(button.dataset.resourceView);
           setViewMode(button.dataset.resourceView);
+        } else if (["l2fees", "l1fees"].includes(button.dataset.defiView)) {
+          resetViewSearchState(button.dataset.defiView);
+          setViewMode(button.dataset.defiView);
         } else if (["total24h", "total7d", "total30d", "change1d"].includes(button.dataset.l2Sort)) {
           const key = button.dataset.l2Sort;
           const fees = chainFeesStates[state.viewMode];
