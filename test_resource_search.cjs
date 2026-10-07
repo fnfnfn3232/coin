@@ -17,7 +17,7 @@ async function main() {
     priceUsd: 100, priceKrw: 135000, marketCapUsd: 1000000 - index * 1000,
     marketCapKrw: (1000000 - index * 1000) * 1350, sortCapUsd: 1000000 - index * 1000,
   }));
-  snapshot.boards.binance.push(...bybitFixture.slice(1).map(row => ({ ...row, exchange: 'binance', pair: `${row.symbol}/USDT` })));
+  snapshot.boards.binance.push(...bybitFixture.slice(1, 59).map(row => ({ ...row, exchange: 'binance', pair: `${row.symbol}/USDT` })));
   bybitFixture.push(...[
     { quoteAsset: 'USDC' }, { marginAsset: 'BTC' }, { contractType: 'FUTURES' },
     { exchangeStatus: 'Closed' }, { isPreListing: true }, { symbolType: 'stock' },
@@ -280,9 +280,13 @@ async function main() {
     assert.equal(await bybitRows.count(), 10);
     await page.locator('[data-futures-sort]').click();
     assert.equal(await bybitRows.count(), 50);
-    assert.match(await bybitRows.first().textContent(), /TEST59USDT/);
+    assert.match(await bybitRows.first().textContent(), /TEST58USDT/);
     await page.locator('[data-futures-sort]').click();
     assert.match(await bybitRows.first().textContent(), /BTCUSDT/);
+    await page.locator('#futuresSearchForm input').fill('TEST59');
+    assert.equal(await bybitRows.count(), 1);
+    assert.doesNotMatch(await bybitRows.locator('.futures-cap').textContent(), /\$0|0원/, 'unknown market caps are never displayed as a zero value');
+    await page.locator('#futuresSearchForm input').fill('');
     assert.equal(bybitCalls.length, 3, 'search, pagination and sorting use memory, not additional API requests');
     await page.reload();
     await page.waitForSelector('.futures-table');
