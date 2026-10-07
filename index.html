@@ -11413,9 +11413,11 @@
             "totalSupply", "fdvUsd", "fdvKrw", "circulatingRatio", "capSourceDetail", "supplyDetail"]) {
             row[key] = cap?.[key] ?? null;
           }
+          row.marketCapUsd = toPositiveNumber(row.marketCapUsd) ?? Number.NaN;
+          row.marketCapKrw = toPositiveNumber(row.marketCapKrw) ?? Number.NaN;
           row.sortCapUsd = toPositiveNumber(row.marketCapUsd);
           row.priceKrw = toPositiveNumber(row.priceUsd) !== null && toPositiveNumber(data.fxUsdKrw) !== null
-            ? row.priceUsd * Number(data.fxUsdKrw) : null;
+            ? row.priceUsd * Number(data.fxUsdKrw) : Number.NaN;
         });
         return rows;
       }
@@ -11471,7 +11473,7 @@
               symbol: item.baseCoin, contractType: "PERPETUAL", contractTypeLabel: "무기한", contractMarket: "USDT-M",
               quoteAsset: "USDT", marginAsset: "USDT", exchangeStatus: "Trading",
               symbolType: item.symbolType || "", isPreListing: false, nativeCurrency: "USD",
-              priceUsd: prices.get(item.symbol) ?? null, priceSource: "bybit_linear_futures_ticker",
+              priceUsd: prices.get(item.symbol) ?? Number.NaN, priceSource: "bybit_linear_futures_ticker",
             }));
             bybitClient.rows = rows;
           } catch (_error) {
