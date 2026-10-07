@@ -17,6 +17,10 @@ async function main() {
     l2fees: { rows: [feeRow('base', 'Base', 100), feeRow('arbitrum', 'Arbitrum', 200)] },
   };
   const calls = [];
+  const legacySettings = {
+    resourceOrder: ['l1fees', 'futures', 'audit', 'ranking', 'l2fees'],
+    resourceLabels: { ranking: '디파이라마' },
+  };
   const server = http.createServer((req, res) => {
     const pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
     const file = path.resolve(root, '.' + (pathname === '/' ? '/index.html' : pathname));
@@ -28,6 +32,11 @@ async function main() {
   const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true });
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    await page.addInitScript(settings => {
+      if (!localStorage.getItem('fdv_screen_settings_v1')) {
+        localStorage.setItem('fdv_screen_settings_v1', JSON.stringify(settings));
+      }
+    }, legacySettings);
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     const origin = `http://127.0.0.1:${server.address().port}`;
@@ -41,7 +50,7 @@ async function main() {
       else if (url.pathname === '/api/l2-fees') data = fees.l2fees;
       else if (url.pathname === '/api/news') data = { ...news, query: url.searchParams.get('q') || '' };
       else if (url.pathname === '/api/session') data = { authenticated: true, role: 'admin' };
-      else if (url.pathname === '/api/screen-settings') data = { settings: {} };
+      else if (url.pathname === '/api/screen-settings') data = { settings: legacySettings };
       else if (url.pathname === '/api/board/posts') data = { posts: [] };
       else if (url.pathname === '/api/board/categories') data = { categories: [] };
       else if (url.pathname === '/api/live-prices') data = { boards: {}, futures: {} };
@@ -57,7 +66,47 @@ async function main() {
     assert.ok(await page.locator('#tableBody tr').count() > 1);
     await page.locator('#resourcesMenuBtn').click();
 
-    await page.locator('[data-resource-view="l1fees"]').click();
+    async function openResource(mode) {
+      if (mode === 'l1fees' || mode === 'l2fees') {
+        if (!await page.locator('[data-defi-view]').count()) {
+          await page.locator('[data-resource-view="ranking"]').click();
+        }
+        await page.locator(`[data-defi-view="${mode}"]`).click();
+      } else {
+        await page.locator(`[data-resource-view="${mode}"]`).click();
+      }
+    }
+    assert.equal(await page.locator('.resource-tab').count(), 3);
+    assert.deepEqual(await page.locator('.resource-tab').evaluateAll(tabs => tabs.map(tab => tab.dataset.resourceView)), ['futures', 'audit', 'ranking']);
+    assert.equal(await page.locator('[data-resource-view="ranking"]').textContent(), '디파이');
+    assert.equal(await page.locator('[data-resource-view="l1fees"], [data-resource-view="l2fees"]').count(), 0);
+    await openResource('ranking');
+    assert.equal(await page.locator('.defi-tabs button').count(), 7);
+    assert.equal(await page.locator('.defi-tabs .active').getAttribute('data-ranking-category'), 'tvl');
+    await openResource('l2fees');
+    await page.waitForSelector('.l2-fees-table');
+    assert.equal(await page.locator('.resource-tab.active').getAttribute('data-resource-view'), 'ranking');
+    assert.equal(await page.locator('.defi-tabs .active').getAttribute('data-defi-view'), 'l2fees');
+    assert.equal(await page.locator('.l2-fees-table tbody tr').count(), fees.l2fees.rows.length);
+    await openResource('l1fees');
+    await page.waitForSelector('.l2-fees-table');
+    assert.equal(await page.locator('.l2-fees-table tbody tr').count(), fees.l1fees.rows.length);
+    await page.locator('[data-l2-sort="total24h"]').click();
+    assert.match(await page.locator('.l2-fees-table tbody tr').first().textContent(), /Near/);
+    await page.locator('[data-ranking-category="fees"]').click();
+    assert.equal(await page.locator('.defi-tabs .active').getAttribute('data-ranking-category'), 'fees');
+    assert.ok(await page.locator('#rankingSearchForm').count());
+    await page.goBack();
+    await page.waitForSelector('.l2-fees-table');
+    assert.equal(await page.locator('.defi-tabs .active').getAttribute('data-defi-view'), 'l1fees');
+    await page.reload();
+    await page.waitForSelector('.l2-fees-table');
+    assert.equal(await page.locator('.defi-tabs .active').getAttribute('data-defi-view'), 'l1fees');
+    assert.equal(await page.locator('.resource-tab.active').textContent(), '디파이');
+    await page.screenshot({ path: path.join(process.env.TEMP || root, 'blockscope-defi-desktop.png') });
+    console.log('PASS: legacy settings migrate to three parent tabs; all seven DeFi tabs, fee sorting, cross-view navigation, back, and reload.');
+
+    await openResource('l1fees');
     await page.waitForSelector('.l2-fees-table');
     const videoCdp = await page.context().newCDPSession(page);
     const videoInput = page.locator('#l2FeesSearchForm input');
@@ -114,7 +163,7 @@ async function main() {
       ['l2fees', '#l2FeesSearchForm input', '.l2-fees-table tbody tr', '베이스'],
     ];
     for (const [mode, selector, rows, query] of cases) {
-      await page.locator(`[data-resource-view="${mode}"]`).click();
+      await openResource(mode);
       await page.waitForSelector(rows);
       const originalCount = await page.locator(rows).count();
       const historyLength = await page.evaluate(() => history.length);
@@ -159,7 +208,7 @@ async function main() {
       console.log(`PASS: ${mode} live search and clear`);
     }
 
-    await page.locator('[data-resource-view="l1fees"]').click();
+    await openResource('l1fees');
     await page.waitForSelector('.l2-fees-table');
     await page.locator('#l2FeesSearchForm input').focus();
     const cdp = await page.context().newCDPSession(page);
@@ -204,6 +253,11 @@ async function main() {
 
     for (const width of [390, 320]) {
       await page.setViewportSize({ width, height: 844 });
+      await openResource('l2fees');
+      await openResource('l1fees');
+      const tabBounds = await page.locator('.defi-tabs .active').boundingBox();
+      const navBounds = await page.locator('.defi-tabs').boundingBox();
+      assert.ok(tabBounds.x >= navBounds.x - 1 && tabBounds.x + tabBounds.width <= navBounds.x + navBounds.width + 1, `${width}px active DeFi tab scrolls into view`);
       await page.locator('#l2FeesSearchForm input').fill('니어');
       assert.equal(await page.locator('.l2-fees-table tbody tr').count(), 1);
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
