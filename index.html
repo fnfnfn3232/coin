@@ -11395,7 +11395,7 @@
         const lookup = futuresReferenceLookup();
         rows.forEach((row) => {
           let symbol = row.rawUnderlyingSymbol;
-          if (!lookup.has(symbol)) {
+          if (!(lookup.get(symbol) || []).some((item) => String(item.symbol || "").toUpperCase() === symbol)) {
             for (const prefix of ["1000000", "10000", "1000"]) {
               const candidate = symbol.startsWith(prefix) ? symbol.slice(prefix.length) : "";
               if (candidate && lookup.has(candidate)) { symbol = candidate; break; }
