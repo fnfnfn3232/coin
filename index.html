@@ -8582,6 +8582,7 @@
         siteAuthConfirmed = true;
         setLockExtendCount(0);
         hideSiteLock();
+        primeChainFees();
         renderLockTtl();
         lockPasswordInput.value = "";
         lockMemberEmailInput.value = "";
@@ -8950,6 +8951,9 @@
       const chainFeesStates = Object.fromEntries(["l1fees", "l2fees"].map((mode) => [mode, {
         data: null, promise: null, checkedAt: 0, error: "", query: "", sortKey: "total24h", sortDirection: "desc",
       }]));
+      const CHAIN_FEES_CACHE_KEY = "blockscope_chain_fees_v1";
+      let chainFeesCacheSubject = "";
+      let chainFeesGeneration = 0;
       const RESOURCE_SEARCH_SELECTOR = '#rankingSearchForm input[name="rankingQuery"], #futuresSearchForm input[name="futuresQuery"], #auditSearchForm input[name="auditQuery"], #l2FeesSearchForm input[name="query"]';
       let adminServerPassword = "";
       let serverUsageStats = null;
@@ -12210,23 +12214,74 @@
         return true;
       }
 
+      function primeChainFees() {
+        if (!siteAuthConfirmed || isSiteLocked()) return;
+        const subject = `${siteSessionRole}:${siteSessionSubject}`;
+        if (chainFeesCacheSubject !== subject) {
+          chainFeesCacheSubject = subject;
+          try {
+            const cached = JSON.parse(sessionStorage.getItem(CHAIN_FEES_CACHE_KEY) || "null");
+            if (cached?.subject === subject) {
+              for (const [mode, fees] of Object.entries(chainFeesStates)) {
+                const payload = cached[mode];
+                const age = Date.now() - Number(payload?.fetchedAt);
+                if (!Array.isArray(payload?.rows) || !payload.rows.length || payload.rows.length > 1000
+                    || !Number.isFinite(age) || age < 0 || age > 86400000) continue;
+                fees.data = { ...payload, stale: Boolean(payload.stale) || age >= 600000 };
+                fees.checkedAt = fees.data.stale ? 0 : Number(payload.fetchedAt);
+              }
+            }
+          } catch (_error) {
+            // A blocked or expired browser cache must not prevent live retrieval.
+          }
+        }
+        for (const mode of Object.keys(chainFeesStates)) requestChainFees(mode);
+        if (chainFeesStates[state.viewMode]) renderContentPanel();
+      }
+
+      function saveChainFeesCache() {
+        try {
+          sessionStorage.setItem(CHAIN_FEES_CACHE_KEY, JSON.stringify({
+            subject: chainFeesCacheSubject,
+            ...Object.fromEntries(Object.entries(chainFeesStates).map(([mode, fees]) => [mode, fees.data])),
+          }));
+        } catch (_error) {
+          // Keep the in-memory result when browser storage is unavailable.
+        }
+      }
+
+      function clearChainFeesCache() {
+        chainFeesGeneration += 1;
+        chainFeesCacheSubject = "";
+        for (const fees of Object.values(chainFeesStates)) {
+          Object.assign(fees, { data: null, promise: null, checkedAt: 0, error: "", query: "" });
+        }
+        try { sessionStorage.removeItem(CHAIN_FEES_CACHE_KEY); } catch (_error) {}
+      }
+
       async function requestChainFees(mode = state.viewMode, force = false) {
         const fees = chainFeesStates[mode];
         if (!fees) return;
-        if (fees.promise || isSiteLocked() || document.hidden) return fees.promise;
+        if (fees.promise || !siteAuthConfirmed || isSiteLocked() || document.hidden) return fees.promise;
         if (!force && Date.now() - fees.checkedAt < (fees.error || fees.data?.stale ? 60000 : 600000)) return;
         fees.checkedAt = Date.now();
         fees.error = "";
+        const generation = chainFeesGeneration;
         fees.promise = (async () => {
           try {
             const payload = await fetchServerAuth(mode === "l1fees" ? "/api/l1-fees" : "/api/l2-fees", { timeoutMs: 20000 });
+            if (generation !== chainFeesGeneration || isSiteLocked()) return;
             if (!Array.isArray(payload?.rows) || !payload.rows.length) throw new Error("empty_l2_fees");
             fees.data = payload;
+            saveChainFeesCache();
           } catch (_error) {
+            if (generation !== chainFeesGeneration || isSiteLocked()) return;
             fees.error = "수수료 정보를 갱신하지 못했습니다.";
           } finally {
-            fees.promise = null;
-            if (state.viewMode === mode) renderContentPanel();
+            if (generation === chainFeesGeneration) {
+              fees.promise = null;
+              if (state.viewMode === mode) renderContentPanel();
+            }
           }
         })();
         if (state.viewMode === mode) renderContentPanel();
@@ -13118,6 +13173,7 @@
         localStorage.removeItem(LOCK_EXTEND_COUNT_KEY);
         localStorage.removeItem(MARKET_SNAPSHOT_GENERATED_AT_KEY);
         localStorage.removeItem(LAST_GOOD_DATA_KEY);
+        clearChainFeesCache();
         clearProtectedBoardMediaCache();
         adminServerPassword = "";
         freeBoardAdminMode = false;
@@ -13177,6 +13233,7 @@
           setLockExtendCount(0);
           setLockAuthFor24Hours();
           hideSiteLock();
+          primeChainFees();
           renderLockTtl();
           scheduleMarketChart();
           return Promise.resolve(true);
@@ -13201,6 +13258,7 @@
 
           siteAuthConfirmed = true;
           hideSiteLock();
+          primeChainFees();
           lockError.textContent = "";
           renderLockTtl();
           scheduleMarketChart();

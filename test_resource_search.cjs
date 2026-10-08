@@ -58,8 +58,8 @@ async function main() {
   snapshot.news = news;
   const feeRow = (slug, name, total24h) => ({ slug, name, total24h, total7d: total24h * 7, total30d: total24h * 30, change1d: 1, url: `https://defillama.com/chain/${slug}`, logo: '' });
   const fees = {
-    l1fees: { rows: [feeRow('near', 'Near', 100), feeRow('bitcoin', 'Bitcoin', 200), feeRow('solana', 'Solana', 300), feeRow('bsc', 'BSC', 400)] },
-    l2fees: { rows: [feeRow('base', 'Base', 100), feeRow('arbitrum', 'Arbitrum', 200)] },
+    l1fees: { fetchedAt: Date.now(), rows: [feeRow('near', 'Near', 100), feeRow('bitcoin', 'Bitcoin', 200), feeRow('solana', 'Solana', 300), feeRow('bsc', 'BSC', 400)] },
+    l2fees: { fetchedAt: Date.now(), rows: [feeRow('base', 'Base', 100), feeRow('arbitrum', 'Arbitrum', 200)] },
   };
   const calls = [];
   const legacySettings = {
@@ -200,6 +200,7 @@ async function main() {
     await page.locator('#tabBinance').click();
     assert.ok(await page.locator('#tableBody tr').count() > 1);
     await page.locator('#resourcesMenuBtn').click();
+    assert.equal(calls.filter(call => /^\/api\/l[12]-fees$/.test(call)).length, 2, 'both fee layers are prefetched once before visiting their tabs');
 
     async function openResource(mode) {
       if (mode === 'l1fees' || mode === 'l2fees') {
@@ -226,6 +227,7 @@ async function main() {
     await openResource('l1fees');
     await page.waitForSelector('.l2-fees-table');
     assert.equal(await page.locator('.l2-fees-table tbody tr').count(), fees.l1fees.rows.length);
+    assert.equal(calls.filter(call => /^\/api\/l[12]-fees$/.test(call)).length, 2, 'tab changes reuse prefetched fees without extra requests');
     await page.locator('[data-l2-sort="total24h"]').click();
     assert.match(await page.locator('.l2-fees-table tbody tr').first().textContent(), /Near/);
     await page.locator('[data-ranking-category="fees"]').click();
@@ -234,8 +236,10 @@ async function main() {
     await page.goBack();
     await page.waitForSelector('.l2-fees-table');
     assert.equal(await page.locator('.defi-tabs .active').getAttribute('data-defi-view'), 'l1fees');
+    const feeCallsBeforeReload = calls.filter(call => /^\/api\/l[12]-fees$/.test(call)).length;
     await page.reload();
     await page.waitForSelector('.l2-fees-table');
+    assert.equal(calls.filter(call => /^\/api\/l[12]-fees$/.test(call)).length, feeCallsBeforeReload, 'reload renders fresh session cache without waiting for fee API responses');
     assert.equal(await page.locator('.defi-tabs .active').getAttribute('data-defi-view'), 'l1fees');
     assert.equal(await page.locator('.resource-tab.active').textContent(), '디파이');
     await page.screenshot({ path: path.join(process.env.TEMP || root, 'blockscope-defi-desktop.png') });
