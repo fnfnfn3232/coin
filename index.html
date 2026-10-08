@@ -7919,12 +7919,20 @@
       }
 
       function clearFreeBoardAccessCache() {
+        freeBoardCacheGeneration += 1;
         freeBoardServerPosts = [];
         freeBoardPostsLoaded = false;
+        freeBoardPostsFetchedAtMs = 0;
+        freeBoardPostsPromise = null;
+        freeBoardCategoriesPromise = null;
+        freeBoardCategoriesLoaded = false;
+        freeBoardCategoriesRetryAfterMs = 0;
+        freeBoardCategories = FREE_BOARD_DEFAULT_CATEGORIES.map((item) => ({ ...item }));
         freeBoardServerError = "";
         freeBoardServerRetryAfterMs = 0;
         freeBoardSelectedId = "";
         clearProtectedBoardMediaCache();
+        try { sessionStorage.removeItem(CONTENT_CACHE_KEY); } catch (_error) {}
         if (hasFreeBoardServer()) {
           try {
             localStorage.removeItem(FREE_BOARD_STORAGE_KEY);
@@ -8583,6 +8591,7 @@
         setLockExtendCount(0);
         hideSiteLock();
         primeChainFees();
+        primeContentCache();
         renderLockTtl();
         lockPasswordInput.value = "";
         lockMemberEmailInput.value = "";
@@ -8603,7 +8612,7 @@
         scheduleMarketChart();
         requestServerScreenSettingsRefresh({ selectDefault: true });
         if (state.viewMode === "board") {
-          requestFreeBoardPostsRefresh(true);
+          requestFreeBoardPostsRefresh(false);
         }
         fetchLatestBoardData()
           .then(() => refreshLiveMarketData())
@@ -8795,9 +8804,10 @@
 
       async function fetchLiveNewsPage({ offset = 0, append = false, force = false } = {}) {
         if (!hasServerAuth()) return null;
-        if (isSiteLocked()) return data.news || null;
+        if (!siteAuthConfirmed || isSiteLocked()) return data.news || null;
         const now = Date.now();
         if (liveNewsPromise) return liveNewsPromise;
+        if (!force && !append && now < liveNewsRetryAfterMs) return data.news || null;
         const normalizedOffset = Math.max(0, Math.floor(Number(offset) || 0));
         const currentQuery = String(data.news?.query || "");
         const currentItems = getLoadedNewsItems(data.news);
@@ -8812,13 +8822,18 @@
         });
         if (newsSearchQuery) params.set("q", newsSearchQuery);
         if (force) params.set("refresh", "1");
+        const generation = contentCacheGeneration;
+        const requestedQuery = newsSearchQuery;
 
         liveNewsPromise = fetchServerAuth(`/api/news?${params.toString()}`, { method: "GET" })
           .then((payload) => {
+            if (generation !== contentCacheGeneration || !siteAuthConfirmed || isSiteLocked()) return null;
             if (!payload || !Array.isArray(payload.items)) {
               throw new Error(payload?.error || "live_news_empty");
             }
             const payloadQuery = String(payload.query || "");
+            if (payloadQuery !== requestedQuery || newsSearchQuery !== requestedQuery) return null;
+            if (!payloadQuery && !payload.items.length && currentItems.length) throw new Error("live_news_empty");
             let nextItems = payload.items;
             if (append && payloadQuery === currentQuery) {
               nextItems = mergeClientNewsItems(currentItems, payload.items);
@@ -8834,10 +8849,18 @@
             liveNewsFetchedAtMs = Date.now();
             liveNewsLastUpdatedAtMs = liveNewsFetchedAtMs;
             liveNewsError = "";
+            liveNewsRetryAfterMs = 0;
+            if (!payloadQuery) {
+              defaultNewsSnapshot = data.news;
+              defaultNewsFetchedAtMs = liveNewsFetchedAtMs;
+              saveContentCache();
+            }
             saveLastGoodData(data);
             return data.news;
           })
           .catch((error) => {
+            if (generation !== contentCacheGeneration || !siteAuthConfirmed || isSiteLocked()) return null;
+            liveNewsRetryAfterMs = Date.now() + 60000;
             const message = error instanceof Error ? error.message : String(error || "");
             liveNewsError = message.includes("403")
               ? "코인니스가 서버 갱신을 차단해 GitHub 자동 데이터 기준으로 표시 중입니다."
@@ -8845,7 +8868,7 @@
             throw error;
           })
           .finally(() => {
-            liveNewsPromise = null;
+            if (generation === contentCacheGeneration) liveNewsPromise = null;
           });
         return liveNewsPromise;
       }
@@ -8861,7 +8884,8 @@
 
       function requestLiveNewsRefresh(force = false) {
         if (!hasServerAuth()) return;
-        if (isSiteLocked()) return;
+        if (!siteAuthConfirmed || isSiteLocked()) return;
+        if (!force && Date.now() < liveNewsRetryAfterMs) return;
         if (liveNewsPromise) return;
         if (newsSearchQuery && force) return;
         if (force && liveNewsFetchedAtMs > 0 && getLoadedNewsItems(data.news).length > NEWS_PAGE_SIZE) return;
@@ -8921,6 +8945,16 @@
       let isApplyingHistoryState = false;
       let liveNewsPromise = null;
       let liveNewsFetchedAtMs = 0;
+      let liveNewsRetryAfterMs = 0;
+      let freeBoardCategoriesRetryAfterMs = 0;
+      const CONTENT_CACHE_KEY = "blockscope_content_cache_v1";
+      const BOARD_POSTS_CACHE_MS = 30000;
+      let contentCacheSubject = "";
+      let contentCacheGeneration = 0;
+      let freeBoardCacheGeneration = 0;
+      let freeBoardPostsFetchedAtMs = 0;
+      let defaultNewsSnapshot = null;
+      let defaultNewsFetchedAtMs = 0;
       let liveNewsLastUpdatedAtMs = 0;
       let liveNewsError = "";
       let newsSearchQuery = "";
@@ -9028,6 +9062,7 @@
           freeBoardFilter = "all";
           freeBoardPage = 1;
         }
+        saveContentCache();
       }
 
       function normalizeFreeBoardPost(post) {
@@ -9117,24 +9152,36 @@
           ? posts.map(normalizeFreeBoardPost).filter(Boolean).sort((a, b) => b.createdAt - a.createdAt)
           : [];
         freeBoardPostsLoaded = true;
+        freeBoardPostsFetchedAtMs = Date.now();
         freeBoardServerError = "";
         freeBoardServerRetryAfterMs = 0;
         syncFreeBoardAdminSelectedPosts(freeBoardServerPosts);
+        saveContentCache();
       }
 
       async function fetchFreeBoardPosts(force = false) {
         if (!canAccessFreeBoard()) return [];
         if (!hasFreeBoardServer()) return loadFreeBoardPosts();
-        if (isSiteLocked()) return loadFreeBoardPosts();
+        if (!siteAuthConfirmed || isSiteLocked()) return loadFreeBoardPosts();
         if (!force && freeBoardServerRetryAfterMs > Date.now()) return loadFreeBoardPosts();
-        if (!force && freeBoardPostsLoaded) return freeBoardServerPosts;
+        if (!force && freeBoardPostsLoaded && Date.now() - freeBoardPostsFetchedAtMs < BOARD_POSTS_CACHE_MS) return freeBoardServerPosts;
         if (freeBoardPostsPromise) return freeBoardPostsPromise;
+        const generation = freeBoardCacheGeneration;
         freeBoardPostsPromise = fetchServerAuth("/api/board/posts", { method: "GET", timeoutMs: 10000 })
           .then((payload) => {
+            if (generation !== freeBoardCacheGeneration || !siteAuthConfirmed || !canAccessFreeBoard()) return [];
+            if (!Array.isArray(payload?.posts)) throw new Error("invalid_board_posts");
             applyServerFreeBoardPosts(payload?.posts || []);
             return freeBoardServerPosts;
           })
           .catch((error) => {
+            if (generation !== freeBoardCacheGeneration || !siteAuthConfirmed || !canAccessFreeBoard()) return [];
+            if (error?.status === 403) {
+              clearFreeBoardAccessCache();
+              siteBoardReadApproved = false;
+              siteBoardWriteApproved = false;
+              syncBoardAccessUi();
+            }
             freeBoardServerRetryAfterMs = Date.now() + 60 * 1000;
             freeBoardServerError = error?.name === "AbortError"
               ? "서버 게시글 응답이 늦어 이 브라우저 저장 글을 먼저 표시합니다."
@@ -9142,7 +9189,7 @@
             throw error;
           })
           .finally(() => {
-            freeBoardPostsPromise = null;
+            if (generation === freeBoardCacheGeneration) freeBoardPostsPromise = null;
           });
         return freeBoardPostsPromise;
       }
@@ -9153,7 +9200,7 @@
 
       function requestFreeBoardPostsRefresh(force = false) {
         if (!canAccessFreeBoard()) return;
-        if (isSiteLocked()) return;
+        if (!siteAuthConfirmed || isSiteLocked()) return;
         if (!force && freeBoardServerRetryAfterMs > Date.now()) return;
         if (!hasFreeBoardServer()) return;
         const refreshPromise = freeBoardPostsPromise || fetchFreeBoardPosts(force);
@@ -9170,27 +9217,40 @@
       async function fetchFreeBoardCategories(force = false) {
         if (!canAccessFreeBoard()) return [];
         if (!hasFreeBoardServer()) return freeBoardCategories;
-        if (isSiteLocked()) return freeBoardCategories;
+        if (!siteAuthConfirmed || isSiteLocked()) return freeBoardCategories;
+        if (!force && Date.now() < freeBoardCategoriesRetryAfterMs) return freeBoardCategories;
         if (!force && freeBoardCategoriesLoaded) return freeBoardCategories;
         if (freeBoardCategoriesPromise) return freeBoardCategoriesPromise;
+        const generation = freeBoardCacheGeneration;
         freeBoardCategoriesPromise = fetchServerAuth("/api/board/categories", { method: "GET", timeoutMs: 10000 })
           .then((payload) => {
+            if (generation !== freeBoardCacheGeneration || !siteAuthConfirmed || !canAccessFreeBoard()) return [];
             applyServerFreeBoardCategories(payload?.categories || []);
+            freeBoardCategoriesRetryAfterMs = 0;
             return freeBoardCategories;
           })
           .catch((error) => {
+            if (generation !== freeBoardCacheGeneration || !siteAuthConfirmed || !canAccessFreeBoard()) return [];
+            freeBoardCategoriesRetryAfterMs = Date.now() + 60000;
+            if (error?.status === 403) {
+              clearFreeBoardAccessCache();
+              siteBoardReadApproved = false;
+              siteBoardWriteApproved = false;
+              syncBoardAccessUi();
+            }
             console.warn("free board categories refresh failed", error);
             return freeBoardCategories;
           })
           .finally(() => {
-            freeBoardCategoriesPromise = null;
+            if (generation === freeBoardCacheGeneration) freeBoardCategoriesPromise = null;
           });
         return freeBoardCategoriesPromise;
       }
 
       function requestFreeBoardCategoriesRefresh(force = false) {
         if (!canAccessFreeBoard()) return;
-        if (isSiteLocked() || !hasFreeBoardServer()) return;
+        if (!siteAuthConfirmed || isSiteLocked() || !hasFreeBoardServer()) return;
+        if (!force && Date.now() < freeBoardCategoriesRetryAfterMs) return;
         const refreshPromise = freeBoardCategoriesPromise || fetchFreeBoardCategories(force);
         refreshPromise
           .then(() => {
@@ -10876,7 +10936,7 @@
           && !freeBoardCategoriesLoaded
           && !freeBoardCategoriesPromise;
         if (shouldLoadServerCategories) {
-          requestFreeBoardCategoriesRefresh(true);
+          requestFreeBoardCategoriesRefresh(false);
         }
         const shouldLoadServerPosts = hasFreeBoardServer()
           && !isSiteLocked()
@@ -11120,7 +11180,7 @@
       }
 
       function renderNewsPanel() {
-        requestLiveNewsRefresh(liveNewsFetchedAtMs === 0);
+        requestLiveNewsRefresh(false);
         const allItems = Array.isArray(data.news?.items) ? data.news.items : [];
         const items = getLoadedNewsItems(data.news);
         const pagedNews = hasPagedNewsData(data.news);
@@ -12214,6 +12274,89 @@
         return true;
       }
 
+      function saveContentCache() {
+        if (!siteAuthConfirmed || isSiteLocked()) return;
+        const news = defaultNewsSnapshot || (!String(data.news?.query || "") ? data.news : null);
+        try {
+          sessionStorage.setItem(CONTENT_CACHE_KEY, JSON.stringify({
+            subject: `${siteSessionRole}:${siteSessionSubject}`,
+            news: news ? { payload: news, fetchedAt: defaultNewsFetchedAtMs || liveNewsFetchedAtMs } : null,
+            board: canAccessFreeBoard() && freeBoardPostsLoaded ? {
+              posts: freeBoardServerPosts.slice(0, FREE_BOARD_MAX_POSTS),
+              categories: freeBoardCategoriesLoaded ? freeBoardCategories : null,
+              fetchedAt: freeBoardPostsFetchedAtMs,
+            } : null,
+          }));
+        } catch (_error) {
+          // Storage limits do not prevent in-memory rendering or live refresh.
+        }
+      }
+
+      function restoreDefaultNews() {
+        newsSearchQuery = "";
+        const current = !String(data.news?.query || "") ? data.news : null;
+        data.news = defaultNewsSnapshot || current || { items: [], query: "", total: 0, storedCount: 0, hasMore: false, nextOffset: 0 };
+        liveNewsFetchedAtMs = defaultNewsFetchedAtMs;
+        liveNewsLastUpdatedAtMs = defaultNewsFetchedAtMs;
+      }
+
+      function primeContentCache() {
+        if (!siteAuthConfirmed || isSiteLocked()) return;
+        const subject = `${siteSessionRole}:${siteSessionSubject}`;
+        if (contentCacheSubject !== subject) {
+          contentCacheSubject = subject;
+          try {
+            const cached = JSON.parse(sessionStorage.getItem(CONTENT_CACHE_KEY) || "null");
+            const recent = value => Number(value) > 0 && Date.now() >= Number(value) && Date.now() - Number(value) <= 86400000;
+            if (cached?.subject === subject) {
+              if (recent(cached.news?.fetchedAt) && Array.isArray(cached.news?.payload?.items)
+                  && cached.news.payload.items.length > 0 && cached.news.payload.items.length <= 1000
+                  && cached.news.payload.items.every(item => item && typeof item === "object")
+                  && !String(cached.news.payload.query || "")) {
+                defaultNewsSnapshot = cached.news.payload;
+                defaultNewsFetchedAtMs = Number(cached.news.fetchedAt);
+                if (!newsSearchQuery) restoreDefaultNews();
+              }
+              if (canAccessFreeBoard() && recent(cached.board?.fetchedAt) && Array.isArray(cached.board?.posts)) {
+                freeBoardServerPosts = cached.board.posts.slice(0, FREE_BOARD_MAX_POSTS).map(normalizeFreeBoardPost).filter(Boolean);
+                freeBoardPostsLoaded = true;
+                freeBoardPostsFetchedAtMs = Number(cached.board.fetchedAt);
+                if (Array.isArray(cached.board.categories)) applyServerFreeBoardCategories(cached.board.categories);
+              }
+            }
+          } catch (_error) {
+            // Only restore cached content after the current server session is verified.
+          }
+        }
+        if (!defaultNewsSnapshot && !String(data.news?.query || "") && getLoadedNewsItems(data.news).length) {
+          defaultNewsSnapshot = data.news;
+        }
+        requestLiveNewsRefresh(false);
+        requestFreeBoardCategoriesRefresh(false);
+        requestFreeBoardPostsRefresh(false);
+        renderHeroNewsPreview();
+        const savedView = loadAppViewState();
+        if (state.viewMode === "market" && savedView?.viewMode === "board" && canAccessFreeBoard()) {
+          applyAppHistoryState(savedView);
+          writeAppHistoryState(true);
+        }
+        if (state.viewMode === "news" || state.viewMode === "board") renderContentPanel();
+      }
+
+      function clearContentCache() {
+        contentCacheGeneration += 1;
+        contentCacheSubject = "";
+        defaultNewsSnapshot = null;
+        defaultNewsFetchedAtMs = 0;
+        liveNewsPromise = null;
+        liveNewsFetchedAtMs = 0;
+        liveNewsRetryAfterMs = 0;
+        liveNewsLastUpdatedAtMs = 0;
+        liveNewsError = "";
+        data.news = { items: [], query: "", total: 0, hasMore: false, nextOffset: 0 };
+        try { sessionStorage.removeItem(CONTENT_CACHE_KEY); } catch (_error) {}
+      }
+
       function primeChainFees() {
         if (!siteAuthConfirmed || isSiteLocked()) return;
         const subject = `${siteSessionRole}:${siteSessionSubject}`;
@@ -13174,6 +13317,7 @@
         localStorage.removeItem(MARKET_SNAPSHOT_GENERATED_AT_KEY);
         localStorage.removeItem(LAST_GOOD_DATA_KEY);
         clearChainFeesCache();
+        clearContentCache();
         clearProtectedBoardMediaCache();
         adminServerPassword = "";
         freeBoardAdminMode = false;
@@ -13234,6 +13378,7 @@
           setLockAuthFor24Hours();
           hideSiteLock();
           primeChainFees();
+          primeContentCache();
           renderLockTtl();
           scheduleMarketChart();
           return Promise.resolve(true);
@@ -13259,6 +13404,7 @@
           siteAuthConfirmed = true;
           hideSiteLock();
           primeChainFees();
+          primeContentCache();
           lockError.textContent = "";
           renderLockTtl();
           scheduleMarketChart();
@@ -16554,10 +16700,10 @@
         }
         if (chainFeesStates[state.viewMode]) requestChainFees();
         if (isNewsMode) {
-          requestLiveNewsRefresh(true);
+          requestLiveNewsRefresh(false);
         }
         if (isBoardMode && (freeBoardMode === "list" || freeBoardMode === "read")) {
-          requestFreeBoardPostsRefresh(true);
+          requestFreeBoardPostsRefresh(false);
         }
         if (options.writeHistory !== false) {
           writeAppHistoryState(Boolean(options.replaceHistory));
@@ -16582,9 +16728,7 @@
           return;
         }
         if (viewMode === "news") {
-          newsSearchQuery = "";
-          data.news = { items: [], query: "", total: 0, storedCount: 0, hasMore: false, nextOffset: 0 };
-          liveNewsFetchedAtMs = 0;
+          restoreDefaultNews();
           return;
         }
         if (viewMode === "ranking") {
@@ -17532,10 +17676,8 @@
         }
 
         if (clickTarget.closest("[data-news-clear]")) {
-          newsSearchQuery = "";
-          data.news = { items: [], query: "", total: 0, storedCount: 0, hasMore: false, nextOffset: 0 };
-          liveNewsFetchedAtMs = 0;
-          const refreshPromise = refreshLiveNews(true);
+          restoreDefaultNews();
+          const refreshPromise = refreshLiveNews(false);
           renderNewsPanel();
           try {
             await refreshPromise;
@@ -18194,8 +18336,12 @@
       renderLockTtl();
       const savedAppViewState = loadAppViewState();
       if (savedAppViewState) {
-        applyAppHistoryState(savedAppViewState);
-        writeAppHistoryState(true);
+        if (savedAppViewState.viewMode === "board" && !canAccessFreeBoard()) {
+          setViewMode("market", { writeHistory: false });
+        } else {
+          applyAppHistoryState(savedAppViewState);
+          writeAppHistoryState(true);
+        }
       } else {
         setViewMode("market", { replaceHistory: true });
       }
