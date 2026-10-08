@@ -4106,6 +4106,20 @@
       line-height: 1.5;
     }
 
+    #marketTable .price-main,
+    #marketTable .cap-main,
+    #marketTable .supply-main {
+      white-space: nowrap;
+      letter-spacing: 0;
+    }
+
+    @media (min-width: 821px) and (hover: hover) {
+      #marketTable td:nth-child(2) { min-width: 200px; }
+      #marketTable td:nth-child(3) { min-width: 90px; }
+      #marketTable td:nth-child(4) { min-width: 132px; }
+      #marketTable td:nth-child(5) { min-width: 152px; }
+    }
+
     .source {
       color: #bbd2dd;
       font-size: 13px;
@@ -5413,6 +5427,23 @@
           font-size: 17px;
         }
 
+        #marketTable .price-main,
+        #marketTable .cap-main,
+        #marketTable .supply-main,
+        #marketTable .price-sub,
+        #marketTable .cap-sub,
+        #marketTable .supply-sub {
+          grid-column: 2;
+          min-width: 0;
+        }
+
+        #marketTable .price-main,
+        #marketTable .cap-main,
+        #marketTable .supply-main {
+          max-width: 100%;
+          overflow-x: auto;
+        }
+
         .footer-note {
           margin-top: 10px;
           padding: 12px 2px;
@@ -6292,6 +6323,12 @@
       .shell > .table-wrap {
         padding-right: 0;
         padding-left: 0;
+      }
+
+      @media (min-width: 821px) and (hover: hover) {
+        .shell > .panel.market-section {
+          width: min(1760px, calc(100% - 40px));
+        }
       }
 
       .tabs {

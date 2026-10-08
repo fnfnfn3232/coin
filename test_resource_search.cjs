@@ -156,6 +156,44 @@ async function main() {
     await page.locator('#searchInput').fill('BTC');
     assert.ok(await page.locator('#tableBody tr').count() > 0);
     await page.locator('#searchInput').fill('');
+    await page.locator('#tabUpbit').click();
+    await page.evaluate(() => {
+      const row = document.querySelector('#tableBody tr');
+      row.querySelector('.price-main').textContent = '112,669,000원';
+      row.querySelector('.cap-main').textContent = '2267조 312억원';
+      row.querySelector('.supply-main').textContent = '유통량 1,863억 3,541만개 · 총발행량 1,895억 5,524만개 · 유통비율 98.3%';
+    });
+    for (const width of [1920, 1440, 1280, 390, 320]) {
+      await page.setViewportSize({ width, height: 1000 });
+      const layout = await page.evaluate(() => {
+        const nodes = [...document.querySelectorAll('#tableBody .price-main, #tableBody .cap-main, #tableBody .supply-main')];
+        return {
+          pageFits: document.documentElement.scrollWidth <= innerWidth + 1,
+          coinWidth: document.querySelector('#tableBody tr td:nth-child(2)').getBoundingClientRect().width,
+          tableFits: document.querySelector('#marketTable').getBoundingClientRect().width <= document.querySelector('.table-wrap').clientWidth + 1,
+          cells: nodes.map(node => {
+            const range = document.createRange();
+            range.selectNodeContents(node);
+            const lines = [...new Set([...range.getClientRects()].map(rect => Math.round(rect.top)))];
+            const box = node.getBoundingClientRect();
+            const cell = node.closest('td').getBoundingClientRect();
+            return { lines: lines.length, fits: box.right <= cell.right + 1 && box.left >= cell.left - 1,
+              accessible: node.scrollWidth <= node.clientWidth + 1 || getComputedStyle(node).overflowX === 'auto' };
+          }),
+        };
+      });
+      assert.ok(layout.pageFits, `spot table stays within the page at ${width}px`);
+      if (width === 1920) assert.ok(layout.tableFits, 'wide desktop shows every spot column without scrolling');
+      if (width > 820) assert.ok(layout.coinWidth >= 200, `spot coin names retain readable space at ${width}px`);
+      assert.ok(layout.cells.every(cell => cell.lines === 1), `spot prices, caps and supply stay on one line at ${width}px`);
+      assert.ok(layout.cells.every(cell => cell.fits && cell.accessible), `spot values never overlap or hide text at ${width}px`);
+      if (width === 1920 || width === 390) {
+        await page.locator('#tableBody tr').first().scrollIntoViewIfNeeded();
+        await page.screenshot({ path: path.join(process.env.TEMP || root, `blockscope-spot-layout-${width}.png`) });
+      }
+    }
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.locator('#tabBinance').click();
     assert.ok(await page.locator('#tableBody tr').count() > 1);
     await page.locator('#resourcesMenuBtn').click();
 
