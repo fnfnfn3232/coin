@@ -20,6 +20,7 @@ async function main() {
     const sessionRequest = new Promise(resolve => { sessionSeen = resolve; });
     const held = new Set(['/api/session']);
     let boardStatus = 200, newsStatus = 200, boardReadApproved = true, memberSubject = 'member-a';
+    let categoryLabel = 'Free board';
     page.on('pageerror', error => errors.push(error.message));
     await context.route('https://**/*', async route => {
       const url = new URL(route.request().url());
@@ -46,7 +47,7 @@ async function main() {
       } else if (url.pathname === '/api/board/posts') {
         status = boardStatus;
         result = status === 200 ? { posts } : { error: status === 403 ? 'board_access_approval_required' : 'temporary_failure' };
-      } else if (url.pathname === '/api/board/categories') result = { categories: [{ value: 'free', label: 'Free board' }] };
+      } else if (url.pathname === '/api/board/categories') result = { categories: [{ value: 'free', label: categoryLabel }] };
       else if (url.pathname === '/api/screen-settings') result = { settings: {} };
       else if (/^\/api\/l[12]-fees$/.test(url.pathname)) result = { fetchedAt: Date.now(), rows: [{ slug: 'ethereum', name: 'Ethereum', total24h: 100, total7d: 700, total30d: 3000, change1d: 0 }] };
       else if (url.pathname === '/api/live-prices') result = { boards: {}, futures: {} };
@@ -81,10 +82,13 @@ async function main() {
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
     }
     await page.setViewportSize({ width: 1440, height: 1000 });
+    categoryLabel = 'Updated board';
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForSelector('.free-board-list');
     assert.ok((await page.locator('.free-board-list').textContent()).includes('Cached board title'), 'reload restores private board after permission verification');
     assert.equal(count('/api/board/posts'), 1, 'fresh board cache avoids unnecessary reload requests');
+    await page.waitForFunction(() => document.querySelector('.free-board-board-nav')?.textContent.includes('Updated board'));
+    assert.equal(count('/api/board/categories'), 2, 'category names refresh in the background even when posts are cached');
     await page.locator('#newsToggleBtn').click();
     assert.equal(count('/api/news'), newsCount, 'news menu and reload reuse fresh cache');
     await page.locator('#newsSearchForm input').fill('Ethereum');
