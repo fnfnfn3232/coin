@@ -8833,7 +8833,7 @@
             }
             const payloadQuery = String(payload.query || "");
             if (payloadQuery !== requestedQuery || newsSearchQuery !== requestedQuery) return null;
-            if (!payloadQuery && !payload.items.length && currentItems.length) throw new Error("live_news_empty");
+            if (!append && !payloadQuery && !payload.items.length && currentItems.length) throw new Error("live_news_empty");
             let nextItems = payload.items;
             if (append && payloadQuery === currentQuery) {
               nextItems = mergeClientNewsItems(currentItems, payload.items);
@@ -12332,7 +12332,7 @@
           defaultNewsSnapshot = data.news;
         }
         requestLiveNewsRefresh(false);
-        requestFreeBoardCategoriesRefresh(false);
+        requestFreeBoardCategoriesRefresh(true);
         requestFreeBoardPostsRefresh(false);
         renderHeroNewsPreview();
         const savedView = loadAppViewState();
