@@ -170,6 +170,7 @@ async function main() {
         return {
           pageFits: document.documentElement.scrollWidth <= innerWidth + 1,
           coinWidth: document.querySelector('#tableBody tr td:nth-child(2)').getBoundingClientRect().width,
+          panelWidth: document.querySelector('.table-wrap').getBoundingClientRect().width,
           tableFits: document.querySelector('#marketTable').getBoundingClientRect().width <= document.querySelector('.table-wrap').clientWidth + 1,
           cells: nodes.map(node => {
             const range = document.createRange();
@@ -183,8 +184,11 @@ async function main() {
         };
       });
       assert.ok(layout.pageFits, `spot table stays within the page at ${width}px`);
-      if (width === 1920) assert.ok(layout.tableFits, 'wide desktop shows every spot column without scrolling');
-      if (width > 820) assert.ok(layout.coinWidth >= 200, `spot coin names retain readable space at ${width}px`);
+      if (width > 820) {
+        assert.ok(layout.tableFits, `compact spot table shows every column without scrolling at ${width}px`);
+        assert.ok(layout.panelWidth <= 1240, `spot table retains the original panel width at ${width}px`);
+        assert.ok(layout.coinWidth >= 170, `spot coin names retain readable space at ${width}px`);
+      }
       assert.ok(layout.cells.every(cell => cell.lines === 1), `spot prices, caps and supply stay on one line at ${width}px`);
       assert.ok(layout.cells.every(cell => cell.fits && cell.accessible), `spot values never overlap or hide text at ${width}px`);
       if (width === 1920 || width === 390) {
