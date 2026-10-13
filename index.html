@@ -7414,8 +7414,6 @@
     const COINBASE_PRODUCT_STATS_URL = "https://api.exchange.coinbase.com/products/stats";
     const GENSYN_SYMBOL = "AI";
     const GENSYN_BINANCE_SYMBOL = "AIGENSYN";
-    const GENSYN_CIRCULATING_SUPPLY = 1_304_675_313;
-    const GENSYN_TOTAL_SUPPLY = 10_000_000_000;
     const GENSYN_KOREAN_NAME = "\uC820\uC2E0";
     const METEORA_UPBIT_SYMBOL = "MET2";
     const METEORA_SYMBOL = "MET";
@@ -11432,6 +11430,7 @@
       ];
 
       function normalizedListingSymbols(row) {
+        if (String(row?.compareSymbol || "").toUpperCase() === "AIGENSYN") return ["AIGENSYN"];
         return [...new Set([
           row?.symbol,
           row?.compareSymbol,
@@ -14324,13 +14323,14 @@
       function normalizeKoreanAssetNames(payload = data) {
         const boards = payload?.boards || {};
         const referenceRows = [...(boards.bithumb || []), ...(boards.upbit || [])];
-        const koreanNameBySymbol = new Map();
+        const koreanRowsBySymbol = new Map();
 
         referenceRows.forEach((row) => {
           const symbol = getComparableSymbol(row);
           const koreanName = [row?.koreanName, row?.name].find((value) => hasHangul(value));
-          if (symbol && koreanName && !koreanNameBySymbol.has(symbol)) {
-            koreanNameBySymbol.set(symbol, String(koreanName).trim());
+          if (symbol && koreanName) {
+            if (!koreanRowsBySymbol.has(symbol)) koreanRowsBySymbol.set(symbol, []);
+            koreanRowsBySymbol.get(symbol).push(row);
           }
         });
 
@@ -14338,7 +14338,8 @@
         Object.values(boards).forEach((rows) => {
           (rows || []).forEach((row) => {
             const symbol = getComparableSymbol(row);
-            const koreanName = koreanNameBySymbol.get(symbol);
+            const reference = (koreanRowsBySymbol.get(symbol) || []).find(candidate => marketReferenceCompatible(row, candidate));
+            const koreanName = reference && [reference.koreanName, reference.name].find(hasHangul);
             if (!koreanName) return;
             if (row.name !== koreanName || row.koreanName !== koreanName) changed += 1;
             row.name = koreanName;
@@ -15250,6 +15251,8 @@
       }
 
       function isGensynName(row) {
+        const englishName = String(row?.englishName || "").trim().toLowerCase();
+        if (englishName && !["ai", "aigensyn"].includes(englishName)) return englishName.includes("gensyn");
         const text = [
           row?.name,
           row?.englishName,
@@ -15266,15 +15269,10 @@
         const compareSymbol = String(row?.compareSymbol || "").toUpperCase();
 
         if (boardName === "binance") {
+          if (symbol === GENSYN_SYMBOL) return false;
           return symbol === GENSYN_BINANCE_SYMBOL || isGensynName(row);
         }
-        if (boardName === "bithumb") {
-          return symbol === GENSYN_SYMBOL || isGensynName(row);
-        }
-        if (boardName === "coinbase") {
-          return symbol === GENSYN_SYMBOL || compareSymbol === GENSYN_SYMBOL || isGensynName(row);
-        }
-        return isGensynName(row);
+        return symbol === GENSYN_BINANCE_SYMBOL || compareSymbol === GENSYN_BINANCE_SYMBOL || isGensynName(row);
       }
 
       function copyReferenceNumber(target, source, key) {
@@ -15407,78 +15405,68 @@
           if (before !== after) changed += 1;
         }
 
-        const bithumbGensyn = (boards.bithumb || []).find((row) => isGensynRow(row, "bithumb"));
-        const binanceGensyn = (boards.binance || []).find((row) => isGensynRow(row, "binance"));
-
-        for (const boardName of ["binance", "bithumb", "coinbase"]) {
+        for (const boardName of ["binance", "bithumb", "coinbase", "upbit"]) {
           const rows = boards[boardName] || [];
           for (const row of rows) {
-            if (!isGensynRow(row, boardName)) continue;
-
-            const before = JSON.stringify([
-              row.name,
-              row.englishName,
-              row.koreanName,
-              row.marketCapUsd,
-              row.marketCapKrw,
-              row.priceUsd,
-              row.priceKrw,
-              row.circulatingSupply,
-              row.totalSupply,
-              row.fdvUsd,
-              row.fdvKrw,
-              row.circulatingRatio,
-              row.capSource,
-              row.capSourceDetail,
-              row.supplyDetail,
-            ]);
-
-            row.name = "Gensyn";
-            row.englishName = "Gensyn";
-            row.koreanName = GENSYN_KOREAN_NAME;
-            row.circulatingSupply = GENSYN_CIRCULATING_SUPPLY;
-            row.totalSupply = GENSYN_TOTAL_SUPPLY;
-            row.circulatingRatio = computeCirculatingRatio(GENSYN_CIRCULATING_SUPPLY, GENSYN_TOTAL_SUPPLY);
-            row.supplyDetail = "known_gensyn_tokenomics|client_identity";
-
-            if (boardName === "coinbase") {
-              const reference = bithumbGensyn || binanceGensyn;
-              if (reference) {
-                for (const key of ["marketCapUsd", "marketCapKrw", "priceUsd", "priceKrw"]) {
-                  copyReferenceNumber(row, reference, key);
-                }
-                row.capSource = "coinbase_fill_same_symbol";
-                row.capSourceDetail =
-                  reference === bithumbGensyn
-                    ? "coinbase_exchange_markets|bithumb_main_today_price"
-                    : "coinbase_exchange_markets|binance_symbol_list";
-                row.priceSource = reference.priceSource || row.priceSource;
+            const sleepless = boardName === "binance" && String(row.symbol || "").toUpperCase() === GENSYN_SYMBOL;
+            if (!sleepless && !isGensynRow(row, boardName)) continue;
+            const before = JSON.stringify(row);
+            if (sleepless) {
+              row.name = "Sleepless AI";
+              row.englishName = "Sleepless AI";
+              row.koreanName = "Sleepless AI";
+              row.compareSymbol = "AI";
+              if (row.symbolAliasOf === GENSYN_BINANCE_SYMBOL) delete row.symbolAliasOf;
+              // Discard quantities poisoned by the former Gensyn override.
+              // The authenticated exchange snapshot restores the actual values.
+              if (String(row.supplyDetail || "").includes("known_gensyn_tokenomics")) {
+                for (const key of ["circulatingSupply", "totalSupply", "circulatingRatio", "fdvUsd", "fdvKrw"]) row[key] = null;
+                row.supplyDetail = "identity_conflict_discarded";
+                row.supplyIdentityVerified = false;
               }
+            } else {
+              row.name = "Gensyn";
+              row.englishName = "Gensyn";
+              row.koreanName = GENSYN_KOREAN_NAME;
+              row.compareSymbol = GENSYN_BINANCE_SYMBOL;
             }
-
+            row.nameKeys = [row.name, row.englishName, row.koreanName];
             recomputeDerivedFields(row, { preferComputedCap: false });
-
-            const after = JSON.stringify([
-              row.name,
-              row.englishName,
-              row.koreanName,
-              row.marketCapUsd,
-              row.marketCapKrw,
-              row.priceUsd,
-              row.priceKrw,
-              row.circulatingSupply,
-              row.totalSupply,
-              row.fdvUsd,
-              row.fdvKrw,
-              row.circulatingRatio,
-              row.capSource,
-              row.capSourceDetail,
-              row.supplyDetail,
-            ]);
+            const after = JSON.stringify(row);
             if (before !== after) changed += 1;
           }
 
           if (changed > 0) sortBoardRowsByCap(rows);
+        }
+
+        for (const exchange of ["binance", "coinbase"]) {
+          const spot = (boards[exchange] || []).find(row => String(row.symbol || "").toUpperCase() === "AI");
+          if (!spot) continue;
+          for (const row of data.futures?.[exchange] || []) {
+            if (String(row.symbol || "").toUpperCase() !== "AI") continue;
+            row.compareSymbol = getComparableSymbol(spot);
+            row.name = spot.name;
+            row.englishName = spot.englishName;
+            row.koreanName = spot.koreanName;
+            for (const key of ["marketCapUsd", "marketCapKrw", "marketCapRank", "circulatingSupply", "totalSupply", "fdvUsd", "fdvKrw", "circulatingRatio", "supplyDetail"]) row[key] = spot[key] ?? null;
+            row.capSource = `futures_underlying_${exchange}`;
+            row.capSourceDetail = spot.capSourceDetail || spot.capSource;
+            row.marketIdentityVerified = true;
+            row.supplyIdentityVerified = spot.supplyIdentityVerified === true;
+            recomputeDerivedFields(row, { preferComputedCap: false });
+          }
+        }
+
+        const aiInfo = data.coinInfo?.AI;
+        if (aiInfo) {
+          aiInfo.englishName = "Sleepless AI";
+          aiInfo.koreanName = "Sleepless AI";
+          for (const boardName of ["bithumb", "coinbase", "upbit"]) {
+            if (!(boards[boardName] || []).some(row => getComparableSymbol(row) === "AI")) {
+              if (aiInfo.sources) delete aiInfo.sources[boardName];
+              if (aiInfo.listings) delete aiInfo.listings[boardName];
+            }
+          }
         }
 
         return changed;

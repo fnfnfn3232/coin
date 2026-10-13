@@ -9,6 +9,14 @@ async function main() {
   const html = fs.readFileSync(process.env.SEARCH_TEST_HTML || path.join(root, 'index.html'), 'utf8');
   for (const script of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)) new Function(script[1]);
   const snapshot = JSON.parse(fs.readFileSync(path.join(root, 'board_snapshot.json'), 'utf8'));
+  const aiFixtures = [
+    { symbol: 'AI', name: '젠신', koreanName: '젠신', englishName: 'Sleepless AI', pair: 'AI/USDT',
+      circulatingSupply: 624562498, totalSupply: 1000000000, marketCapUsd: 12507073.5, priceUsd: 0.0201, capSource: 'binance_exact' },
+    { symbol: 'AIGENSYN', name: 'Gensyn', englishName: 'Gensyn', pair: 'AIGENSYN/USDT',
+      circulatingSupply: 1841937443, totalSupply: 10000000000, marketCapUsd: 36438146.7, priceUsd: 0.01978, capSource: 'binance_exact' },
+  ];
+  snapshot.boards.binance = snapshot.boards.binance.filter(row => !['AI', 'AIGENSYN'].includes(row.symbol)).concat(aiFixtures);
+  snapshot.coinInfo.AI = { englishName: 'Sleepless AI', koreanName: '젠신', sources: { bithumb: { description: 'Wrong Gensyn text' } }, listings: { bithumb: { pair: 'AI/KRW' } } };
   const deriveSource = html.match(/      function recomputeDerivedFields\([\s\S]*?(?=      function normalizeKnownAssetIdentities)/)[0];
   const positive = value => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : null;
   const derive = new Function('data', 'toPositiveNumber', 'computeCirculatingRatio', `${deriveSource}; return recomputeDerivedFields;`)(
@@ -153,6 +161,31 @@ async function main() {
     await page.waitForFunction(() => !document.body.classList.contains('locked'));
     await page.locator('#marketToggleBtn').click();
     await page.waitForSelector('#tableBody .coin-mark');
+    await page.locator('#searchInput').fill('Sleepless');
+    assert.equal(await page.locator('#tableBody tr').count(), 1, 'AI is Sleepless AI, not the other exchange AI token');
+    assert.match(await page.locator('#tableBody tr').textContent(), /Sleepless AI/);
+    assert.doesNotMatch(await page.locator('#tableBody tr').textContent(), /젠신|100억개/);
+    await page.locator('#searchInput').fill('AIGENSYN');
+    assert.equal(await page.locator('#tableBody tr').count(), 1);
+    assert.match(await page.locator('#tableBody tr').textContent(), /젠신/);
+    const identityChecks = await page.evaluate(() => {
+      const row = window.BOARD_DATA.boards.binance.find(item => item.symbol === 'AI');
+      const original = { ...row };
+      Object.assign(row, { name: 'Gensyn', englishName: 'Gensyn', koreanName: '젠신', circulatingSupply: 1304675313,
+        totalSupply: 10000000000, supplyDetail: 'known_gensyn_tokenomics|client_identity' });
+      normalizeKnownAssetIdentities();
+      normalizeKoreanAssetNames();
+      const result = { name: row.name, supply: row.circulatingSupply, total: row.totalSupply,
+        rawAlias: normalizedListingSymbols(window.BOARD_DATA.boards.bithumb.find(item => item.symbol === 'AI')),
+        wrongInfo: Boolean(window.BOARD_DATA.coinInfo.AI.sources.bithumb) };
+      Object.assign(row, original);
+      return result;
+    });
+    assert.equal(identityChecks.name, 'Sleepless AI', 'old browser snapshots cannot rename Sleepless AI to Gensyn');
+    assert.equal(identityChecks.supply, null, 'wrong cached Gensyn quantities are discarded, not fabricated');
+    assert.equal(identityChecks.total, null);
+    assert.deepEqual(identityChecks.rawAlias, ['AIGENSYN'], 'Gensyn does not leak its raw AI ticker into spot/futures lookups');
+    assert.equal(identityChecks.wrongInfo, false, 'the AI detail panel never includes Gensyn documentation');
     await page.locator('#searchInput').fill('BTC');
     assert.ok(await page.locator('#tableBody tr').count() > 0);
     await page.locator('#searchInput').fill('');
