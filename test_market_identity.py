@@ -7,6 +7,82 @@ import build_data as market
 
 
 class MarketIdentityTests(unittest.TestCase):
+    def test_ai_and_aigensyn_are_distinct_assets_with_unchanged_exchange_quantities(self):
+        native = [
+            {"baseAsset": "AI", "quoteAsset": "USDT", "fullName": "Sleepless AI", "price": "0.0201",
+             "marketCap": "12507073.5", "circulatingSupply": "624562498", "totalSupply": "1000000000"},
+            {"baseAsset": "AIGENSYN", "quoteAsset": "USDT", "fullName": "Gensyn", "price": "0.01978",
+             "marketCap": "36438146.7", "circulatingSupply": "1841937443", "totalSupply": "10000000000"},
+        ]
+        with patch.object(market, "fetch_json", return_value={"data": native}):
+            rows, _ = market.fetch_binance()
+        sleepless, gensyn = rows
+        reference = {"symbol": "AI", "name": "Gensyn", "englishName": "Gensyn", "koreanName": "젠신",
+                     "priceUsd": 0.02, "nameKeys": ["gensyn", "젠신"]}
+        market.apply_binance_korean_name_fills(rows, [], [reference])
+        self.assertEqual(sleepless["name"], "Sleepless AI")
+        self.assertEqual(sleepless["circulatingSupply"], 624562498)
+        self.assertEqual(sleepless["totalSupply"], 1000000000)
+        self.assertEqual(sleepless["marketCapUsd"], 12507073.5)
+        self.assertEqual(gensyn["koreanName"], "젠신")
+        self.assertEqual(gensyn["circulatingSupply"], 1841937443)
+        self.assertEqual(market.get_row_compare_symbol(reference), "AIGENSYN")
+        self.assertNotEqual(market.get_row_compare_symbol(reference), market.get_row_compare_symbol(sleepless))
+
+    def test_polluted_korean_name_does_not_override_trusted_sleepless_identity(self):
+        row = {"symbol": "AI", "name": "젠신", "koreanName": "젠신", "englishName": "Sleepless AI"}
+        self.assertFalse(market.is_gensyn_identity(row))
+        market.apply_binance_korean_name_fills([row], [], [])
+        self.assertEqual(row["name"], "Sleepless AI")
+
+    def test_ai_futures_use_their_own_exchange_asset_not_the_colliding_symbol(self):
+        sleepless = {"symbol": "AI", "name": "Sleepless AI", "englishName": "Sleepless AI", "priceUsd": 0.02,
+                     "marketCapUsd": 12500000, "circulatingSupply": 624562498, "totalSupply": 1000000000}
+        gensyn = {"symbol": "AI", "name": "Gensyn", "englishName": "Gensyn", "koreanName": "젠신",
+                  "priceUsd": 0.02, "marketCapUsd": 36000000, "circulatingSupply": 1841937443, "totalSupply": 10000000000}
+        market.apply_gensyn_identity(gensyn)
+        groups = [("bithumb", [gensyn]), ("binance", [sleepless]), ("coinbase", [gensyn])]
+        rows = [{"exchange": exchange, "symbol": "AI", "name": "AI", "priceUsd": 0.02} for exchange in ("binance", "coinbase")]
+        market.apply_futures_underlying_market_data(rows, groups)
+        self.assertEqual(rows[0]["englishName"], "Sleepless AI")
+        self.assertEqual(rows[0]["marketCapUsd"], 12500000)
+        self.assertEqual(rows[1]["englishName"], "Gensyn")
+        self.assertEqual(rows[1]["compareSymbol"], "AIGENSYN")
+        self.assertEqual(rows[1]["marketCapUsd"], 36000000)
+
+    def test_coinbase_gensyn_uses_official_currency_name_without_fixed_supply(self):
+        products = [{"base_currency": "AI", "quote_currency": "USD", "status": "online"}]
+        currencies = [{"id": "AI", "name": "Gensyn"}]
+        with patch.object(market, "fetch_json", side_effect=[products, currencies]), \
+             patch.object(market, "fetch_coinbase_usd_price_map", return_value={"AI-USD": 0.02}):
+            row = market.fetch_coinbase()[0]
+        self.assertEqual(row["name"], "Gensyn")
+        self.assertEqual(row["compareSymbol"], "AIGENSYN")
+        self.assertIsNone(row["circulatingSupply"])
+        self.assertIsNone(row["totalSupply"])
+
+    def test_coinbase_unknown_ai_is_not_assumed_to_be_gensyn(self):
+        products = [{"base_currency": "AI", "quote_currency": "USD", "status": "online"}]
+        with patch.object(market, "fetch_json", side_effect=[products, RuntimeError("offline")]), \
+             patch.object(market, "fetch_coinbase_usd_price_map", return_value={}):
+            row = market.fetch_coinbase()[0]
+        self.assertEqual(row["name"], "AI")
+        self.assertEqual(row["compareSymbol"], "AI")
+        self.assertIsNone(row["totalSupply"])
+
+    def test_coin_info_never_merges_the_other_ai_projects_description(self):
+        boards = {
+            "binance": [{"symbol": "AI", "name": "Sleepless AI", "englishName": "Sleepless AI"}],
+            "bithumb": [{"symbol": "AI", "name": "Gensyn", "englishName": "Gensyn", "koreanName": "젠신",
+                         "info": {"description": "Gensyn documentation"}}],
+        }
+        market.apply_binance_korean_name_fills(boards["binance"], [], boards["bithumb"])
+        old = {"coinInfo": {"AI": {"englishName": "Sleepless AI", "sources": {"bithumb": {"description": "Wrong old Gensyn description"}}}}}
+        info = market.build_coin_info(boards, old)
+        self.assertEqual(info["AI"]["englishName"], "Sleepless AI")
+        self.assertNotIn("bithumb", info["AI"]["sources"])
+        self.assertEqual(info["AIGENSYN"]["sources"]["bithumb"]["description"], "Gensyn documentation")
+
     def candidate(self, name, source, cap, price, supply, symbol="CT", **extra):
         return {"symbol": symbol, "name": name, "englishName": name, "sourceId": source,
                 "nameKeys": list(market.build_name_keys(name, name, symbol)),

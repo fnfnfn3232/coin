@@ -224,8 +224,7 @@ AMBIGUOUS_SYMBOLS_REQUIRE_NAME_OVERLAP = {
     "AI",
 }
 GENSYN_SYMBOL = "AI"
-GENSYN_TOTAL_SUPPLY = 10_000_000_000.0
-GENSYN_CIRCULATING_SUPPLY = 1_304_675_313.0
+GENSYN_COMPARE_SYMBOL = "AIGENSYN"
 SUSPICIOUS_DROP_MIN_RATIO = 0.90
 SUSPICIOUS_DROP_MIN_ABS = {
     "binance": 40,
@@ -1218,8 +1217,11 @@ def build_name_keys(name: str, english_name: str, korean_name: str) -> set[str]:
 
 def is_gensyn_identity(row: dict) -> bool:
     symbol = str(row.get("symbol") or row.get("compareSymbol") or "").upper()
-    if symbol != GENSYN_SYMBOL:
+    if symbol not in {GENSYN_SYMBOL, GENSYN_COMPARE_SYMBOL}:
         return False
+    english_name = str(row.get("englishName") or "").strip().lower()
+    if english_name and english_name.upper() not in {GENSYN_SYMBOL, GENSYN_COMPARE_SYMBOL}:
+        return "gensyn" in english_name
     name_text = " ".join(
         str(row.get(key) or "")
         for key in ("name", "englishName", "koreanName", "pair")
@@ -1227,17 +1229,11 @@ def is_gensyn_identity(row: dict) -> bool:
     return "gensyn" in name_text or "젠신" in name_text
 
 
-def apply_gensyn_supply_override(row: dict, *, source_detail: str) -> None:
+def apply_gensyn_identity(row: dict) -> None:
     row["name"] = "Gensyn"
     row["englishName"] = "Gensyn"
     row["koreanName"] = "젠신"
-    row["circulatingSupply"] = GENSYN_CIRCULATING_SUPPLY
-    row["totalSupply"] = GENSYN_TOTAL_SUPPLY
-    row["circulatingRatio"] = compute_circulating_ratio(
-        GENSYN_CIRCULATING_SUPPLY,
-        GENSYN_TOTAL_SUPPLY,
-    )
-    row["supplyDetail"] = source_detail
+    row["compareSymbol"] = GENSYN_COMPARE_SYMBOL
     row["nameKeys"] = list(build_name_keys("Gensyn", "Gensyn", "젠신"))
 
 
@@ -1317,7 +1313,7 @@ def fetch_binance() -> tuple[list[dict], dict[str, list[dict]]]:
             ),
         }
         if is_gensyn_identity(row):
-            apply_gensyn_supply_override(row, source_detail="known_gensyn_tokenomics")
+            apply_gensyn_identity(row)
         rows.append(row)
         lookup.setdefault(symbol.lower(), []).append(row)
     return rows, lookup
@@ -1831,7 +1827,7 @@ def fetch_bithumb() -> list[dict]:
                 ),
         }
         if is_gensyn_identity(row):
-            apply_gensyn_supply_override(row, source_detail="known_gensyn_tokenomics|bithumb_identity")
+            apply_gensyn_identity(row)
         rows.append(row)
     return rows
 
@@ -1918,8 +1914,8 @@ def fetch_coinbase() -> list[dict]:
         symbol_alias_of = compare_symbol if compare_symbol != base_currency else None
         price_usd = to_float(price_map.get(f"{base_currency}-USD"))
         price_krw = price_usd * FX_USD_KRW if price_usd is not None else None
-        display_name = "Gensyn" if base_currency == GENSYN_SYMBOL else base_currency
-        currency_name = currency_name_map.get(base_currency, display_name)
+        currency_name = currency_name_map.get(base_currency, base_currency)
+        display_name = currency_name
         risk_flags = scheduled_delisting_flags("coinbase", base_currency)
         if not risk_flags and any(bool(item.get(key)) for key in ("cancel_only", "limit_only", "post_only")):
             risk_flags.append(
@@ -1940,7 +1936,7 @@ def fetch_coinbase() -> list[dict]:
                 "name": display_name,
                 "englishName": currency_name,
                 "contractAddresses": currency_contract_map.get(base_currency, []),
-                "koreanName": "젠신" if base_currency == GENSYN_SYMBOL else base_currency,
+                "koreanName": "젠신" if "gensyn" in currency_name.lower() else base_currency,
                 "marketCapUsd": None,
                 "marketCapKrw": None,
                 "priceUsd": price_usd,
@@ -1961,12 +1957,12 @@ def fetch_coinbase() -> list[dict]:
                     build_name_keys(
                         display_name,
                         currency_name,
-                        "젠신" if base_currency == GENSYN_SYMBOL else compare_symbol,
+                        "젠신" if "gensyn" in currency_name.lower() else compare_symbol,
                     )
                 ),
         }
-        if base_currency == GENSYN_SYMBOL:
-            apply_gensyn_supply_override(row, source_detail="known_gensyn_tokenomics|coinbase_identity")
+        if is_gensyn_identity(row):
+            apply_gensyn_identity(row)
         rows.append(
             row
         )
@@ -2338,7 +2334,11 @@ def apply_futures_underlying_market_data(
     ]
     external_candidates = external_candidates or {}
     for row in futures_rows:
-        symbol = str(row.get("symbol") or "").upper()
+        own_rows = next((rows for board, rows in reference_groups if board == row.get("exchange")), [])
+        own_asset = next((asset for asset in own_rows if asset.get("symbol") == row.get("symbol")), None)
+        if own_asset is not None and is_gensyn_identity(own_asset):
+            row["compareSymbol"] = GENSYN_COMPARE_SYMBOL
+        symbol = str(row.get("compareSymbol") or row.get("symbol") or "").upper()
         if not symbol:
             continue
         references: list[tuple[str, dict]] = []
@@ -2654,10 +2654,7 @@ def has_name_key_overlap(row_a: dict, row_b: dict) -> bool:
 def build_rows_by_symbol(rows: list[dict]) -> dict[str, list[dict]]:
     indexed: dict[str, list[dict]] = {}
     for row in rows:
-        symbols = {
-            str(row.get("symbol") or "").upper(),
-            str(row.get("compareSymbol") or "").upper(),
-        }
+        symbols = {str(row.get("compareSymbol") or row.get("symbol") or "").upper()}
         for symbol in symbols:
             if not symbol:
                 continue
@@ -2666,6 +2663,13 @@ def build_rows_by_symbol(rows: list[dict]) -> dict[str, list[dict]]:
 
 
 def apply_binance_korean_name_fills(binance_rows: list[dict], upbit_rows: list[dict], bithumb_rows: list[dict]) -> None:
+    for row in binance_rows:
+        if str(row.get("symbol") or "").upper() == "AI":
+            row.update(name="Sleepless AI", englishName="Sleepless AI", koreanName="Sleepless AI")
+            row["nameKeys"] = list(build_name_keys("Sleepless AI", "Sleepless AI", "Sleepless AI"))
+    for row in binance_rows + upbit_rows + bithumb_rows:
+        if is_gensyn_identity(row):
+            apply_gensyn_identity(row)
     upbit_by_symbol = build_rows_by_symbol(upbit_rows)
     bithumb_by_symbol = build_rows_by_symbol(bithumb_rows)
 
@@ -2679,6 +2683,7 @@ def apply_binance_korean_name_fills(binance_rows: list[dict], upbit_rows: list[d
             (
                 str(candidate.get("koreanName") or candidate.get("name") or "").strip()
                 for candidate in reference_candidates
+                if market_names_compatible(row, candidate)
                 if has_hangul(str(candidate.get("koreanName") or candidate.get("name") or ""))
             ),
             "",
@@ -3876,6 +3881,8 @@ def merge_previous_coin_info_snapshot(coin_info: dict[str, dict], previous_paylo
         previous_entry = previous_coin_info.get(symbol)
         if not isinstance(previous_entry, dict):
             continue
+        if not market_names_compatible(entry, previous_entry):
+            continue
 
         if not entry.get("koreanName") and has_coin_info_value(previous_entry.get("koreanName")):
             entry["koreanName"] = clone_json_value(previous_entry.get("koreanName"))
@@ -3892,6 +3899,8 @@ def merge_previous_coin_info_snapshot(coin_info: dict[str, dict], previous_paylo
         for source_name, previous_source_info in previous_sources.items():
             source_key = str(source_name or "").strip()
             if not source_key:
+                continue
+            if isinstance(entry.get("listings"), dict) and source_key not in entry["listings"]:
                 continue
             merged_source = merge_coin_source_info(sources.get(source_key), previous_source_info, previous_generated_at)
             if merged_source:
@@ -4600,6 +4609,10 @@ def main() -> None:
         "rows": len(all_rows),
         "verifiedExternalCaps": sum(row.get("marketIdentityVerified") is True and to_float(row.get("marketCapUsd")) is not None for row in all_rows),
         "unverifiedLegacyCaps": sum(row.get("marketIdentityVerified") is False and to_float(row.get("marketCapUsd")) is not None for row in all_rows),
+        "AI": [{"exchange": row.get("exchange") or row.get("pair"), "symbol": row.get("symbol"),
+                "identity": get_row_compare_symbol(row), "name": row.get("englishName"),
+                "supply": row.get("circulatingSupply"), "total": row.get("totalSupply")}
+               for row in all_rows if row.get("symbol") in {"AI", "AIGENSYN"}],
         "CT": [{"exchange": row.get("exchange") or row.get("pair"), "name": row.get("englishName"),
                 "capUsd": row.get("marketCapUsd"), "supply": row.get("circulatingSupply"),
                 "source": row.get("capSourceDetail")} for row in all_rows if row.get("symbol") == "CT"],
