@@ -69,6 +69,13 @@ class MarketIdentityTests(unittest.TestCase):
         self.assertEqual(row["name"], "AI")
         self.assertEqual(row["compareSymbol"], "AI")
         self.assertIsNone(row["totalSupply"])
+        wrong = {"symbol": "AI", "name": "Sleepless AI", "englishName": "Sleepless AI", "nameKeys": ["ai", "sleeplessai"],
+                 "priceUsd": 0.02, "marketCapUsd": 12500000, "circulatingSupply": 624562498, "totalSupply": 1000000000}
+        self.assertIsNone(market.pick_reference_market_candidate(row, [wrong]))
+        self.assertIsNone(market.pick_reference_supply_candidate(row, [wrong]))
+        future = {"symbol": "AI", "exchange": "coinbase", "name": "AI", "priceUsd": 0.02, "marketCapUsd": None}
+        market.apply_futures_underlying_market_data([future], [("coinbase", [row]), ("binance", [wrong])])
+        self.assertIsNone(future["marketCapUsd"])
 
     def test_coin_info_never_merges_the_other_ai_projects_description(self):
         boards = {

@@ -2336,6 +2336,8 @@ def apply_futures_underlying_market_data(
     for row in futures_rows:
         own_rows = next((rows for board, rows in reference_groups if board == row.get("exchange")), [])
         own_asset = next((asset for asset in own_rows if asset.get("symbol") == row.get("symbol")), None)
+        if row.get("symbol") == "AI" and own_asset is not None and not market_identity_keys(own_asset):
+            continue
         if own_asset is not None and is_gensyn_identity(own_asset):
             row["compareSymbol"] = GENSYN_COMPARE_SYMBOL
         symbol = str(row.get("compareSymbol") or row.get("symbol") or "").upper()
@@ -2482,7 +2484,7 @@ def pick_reference_market_candidate(target_row: dict, candidate_rows: list[dict]
             (
                 candidate
                 for candidate in candidate_rows
-                if has_name_key_overlap(target_row, candidate)
+                if market_identity_keys(target_row) & market_identity_keys(candidate)
                 and (
                     to_float(candidate.get("marketCapUsd")) is not None
                     or to_float(candidate.get("marketCapKrw")) is not None
@@ -2500,7 +2502,8 @@ def pick_reference_supply_candidate(target_row: dict, candidate_rows: list[dict]
                       if market_prices_compatible(target_row, row) and market_names_compatible(target_row, row)]
     symbol = str(target_row.get("compareSymbol") or target_row.get("symbol") or "").upper()
     if symbol in AMBIGUOUS_SYMBOLS_REQUIRE_NAME_OVERLAP:
-        return pick_supply_fill_candidate(target_row, candidate_rows)
+        return pick_supply_fill_candidate(target_row, [candidate for candidate in candidate_rows
+            if market_identity_keys(target_row) & market_identity_keys(candidate)])
     return pick_first_candidate_with_supply(candidate_rows)
 
 
