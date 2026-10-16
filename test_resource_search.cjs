@@ -6,6 +6,10 @@ const { chromium } = require('playwright');
 
 async function main() {
   const root = __dirname;
+  const historyPasswordForTests = 'AdminHistoryPasswordForTests1';
+  const historyRequests = [];
+  let historyFixture = null;
+  let historyGate = null;
   const html = fs.readFileSync(process.env.SEARCH_TEST_HTML || path.join(root, 'index.html'), 'utf8');
   for (const script of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)) new Function(script[1]);
   const snapshot = JSON.parse(fs.readFileSync(path.join(root, 'board_snapshot.json'), 'utf8'));
@@ -129,7 +133,7 @@ async function main() {
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     const origin = process.env.BYBIT_LIVE_TEST ? 'https://fnfnfn3232.github.io' : `http://127.0.0.1:${server.address().port}`;
-    await page.route('https://**/*', route => {
+    await page.route('https://**/*', async route => {
       const url = new URL(route.request().url());
       if (process.env.BYBIT_LIVE_TEST && url.hostname === 'fnfnfn3232.github.io') {
         if (url.pathname.endsWith('data.js')) return route.fulfill({ body: `window.BOARD_DATA = ${JSON.stringify(snapshot)};`, contentType: 'text/javascript' });
@@ -153,6 +157,16 @@ async function main() {
       }
       if (url.hostname !== 'coin-board-auth.dlatl20000.workers.dev') return route.fulfill({ body: '' });
       calls.push(url.pathname + url.search);
+      if (url.pathname === '/api/admin/refresh-history') {
+        assert.equal(route.request().method(), 'POST');
+        assert.equal(url.search, '', 'admin passwords never enter URLs');
+        const body = route.request().postDataJSON();
+        historyRequests.push(body);
+        const headers = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true', 'Cache-Control': 'no-store' };
+        if (body.adminPassword !== historyPasswordForTests) return route.fulfill({ status: 401, json: { error: 'invalid_password' }, headers });
+        if (historyGate) await historyGate;
+        return route.fulfill({ json: historyFixture, headers });
+      }
       let data = {};
       if (url.pathname === '/api/market-data') data = snapshot;
       else if (url.pathname === '/api/l1-fees') data = fees.l1fees;
@@ -238,22 +252,52 @@ async function main() {
     });
     assert.equal(healthDelayVisible, true, 'cached market data never appears fully refreshed during component recovery');
     const historyApiCalls = calls.filter(call => call.startsWith('/api/market-data')).length;
-    await page.evaluate(() => {
-      const now = Math.floor(Date.now() / 1000);
-      window.originalRefreshHistoryData = { health: window.BOARD_DATA.refreshHealth, generatedAt: window.BOARD_DATA.generatedAt };
-      window.BOARD_DATA.generatedAt = now;
-      window.BOARD_DATA.refreshHealth = { checkedAt: now, state: 'degraded', components: {
-        coinbase_futures: { state: 'degraded', lastSuccessAt: now - 1800, needsAttention: false },
+    const historyNow = Math.floor(Date.now() / 1000);
+    historyFixture = { generatedAt: historyNow, refreshHealth: { checkedAt: historyNow, state: 'degraded', components: {
+        coinbase_futures: { state: 'degraded', lastSuccessAt: historyNow - 1800, needsAttention: false },
       }, events: [
-        { at: now, kind: 'recovered', component: 'upbit_notices', durationSeconds: 600 },
-        { at: now - 10, kind: 'failure', component: 'coinbase_futures' },
-        { at: now - 20, kind: 'fallback', component: 'upbit_notices' },
-        { at: now - 30, kind: 'maintenance', component: 'pipeline', commit: 'a'.repeat(40), title: '<img src=x onerror=window.historyXss=1>', detail: '검증된 개발 수정' },
-        ...Array.from({ length: 24 }, (_, index) => ({ at: now - 60 - index * 60, kind: 'recovered', component: 'binance' })),
-      ] };
+        { at: historyNow, kind: 'recovered', component: 'upbit_notices', durationSeconds: 600 },
+        { at: historyNow - 10, kind: 'failure', component: 'coinbase_futures' },
+        { at: historyNow - 20, kind: 'fallback', component: 'upbit_notices' },
+        { at: historyNow - 30, kind: 'maintenance', component: 'pipeline', commit: 'a'.repeat(40), title: '<img src=x onerror=window.historyXss=1>', detail: '검증된 개발 수정' },
+        ...Array.from({ length: 24 }, (_, index) => ({ at: historyNow - 60 - index * 60, kind: 'recovered', component: 'binance' })),
+      ] } };
+    const migrated = await page.evaluate(() => {
+      const old = { boards: {}, refreshHealth: { state: 'degraded', events: [{ title: 'old-admin-history' }], components: { old: {} } },
+        noticeRefresh: { upbit: { providers: { secret: {} } } } };
+      const originalCache = localStorage.getItem(LAST_GOOD_DATA_KEY);
+      localStorage.setItem(LAST_GOOD_DATA_KEY, JSON.stringify(old));
+      const result = loadLastGoodData();
+      const stored = localStorage.getItem(LAST_GOOD_DATA_KEY);
+      if (originalCache === null) localStorage.removeItem(LAST_GOOD_DATA_KEY); else localStorage.setItem(LAST_GOOD_DATA_KEY, originalCache);
+      return { result, stored };
     });
+    assert.equal(migrated.result.refreshHealth.events, undefined);
+    assert.doesNotMatch(migrated.stored, /old-admin-history|providers|components/);
     await page.locator('#refreshHistoryBtn').click();
     assert.ok(await page.locator('#refreshHistoryModal').isVisible());
+    assert.ok(await page.locator('#refreshHistoryAuthForm').isVisible());
+    assert.equal(await page.locator('.refresh-history-row').count(), 0, 'admin role alone does not load private history');
+    assert.equal(historyRequests.length, 0, 'opening the dialog does not request private records');
+    for (const width of [390, 320]) {
+      await page.setViewportSize({ width, height: 844 });
+      assert.equal(await page.locator('#refreshHistoryFooter').isVisible(), false);
+      const promptBox = await page.locator('.refresh-history-card').boundingBox();
+      assert.ok(promptBox.x >= 0 && promptBox.x + promptBox.width <= width + 1);
+      await page.screenshot({ path: path.join(process.env.TEMP || root, `blockscope-refresh-password-${width}.png`) });
+    }
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.evaluate(() => renderRefreshHistory());
+    assert.equal(await page.locator('.refresh-history-row').count(), 0, 'calling the renderer cannot bypass verification');
+    await page.locator('#refreshHistoryPassword').fill('wrong');
+    await page.locator('#refreshHistorySubmitBtn').click();
+    await page.waitForFunction(() => document.querySelector('#refreshHistoryAuthError').textContent.includes('맞지 않습니다'));
+    assert.equal(await page.locator('#refreshHistoryPassword').inputValue(), '');
+    assert.equal(await page.locator('.refresh-history-row').count(), 0);
+    await page.locator('#refreshHistoryPassword').fill(historyPasswordForTests);
+    await page.locator('#refreshHistorySubmitBtn').click();
+    await page.waitForSelector('.refresh-history-row');
+    assert.equal(await page.locator('#refreshHistoryPassword').inputValue(), '');
     assert.match(await page.locator('#refreshHistorySubtitle').textContent(), /한국시간/);
     assert.match(await page.locator('.refresh-history-status').textContent(), /코인베이스 선물.*자동 재시도 중/);
     assert.equal(await page.locator('.refresh-history-row').count(), 28);
@@ -267,10 +311,12 @@ async function main() {
     await page.locator('#refreshHistoryFilter').selectOption('automatic');
     assert.equal(await page.locator('.refresh-history-row').count(), 27);
     await page.locator('#refreshHistoryFilter').selectOption('all');
+    const filteredRequests = historyRequests.length;
     await page.evaluate(() => {
-      window.BOARD_DATA.refreshHealth.events.find(event => event.kind === 'maintenance').title = '갱신 장애 자동 복구와 감시 추가';
+      refreshHistoryData.refreshHealth.events.find(event => event.kind === 'maintenance').title = '갱신 장애 자동 복구와 감시 추가';
       renderRefreshHistory();
     });
+    assert.equal(historyRequests.length, filteredRequests, 'filtering never resends the password');
     await page.locator('.refresh-history-footer a').last().focus();
     await page.keyboard.press('Tab');
     assert.ok(await page.locator('#refreshHistoryCloseBtn').evaluate(element => element === document.activeElement));
@@ -289,20 +335,39 @@ async function main() {
     assert.ok(await page.locator('#refreshHistoryModal').evaluate(element => element.classList.contains('hidden')));
     assert.ok(await page.locator('#refreshHistoryBtn').evaluate(element => element === document.activeElement));
     await page.locator('#refreshHistoryBtn').click();
+    assert.ok(await page.locator('#refreshHistoryAuthForm').isVisible(), 'each reopening requires a fresh password');
+    assert.equal(await page.locator('.refresh-history-row').count(), 0);
+    let releaseHistory;
+    historyGate = new Promise(resolve => releaseHistory = resolve);
+    const delayedResponse = page.waitForResponse(response => response.url().includes('/api/admin/refresh-history'));
+    await page.locator('#refreshHistoryPassword').fill(historyPasswordForTests);
+    await page.locator('#refreshHistorySubmitBtn').click();
+    await page.locator('#refreshHistoryCloseBtn').click();
+    releaseHistory();
+    await delayedResponse;
+    historyGate = null;
+    await page.waitForTimeout(50);
+    assert.ok(await page.locator('#refreshHistoryModal').evaluate(element => element.classList.contains('hidden')));
+    assert.equal(await page.locator('#refreshHistoryBody').textContent(), '', 'late successful verification cannot restore closed records');
+    assert.ok(await page.evaluate(() => refreshHistoryData === null));
+    await page.locator('#refreshHistoryBtn').click();
+    await page.locator('#refreshHistoryPassword').fill(historyPasswordForTests);
+    await page.locator('#refreshHistorySubmitBtn').click();
+    await page.waitForSelector('.refresh-history-row');
+    const storedHistoryData = await page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage }, market: window.BOARD_DATA }));
+    assert.doesNotMatch(storedHistoryData, /AdminHistoryPasswordForTests1|검증된 개발 수정/);
     await page.evaluate(() => showSiteLock());
     assert.ok(await page.locator('#refreshHistoryModal').evaluate(element => element.classList.contains('hidden')));
     assert.equal(await page.locator('#refreshHistoryBody').textContent(), '');
     await page.evaluate(() => openRefreshHistory());
     assert.ok(await page.locator('#refreshHistoryModal').evaluate(element => element.classList.contains('hidden')), 'locked sessions cannot reopen protected history');
     await page.evaluate(() => {
-      window.BOARD_DATA.refreshHealth = window.originalRefreshHistoryData.health;
-      window.BOARD_DATA.generatedAt = window.originalRefreshHistoryData.generatedAt;
       hideSiteLock();
       renderAutoStatus();
     });
     await page.setViewportSize({ width: 1440, height: 1000 });
     assert.equal(calls.filter(call => call.startsWith('/api/market-data')).length, historyApiCalls, 'history viewing and filtering need no extra data requests');
-    console.log('PASS: persistent history view, honest recovery labels, manual commit links, filtering, Korean timestamps, XSS escaping, focus, scrolling, mobile sizing and lock cleanup.');
+    console.log('PASS: fresh admin password per history opening, failed verification, private-data redaction, cache migration, no credential storage, late-response cleanup, history filtering and mobile layout.');
     await page.locator('#searchInput').fill('');
     await page.evaluate(() => {
       const row = document.querySelector('#tableBody tr');

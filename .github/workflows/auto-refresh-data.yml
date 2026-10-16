@@ -14,7 +14,7 @@ on:
       - "test_market_identity.py"
       - "test_exchange_notices.py"
       - "refresh_health.py"
-      - "maintenance_history.json"
+      - ".github/maintenance_history.json"
       - "test_refresh_health.py"
       - "test_refresh_watchdog.cjs"
       - ".github/scripts/refresh-watchdog.cjs"
