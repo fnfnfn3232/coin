@@ -68,7 +68,8 @@ class ExchangeNoticeTests(unittest.TestCase):
 
     def test_feed_outage_is_recorded_and_preserves_known_termination(self):
         previous = {"scheduledDelistings": {"upbit": {'SOPH': {'deadline': '2026-11-16', 'detail': 'Known termination'}}}}
-        with patch.object(market, 'fetch_json', side_effect=RuntimeError('offline')):
+        with patch.object(market, 'fetch_json', side_effect=RuntimeError('offline')), \
+             patch.object(market, 'fetch_notice_channel_html', side_effect=RuntimeError('offline')):
             issues = self.refresh(previous)
         self.assertIn('upbit_notices', issues)
         self.assertIn('error', market.NOTICE_REFRESH_STATUS['upbit'])
@@ -130,6 +131,72 @@ class ExchangeNoticeTests(unittest.TestCase):
         with patch.object(market, 'fetch_json', side_effect=self.feed):
             result = market.fetch_upbit_scheduled_delistings()
         self.assertEqual(result['BLAST']['deadline'], '2026-10-26')
+
+    def channel_post(self, title, notice_id='1383330097', published='2026-10-15T07:00:00+00:00', host='www.upbit.com'):
+        return (f'<div class="tgme_widget_message" data-post="upbit_news/1942"><div class="nested">'
+                f'<div class="tgme_widget_message_text">{title}<br/>'
+                f'<a href="https://{host}/service_center/notice?id={notice_id}&amp;amp;view=share"><b>공지사항</b></a></div>'
+                f'<time datetime="{published}">07:00</time></div></div>')
+
+    def test_official_channel_handles_api_403_and_keeps_termination_dates_when_present(self):
+        document = self.channel_post('[거래] ' + self.soph['title']) + self.channel_post('[거래] ' + self.blast['title'], '81183086')
+        with patch.object(market, 'fetch_json', side_effect=RuntimeError('HTTP Error 403: Forbidden')), \
+             patch.object(market, 'fetch_notice_channel_html', return_value=document):
+            result = market.fetch_upbit_scheduled_delistings()
+        self.assertEqual(result['SOPH']['deadline'], '2026-11-16')
+        self.assertEqual(result['BLAST']['deadline'], '')
+        self.assertEqual(result['BLAST']['expires'], '2026-11-29')
+        self.assertIn('81183086', result['BLAST']['url'])
+        self.assertEqual(market.NOTICE_REFRESH_STATUS['upbit']['source'], market.UPBIT_OFFICIAL_CHANNEL_URL)
+        self.assertNotIn('error', market.NOTICE_REFRESH_STATUS['upbit'])
+
+    def test_channel_ignores_nft_notices_unofficial_links_and_missing_dates(self):
+        document = (self.channel_post('[NFT] 컬렉션(ABSIO) 거래지원 종료 안내')
+                    + self.channel_post('[거래] 소폰(SOPH) 거래지원 종료 안내', host='www.upbit.com.evil.example')
+                    + self.channel_post('[거래] 블라스트(BLAST) 거래지원 종료 안내', published='invalid')
+                    + self.channel_post('[거래] 질리카(ZIL) 거래지원 종료 안내 (11/16 15:00)', '1529230200'))
+        parser = market.UpbitOfficialChannelParser()
+        parser.feed(document)
+        self.assertEqual(len(parser.notices), 1)
+        self.assertIn('ZIL', parser.notices[0]['title'])
+
+    def test_channel_newest_cancellation_wins_regardless_of_message_order(self):
+        document = (self.channel_post('[거래] ' + self.soph['title'])
+                    + self.channel_post('[거래] 소폰(SOPH) 거래지원 종료 철회 안내', '9999', '2026-10-16T07:00:00+00:00'))
+        with patch.object(market, 'fetch_json', side_effect=RuntimeError('blocked')), \
+             patch.object(market, 'fetch_notice_channel_html', return_value=document):
+            result = market.fetch_upbit_scheduled_delistings()
+        self.assertTrue(result['SOPH']['cancelled'])
+
+    def test_channel_paginates_and_preserves_first_page_on_partial_failure(self):
+        document = self.channel_post('[거래] ' + self.soph['title']) + '<a class="tme_messages_more" data-before="1942"></a>'
+        with patch.object(market, 'fetch_json', side_effect=RuntimeError('blocked')), \
+             patch.object(market, 'fetch_notice_channel_html', side_effect=[document, RuntimeError('offline')]) as fetch:
+            issues = self.refresh()
+        self.assertEqual(fetch.call_args.args[0], market.UPBIT_OFFICIAL_CHANNEL_URL + '?before=1942')
+        self.assertIn('SOPH', market.ACTIVE_SCHEDULED_DELISTINGS['upbit'])
+        self.assertIn('partial_channel_page_2', issues['upbit_notices'])
+
+    def test_channel_stops_pagination_at_retention_window(self):
+        document = (self.channel_post('[거래] ' + self.soph['title'], published='2026-08-01T07:00:00+00:00')
+                    + '<a class="tme_messages_more" data-before="1000"></a>')
+        with patch.object(market, 'fetch_notice_channel_html', return_value=document) as fetch:
+            market.fetch_upbit_official_channel_notices()
+        self.assertEqual(fetch.call_count, 1)
+
+    def test_invalid_channel_page_is_not_reported_as_success(self):
+        with patch.object(market, 'fetch_json', side_effect=RuntimeError('blocked')), \
+             patch.object(market, 'fetch_notice_channel_html', return_value='<html>Access denied</html>'):
+            issues = self.refresh()
+        self.assertIn('upbit_notices', issues)
+
+    def test_channel_does_not_erase_a_previously_verified_deadline_for_the_same_notice(self):
+        url = 'https://www.upbit.com/service_center/notice?id=81183086&view=share'
+        previous = {'scheduledDelistings': {'upbit': {'BLAST': {'deadline': '2026-10-26', 'url': url}}}}
+        with patch.object(market, 'fetch_json', side_effect=RuntimeError('blocked')), \
+             patch.object(market, 'fetch_notice_channel_html', return_value=self.channel_post('[거래] ' + self.blast['title'], '81183086')):
+            self.refresh(previous)
+        self.assertEqual(market.ACTIVE_SCHEDULED_DELISTINGS['upbit']['BLAST']['deadline'], '2026-10-26')
 
 
 if __name__ == '__main__':

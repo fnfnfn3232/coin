@@ -10,6 +10,7 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 
 
@@ -40,6 +41,7 @@ COINBASE_CURRENCIES_ENDPOINT = "https://api.exchange.coinbase.com/currencies"
 COINBASE_PRODUCT_STATS_ENDPOINT = "https://api.exchange.coinbase.com/products/stats"
 UPBIT_ANNOUNCEMENTS_ENDPOINT = "https://pub-info.upbit.com/api/v1/announcements"
 UPBIT_ANNOUNCEMENTS_BACKUP_ENDPOINT = "https://api-manager.upbit.com/api/v1/announcements"
+UPBIT_OFFICIAL_CHANNEL_URL = "https://t.me/s/upbit_news"
 NOTICE_REFRESH_STATUS: dict[str, dict] = {}
 BITHUMB_RECENT_NOTICES_ENDPOINT = (
     "https://gw.bithumb.com/feed/v2/customer-support/articles/notices/recent?count=20"
@@ -354,6 +356,104 @@ def notice_cancels_delisting(title: str) -> bool:
     return bool(re.search(r"거래지원\s*종료(?:\s*(?:결정|공지|예정|안내))?\s*(?:철회|취소)", title))
 
 
+class UpbitOfficialChannelParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.notices: list[dict] = []
+        self.post_dates: list[datetime] = []
+        self.before = ""
+        self.depth = 0
+        self.message_depth = 0
+        self.text_depth = 0
+        self.message: dict | None = None
+        self.text: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        classes = set(attrs.get("class", "").split())
+        if tag == "a" and "tme_messages_more" in classes:
+            cursor = attrs.get("data-before", "")
+            if cursor.isdigit():
+                self.before = cursor
+        if tag == "div":
+            self.depth += 1
+            if "tgme_widget_message" in classes and attrs.get("data-post", "").startswith("upbit_news/"):
+                self.message = {}
+                self.text = []
+                self.message_depth = self.depth
+            if self.message is not None and "tgme_widget_message_text" in classes:
+                self.text_depth = self.depth
+        if self.message is None:
+            return
+        if tag == "time" and attrs.get("datetime"):
+            self.message["listed_at"] = attrs["datetime"]
+        if self.text_depth:
+            if tag == "br":
+                self.text.append("\n")
+            if tag == "a":
+                url = html.unescape(attrs.get("href", ""))
+                parsed = urllib.parse.urlsplit(url)
+                notice_id = urllib.parse.parse_qs(parsed.query).get("id", [""])[0]
+                if (parsed.scheme == "https" and parsed.netloc in {"upbit.com", "www.upbit.com"}
+                        and parsed.path == "/service_center/notice" and notice_id.isdigit()):
+                    self.message["uuid"] = notice_id
+
+    def handle_data(self, data):
+        if self.text_depth:
+            self.text.append(data)
+
+    def handle_endtag(self, tag):
+        if tag != "div":
+            return
+        if self.depth == self.text_depth:
+            self.text_depth = 0
+        if self.message is not None and self.depth == self.message_depth:
+            published = parse_notice_datetime(self.message.get("listed_at"))
+            if published:
+                self.post_dates.append(published)
+            title = "".join(self.text).strip().split("\n", 1)[0].strip()
+            # Only spot trading announcements with a link to the official notice qualify.
+            if published and title.startswith("[거래]") and self.message.get("uuid"):
+                self.notices.append({**self.message, "title": title, "channel": True})
+            self.message = None
+            self.message_depth = 0
+            self.text_depth = 0
+        self.depth -= 1
+
+
+def fetch_notice_channel_html(url: str) -> str:
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(request, timeout=12) as response:
+        return response.read().decode(response.headers.get_content_charset() or "utf-8")
+
+
+def fetch_upbit_official_channel_notices() -> tuple[list[dict], dict]:
+    notices: list[dict] = []
+    status = {"source": UPBIT_OFFICIAL_CHANNEL_URL, "checkedAt": int(time.time()), "pages": 0}
+    url = UPBIT_OFFICIAL_CHANNEL_URL
+    seen_cursors: set[str] = set()
+    cutoff = datetime.now(SEOUL_TIMEZONE) - timedelta(days=DELISTING_NOTICE_RETENTION_DAYS)
+    for page in range(1, 11):
+        try:
+            parser = UpbitOfficialChannelParser()
+            parser.feed(fetch_notice_channel_html(url))
+            parser.close()
+            if not parser.post_dates:
+                raise ValueError("upbit_official_channel_invalid_response")
+        except Exception as error:  # noqa: BLE001
+            if page == 1:
+                raise
+            status["error"] = f"partial_channel_page_{page}:{error}"
+            break
+        status["pages"] = page
+        notices.extend(parser.notices)
+        if min(parser.post_dates) <= cutoff or not parser.before or parser.before in seen_cursors:
+            break
+        seen_cursors.add(parser.before)
+        url = f"{UPBIT_OFFICIAL_CHANNEL_URL}?before={parser.before}"
+    return notices, status
+
+
 def fetch_upbit_scheduled_delistings() -> dict[str, dict]:
     scheduled: dict[str, dict] = {}
     endpoints = (UPBIT_ANNOUNCEMENTS_ENDPOINT, UPBIT_ANNOUNCEMENTS_BACKUP_ENDPOINT)
@@ -379,20 +479,25 @@ def fetch_upbit_scheduled_delistings() -> dict[str, dict]:
             candidates.append((latest, endpoint, notices))
         except Exception as error:  # noqa: BLE001
             errors.append(f"{endpoint}:{error}")
-    if not candidates:
-        raise RuntimeError("upbit_notices_unavailable:" + ";".join(errors))
-    # Compare both official feeds so a stale regional response cannot hide newer notices.
-    _latest, endpoint, notices = max(candidates, key=lambda item: item[0])
-    notices = [notice for _stamp, _endpoint, items in candidates for notice in items]
-    status = {"source": endpoint, "checkedAt": int(time.time()), "feedErrors": errors,
-              "feeds": [{"source": source, "latestTimestamp": stamp, "count": len(items)} for stamp, source, items in candidates]}
-    NOTICE_REFRESH_STATUS["upbit"] = status
-    for page in range(2, 4):
+    if candidates:
+        # Compare both official feeds so a stale regional response cannot hide newer notices.
+        _latest, endpoint, notices = max(candidates, key=lambda item: item[0])
+        notices = [notice for _stamp, _endpoint, items in candidates for notice in items]
+        status = {"source": endpoint, "checkedAt": int(time.time()), "feedErrors": errors,
+                  "feeds": [{"source": source, "latestTimestamp": stamp, "count": len(items)} for stamp, source, items in candidates]}
+        for page in range(2, 4):
+            try:
+                notices.extend(load_page(endpoint, page))
+            except Exception as error:  # noqa: BLE001
+                status["error"] = f"partial_page_{page}:{error}"
+                break
+    else:
         try:
-            notices.extend(load_page(endpoint, page))
+            notices, status = fetch_upbit_official_channel_notices()
+            status["feedErrors"] = errors
         except Exception as error:  # noqa: BLE001
-            status["error"] = f"partial_page_{page}:{error}"
-            break
+            raise RuntimeError("upbit_notices_unavailable:" + ";".join([*errors, f"{UPBIT_OFFICIAL_CHANNEL_URL}:{error}"])) from error
+    NOTICE_REFRESH_STATUS["upbit"] = status
     notices.sort(key=lambda item: (parse_notice_datetime(item.get("listed_at")) or datetime.min.replace(tzinfo=SEOUL_TIMEZONE)), reverse=True)
     status["notices"] = len(notices)
     status["latestPublishedAt"] = notices[0].get("listed_at") if notices else None
@@ -412,7 +517,7 @@ def fetch_upbit_scheduled_delistings() -> dict[str, dict]:
         notice_id = str(notice.get("id") or notice.get("uuid") or "").strip()
         notice_uuid = str(notice.get("uuid") or notice_id).strip()
         url = f"https://www.upbit.com/service_center/notice?id={urllib.parse.quote(notice_uuid)}&view=share"
-        if deadline is None and notice_id and (published_at is None or (datetime.now(SEOUL_TIMEZONE) - published_at).days <= DELISTING_NOTICE_RETENTION_DAYS):
+        if deadline is None and notice_id and not notice.get("channel") and (published_at is None or (datetime.now(SEOUL_TIMEZONE) - published_at).days <= DELISTING_NOTICE_RETENTION_DAYS):
             try:
                 detail = fetch_json(f"{endpoint}/{urllib.parse.quote(notice_id)}?os=web", retries=1, timeout=12)
                 body = str((detail.get("data") or {}).get("body") or "")
@@ -501,6 +606,10 @@ def refresh_scheduled_delistings(
                 if entry.get("cancelled"):
                     active[exchange].pop(symbol, None)
                 elif date.fromisoformat(str(entry.get("expires") or entry.get("deadline") or "")) >= today:
+                    previous = active[exchange].get(symbol, {})
+                    if not entry.get("deadline") and previous.get("deadline") and previous.get("url") == entry.get("url"):
+                        entry = {**entry, **{key: previous[key] for key in ("deadline", "expires", "detail") if key in previous}}
+                        entry["expires"] = previous.get("expires") or previous["deadline"]
                     active[exchange][symbol] = entry
                 else:
                     active[exchange].pop(symbol, None)
