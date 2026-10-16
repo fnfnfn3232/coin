@@ -13,6 +13,10 @@ on:
       - "test_bybit_futures.py"
       - "test_market_identity.py"
       - "test_exchange_notices.py"
+      - "refresh_health.py"
+      - "test_refresh_health.py"
+      - "test_refresh_watchdog.cjs"
+      - ".github/scripts/refresh-watchdog.cjs"
   schedule:
     # GitHub scheduled workflows can be delayed or skipped, so request the
     # shortest supported cadence and let concurrency keep only one run active.
@@ -33,6 +37,8 @@ jobs:
   refresh:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      health_report: ${{ steps.health.outputs.report }}
 
     steps:
       - name: Checkout
@@ -65,7 +71,7 @@ jobs:
           fi
 
       - name: Verify coin logos and USDT futures
-        run: python -m unittest test_coin_logos.py test_binance_futures.py test_bybit_futures.py test_market_identity.py test_exchange_notices.py
+        run: python -m unittest test_coin_logos.py test_binance_futures.py test_bybit_futures.py test_market_identity.py test_exchange_notices.py test_refresh_health.py
 
       - name: Rebuild data (retry)
         run: |
@@ -80,6 +86,14 @@ jobs:
           done
           echo "Build failed after retries"
           exit 1
+
+      - name: Check real component freshness
+        id: health
+        run: |
+          set -euo pipefail
+          report="$(python refresh_health.py board_snapshot.json)"
+          echo "report=${report}" >> "$GITHUB_OUTPUT"
+          echo "Refresh health summary: ${report}"
 
       - name: Publish latest data to protected Worker
         env:
@@ -112,3 +126,32 @@ jobs:
           response_summary="$(tr '\n' ' ' < market-data-publish-response.json 2>/dev/null | head -c 500 || true)"
           echo "::error title=Protected market data publish failed::curl=${curl_exit}, http=${http_code}, response=${response_summary}"
           exit 1
+
+  report:
+    needs: refresh
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    concurrency:
+      group: refresh-incident-report
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report persistent outage or close resolved incident
+        uses: actions/github-script@v7
+        env:
+          REFRESH_RESULT: ${{ needs.refresh.result }}
+          HEALTH_REPORT: ${{ needs.refresh.outputs.health_report }}
+        with:
+          script: |
+            const { updateIncident } = require('./.github/scripts/refresh-watchdog.cjs');
+            const report = process.env.REFRESH_RESULT === 'success' && process.env.HEALTH_REPORT
+              ? JSON.parse(process.env.HEALTH_REPORT)
+              : { state: 'degraded', affected: ['refresh_pipeline_failed'] };
+            await updateIncident({ github, context, report });
+            await core.summary.addHeading('Data Refresh Health')
+              .addRaw(`State: ${report.state}\nAffected: ${(report.affected || []).join(', ') || 'none'}\nRetrying: ${(report.pending || []).join(', ') || 'none'}`)
+              .write();

@@ -1,0 +1,36 @@
+name: Refresh Watchdog
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/refresh-watchdog.yml"
+      - ".github/scripts/refresh-watchdog.cjs"
+      - "test_refresh_watchdog.cjs"
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+
+permissions:
+  contents: read
+  actions: write
+  issues: write
+
+concurrency:
+  group: refresh-incident-report
+  cancel-in-progress: false
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify recovery policy
+        run: node --test test_refresh_watchdog.cjs
+      - name: Recover stalled refresh and report persistent failure
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { watchdog } = require('./.github/scripts/refresh-watchdog.cjs');
+            await watchdog({ github, context, core });

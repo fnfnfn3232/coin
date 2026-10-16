@@ -15181,9 +15181,10 @@
         const suffix = location.protocol === "file:" ? ` · ${TEXT.fileModeSource}` : "";
         const noticeDelayed = Object.keys(data.refreshIssues || {}).some(key => key.endsWith("_notices"))
           || Object.values(data.noticeRefresh || {}).some(status => status?.error);
-        autoUpdateStatus.textContent = `${TEXT.autoUpdateOn} · 서버 ${minutes}분 + 화면 ${liveMinutes}분 보정${suffix}${noticeDelayed ? " · 공지 확인 지연" : ""}`;
-        autoUpdatePill.classList.toggle("stale", Boolean(noticeDelayed));
-        autoUpdatePill.title = noticeDelayed ? "거래소 공식 공지 확인이 지연되어 마지막으로 확인한 상태를 유지하고 있습니다." : "";
+        const healthDelayed = data.refreshHealth?.state === "degraded";
+        autoUpdateStatus.textContent = `${TEXT.autoUpdateOn} · 서버 ${minutes}분 + 화면 ${liveMinutes}분 보정${suffix}${noticeDelayed ? " · 공지 확인 지연" : healthDelayed ? " · 일부 데이터 갱신 지연" : ""}`;
+        autoUpdatePill.classList.toggle("stale", Boolean(noticeDelayed || healthDelayed));
+        autoUpdatePill.title = noticeDelayed || healthDelayed ? "일부 자료의 갱신이 지연되어 마지막 정상 데이터를 유지하며 자동 재시도 중입니다." : "";
         const generatedAt = Number(data.generatedAt);
         const generatedAtMs = Number.isFinite(generatedAt) && generatedAt > 0 ? generatedAt * 1000 : 0;
         const staleThresholdMs = Math.max(30 * 60 * 1000, minutes * 3 * 60 * 1000);
