@@ -9,6 +9,14 @@ async function main() {
   const html = fs.readFileSync(process.env.SEARCH_TEST_HTML || path.join(root, 'index.html'), 'utf8');
   for (const script of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)) new Function(script[1]);
   const snapshot = JSON.parse(fs.readFileSync(path.join(root, 'board_snapshot.json'), 'utf8'));
+  snapshot.scheduledDelistings = { ...snapshot.scheduledDelistings, upbit: {
+    ...snapshot.scheduledDelistings?.upbit,
+    BLAST: { deadline: '2030-10-26', expires: '2030-10-26', detail: 'Official trading termination', url: 'https://upbit.com/service_center/notice?id=81183086' },
+    SOPH: { deadline: '2030-11-16', expires: '2030-11-16', detail: 'Official trading termination', url: 'https://upbit.com/service_center/notice?id=1383330097' },
+  } };
+  for (const row of snapshot.boards.upbit) {
+    if (['BLAST', 'SOPH'].includes(row.symbol)) row.riskFlags = [{ type: 'warning', label: '유의', source: 'upbit_market_event' }];
+  }
   const aiFixtures = [
     { symbol: 'AI', name: '젠신', koreanName: '젠신', englishName: 'Sleepless AI', pair: 'AI/USDT',
       circulatingSupply: 624562498, totalSupply: 1000000000, marketCapUsd: 12507073.5, priceUsd: 0.0201, capSource: 'binance_exact' },
@@ -190,6 +198,35 @@ async function main() {
     assert.ok(await page.locator('#tableBody tr').count() > 0);
     await page.locator('#searchInput').fill('');
     await page.locator('#tabUpbit').click();
+    for (const symbol of ['BLAST', 'SOPH']) {
+      await page.locator('#searchInput').fill(symbol);
+      assert.equal(await page.locator('#tableBody .asset-risk-badge.delisting').count(), 1, `${symbol} termination overrides a cached caution badge`);
+      assert.equal(await page.locator('#tableBody .asset-risk-badge.warning').count(), 0);
+    }
+    const noticeChecks = await page.evaluate(() => {
+      const row = window.BOARD_DATA.boards.upbit.find(item => item.symbol === 'BLAST');
+      const entry = window.BOARD_DATA.scheduledDelistings.upbit.BLAST;
+      const original = { ...entry };
+      entry.cancelled = true;
+      const cancelled = getAssetRiskFlags(row, 'upbit').some(flag => flag.type === 'delisting');
+      delete entry.cancelled;
+      entry.expires = '2000-01-01';
+      const expired = getAssetRiskFlags(row, 'upbit').some(flag => flag.type === 'delisting');
+      Object.assign(entry, original);
+      return { cancelled, expired };
+    });
+    assert.deepEqual(noticeChecks, { cancelled: false, expired: false });
+    const noticeDelayVisible = await page.evaluate(() => {
+      const original = window.BOARD_DATA.noticeRefresh;
+      window.BOARD_DATA.noticeRefresh = { upbit: { error: 'temporary_failure' } };
+      renderAutoStatus();
+      const visible = document.getElementById('autoUpdateStatus').textContent.includes('공지 확인 지연');
+      window.BOARD_DATA.noticeRefresh = original;
+      renderAutoStatus();
+      return visible;
+    });
+    assert.equal(noticeDelayVisible, true, 'notice collection errors are visible instead of appearing fully up to date');
+    await page.locator('#searchInput').fill('');
     await page.evaluate(() => {
       const row = document.querySelector('#tableBody tr');
       row.querySelector('.price-main').textContent = '112,669,000원';
