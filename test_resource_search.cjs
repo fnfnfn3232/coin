@@ -226,6 +226,17 @@ async function main() {
       return visible;
     });
     assert.equal(noticeDelayVisible, true, 'notice collection errors are visible instead of appearing fully up to date');
+    const healthDelayVisible = await page.evaluate(() => {
+      const original = window.BOARD_DATA.refreshHealth;
+      window.BOARD_DATA.refreshHealth = { state: 'degraded' };
+      renderAutoStatus();
+      const visible = document.getElementById('autoUpdateStatus').textContent.includes('일부 데이터 갱신 지연')
+        && document.getElementById('autoUpdatePill').classList.contains('stale');
+      window.BOARD_DATA.refreshHealth = original;
+      renderAutoStatus();
+      return visible;
+    });
+    assert.equal(healthDelayVisible, true, 'cached market data never appears fully refreshed during component recovery');
     await page.locator('#searchInput').fill('');
     await page.evaluate(() => {
       const row = document.querySelector('#tableBody tr');

@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
+from refresh_health import build_refresh_health, call_notice_provider
 
 
 ROOT = Path(__file__).resolve().parent
@@ -45,6 +46,10 @@ UPBIT_OFFICIAL_CHANNEL_URL = "https://t.me/s/upbit_news"
 NOTICE_REFRESH_STATUS: dict[str, dict] = {}
 BITHUMB_RECENT_NOTICES_ENDPOINT = (
     "https://gw.bithumb.com/feed/v2/customer-support/articles/notices/recent?count=20"
+)
+BINANCE_ANNOUNCEMENTS_ENDPOINT = (
+    "https://www.binance.com/bapi/composite/v1/public/cms/article/"
+    "catalog/list/query?catalogId=161&pageNo=1&pageSize=50"
 )
 DELISTING_NOTICE_RETENTION_DAYS = 45
 BINANCE_USDM_FUTURES_INFO_ENDPOINT = "https://www.binance.com/fapi/v1/exchangeInfo"
@@ -473,6 +478,15 @@ def fetch_upbit_official_channel_notices() -> tuple[list[dict], dict]:
 def fetch_upbit_scheduled_delistings() -> dict[str, dict]:
     scheduled: dict[str, dict] = {}
     endpoints = (UPBIT_ANNOUNCEMENTS_ENDPOINT, UPBIT_ANNOUNCEMENTS_BACKUP_ENDPOINT)
+    previous_status = NOTICE_REFRESH_STATUS.get("upbit") or {}
+    providers = previous_status.get("providers") or {}
+    last_publication = parse_notice_datetime(previous_status.get("latestPublishedAt"))
+    NOTICE_REFRESH_STATUS["upbit"] = {"providers": providers}
+
+    def reject_regressed_feed(notices: list[dict]) -> None:
+        published = [stamp for item in notices if (stamp := parse_notice_datetime(item.get("listed_at"))) is not None]
+        if last_publication and (not published or max(published) < last_publication):
+            raise ValueError("upbit_notices_regressed_response")
 
     def load_page(endpoint: str, page: int) -> list[dict]:
         query = urllib.parse.urlencode(
@@ -482,15 +496,23 @@ def fetch_upbit_scheduled_delistings() -> dict[str, dict]:
         data = payload.get("data") if isinstance(payload, dict) else None
         notices = data.get("notices") if isinstance(data, dict) else None
         if (not isinstance(notices, list) or payload.get("success") is False
-                or (page == 1 and not notices) or any(not isinstance(item, dict) for item in notices)):
+                or (page == 1 and not notices) or any(not isinstance(item, dict) for item in notices)
+                or (notices and not any(item.get("title") and parse_notice_datetime(item.get("listed_at")) for item in notices))):
             raise ValueError("upbit_notices_invalid_response")
+        if page == 1:
+            reject_regressed_feed(notices)
         return notices
+
+    def load_channel():
+        result = fetch_upbit_official_channel_notices()
+        reject_regressed_feed(result[0])
+        return result
 
     candidates: list[tuple[float, str, list[dict]]] = []
     errors: list[str] = []
     for endpoint in endpoints:
         try:
-            notices = load_page(endpoint, 1)
+            notices = call_notice_provider(endpoint, lambda: load_page(endpoint, 1), providers)
             latest = max((published.timestamp() if (published := parse_notice_datetime(item.get("listed_at"))) else 0) for item in notices)
             candidates.append((latest, endpoint, notices))
         except Exception as error:  # noqa: BLE001
@@ -500,6 +522,7 @@ def fetch_upbit_scheduled_delistings() -> dict[str, dict]:
         _latest, endpoint, notices = max(candidates, key=lambda item: item[0])
         notices = [notice for _stamp, _endpoint, items in candidates for notice in items]
         status = {"source": endpoint, "checkedAt": int(time.time()), "feedErrors": errors,
+                  "providers": providers,
                   "feeds": [{"source": source, "latestTimestamp": stamp, "count": len(items)} for stamp, source, items in candidates]}
         for page in range(2, 4):
             try:
@@ -509,8 +532,9 @@ def fetch_upbit_scheduled_delistings() -> dict[str, dict]:
                 break
     else:
         try:
-            notices, status = fetch_upbit_official_channel_notices()
+            notices, status = call_notice_provider(UPBIT_OFFICIAL_CHANNEL_URL, load_channel, providers)
             status["feedErrors"] = errors
+            status["providers"] = providers
         except Exception as error:  # noqa: BLE001
             raise RuntimeError("upbit_notices_unavailable:" + ";".join([*errors, f"{UPBIT_OFFICIAL_CHANNEL_URL}:{error}"])) from error
     NOTICE_REFRESH_STATUS["upbit"] = status
@@ -558,8 +582,9 @@ def fetch_upbit_scheduled_delistings() -> dict[str, dict]:
 def fetch_bithumb_scheduled_delistings() -> dict[str, dict]:
     payload = fetch_json(BITHUMB_RECENT_NOTICES_ENDPOINT, retries=2, pause=0.5)
     notices = payload.get("data") if isinstance(payload, dict) else None
-    if not isinstance(notices, list):
-        return {}
+    if (not isinstance(notices, list) or not notices or any(not isinstance(item, dict) for item in notices)
+            or not any(item.get("title") and parse_notice_datetime(item.get("publicationDateTime")) for item in notices)):
+        raise ValueError("bithumb_notices_invalid_response")
     scheduled: dict[str, dict] = {}
     for notice in sorted((item for item in notices if isinstance(item, dict)),
                          key=lambda item: parse_notice_datetime(item.get("publicationDateTime")) or datetime.min.replace(tzinfo=SEOUL_TIMEZONE), reverse=True):
@@ -600,6 +625,11 @@ def refresh_scheduled_delistings(
 ) -> None:
     global ACTIVE_SCHEDULED_DELISTINGS
     NOTICE_REFRESH_STATUS.clear()
+    previous_statuses = (previous_payload or {}).get("noticeRefresh") or {}
+    for exchange, status in previous_statuses.items():
+        if isinstance(status, dict) and isinstance(status.get("providers"), dict):
+            NOTICE_REFRESH_STATUS[exchange] = {"latestPublishedAt": status.get("latestPublishedAt"),
+                                              "providers": {key: dict(value) for key, value in status["providers"].items() if isinstance(value, dict)}}
     today = datetime.now(SEOUL_TIMEZONE).date()
     active: dict[str, dict[str, dict]] = {
         exchange: {} for exchange in ("upbit", "bithumb", "binance", "coinbase")
@@ -627,7 +657,14 @@ def refresh_scheduled_delistings(
         ("binance", fetch_binance_scheduled_delistings),
     ):
         try:
-            for symbol, entry in fetcher().items():
+            if exchange == "upbit":
+                fetched = fetcher()
+            else:
+                source = BITHUMB_RECENT_NOTICES_ENDPOINT if exchange == "bithumb" else BINANCE_ANNOUNCEMENTS_ENDPOINT
+                status = NOTICE_REFRESH_STATUS.setdefault(exchange, {})
+                status.update({"checkedAt": int(time.time()), "source": source})
+                fetched = call_notice_provider(source, fetcher, status.setdefault("providers", {}))
+            for symbol, entry in fetched.items():
                 if entry.get("cancelled"):
                     active[exchange].pop(symbol, None)
                 elif date.fromisoformat(str(entry.get("expires") or entry.get("deadline") or "")) >= today:
@@ -643,7 +680,7 @@ def refresh_scheduled_delistings(
                 refresh_issues[f"{exchange}_notices"] = str(status["error"])
         except Exception as error:  # noqa: BLE001
             refresh_issues[f"{exchange}_notices"] = f"fetch_failed:{error}"
-            NOTICE_REFRESH_STATUS[exchange] = {"checkedAt": int(time.time()), "error": str(error)}
+            NOTICE_REFRESH_STATUS[exchange] = {**NOTICE_REFRESH_STATUS.get(exchange, {}), "checkedAt": int(time.time()), "error": str(error)}
     ACTIVE_SCHEDULED_DELISTINGS = active
 
 
@@ -659,15 +696,12 @@ def apply_scheduled_delisting_flags(boards: dict[str, list[dict]]) -> None:
 
 
 def fetch_binance_scheduled_delistings() -> dict[str, dict]:
-    endpoint = (
-        "https://www.binance.com/bapi/composite/v1/public/cms/article/"
-        "catalog/list/query?catalogId=161&pageNo=1&pageSize=50"
-    )
-    payload = fetch_json(endpoint, retries=2, pause=0.5)
+    payload = fetch_json(BINANCE_ANNOUNCEMENTS_ENDPOINT, retries=2, pause=0.5)
     data = payload.get("data") if isinstance(payload, dict) else None
     articles = data.get("articles") if isinstance(data, dict) else None
-    if not isinstance(articles, list):
-        return {}
+    if (not isinstance(articles, list) or not articles or any(not isinstance(item, dict) for item in articles)
+            or not any(str(item.get("title") or "").strip() for item in articles)):
+        raise ValueError("binance_notices_invalid_response")
 
     today = datetime.now(SEOUL_TIMEZONE).date()
     scheduled: dict[str, dict] = {}
@@ -4798,9 +4832,11 @@ def main() -> None:
     previous_payload = load_previous_payload()
     payload = make_payload(previous_payload)
     validate_scheduled_delisting_flags(payload)
+    payload["refreshHealth"] = build_refresh_health(payload, previous_payload)
     DATA_JS_PATH.write_text("window.BOARD_DATA = " + json.dumps(payload, ensure_ascii=False) + ";\n", encoding="utf-8")
     SNAPSHOT_JSON_PATH.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     print(f"Saved {DATA_JS_PATH}")
+    print("Refresh health audit:", json.dumps(payload["refreshHealth"], ensure_ascii=False))
     print("Futures:", json.dumps(payload["futuresStats"], ensure_ascii=False))
     print("Notice refresh audit:", json.dumps({
         "status": payload.get("noticeRefresh"),
