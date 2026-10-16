@@ -237,6 +237,72 @@ async function main() {
       return visible;
     });
     assert.equal(healthDelayVisible, true, 'cached market data never appears fully refreshed during component recovery');
+    const historyApiCalls = calls.filter(call => call.startsWith('/api/market-data')).length;
+    await page.evaluate(() => {
+      const now = Math.floor(Date.now() / 1000);
+      window.originalRefreshHistoryData = { health: window.BOARD_DATA.refreshHealth, generatedAt: window.BOARD_DATA.generatedAt };
+      window.BOARD_DATA.generatedAt = now;
+      window.BOARD_DATA.refreshHealth = { checkedAt: now, state: 'degraded', components: {
+        coinbase_futures: { state: 'degraded', lastSuccessAt: now - 1800, needsAttention: false },
+      }, events: [
+        { at: now, kind: 'recovered', component: 'upbit_notices', durationSeconds: 600 },
+        { at: now - 10, kind: 'failure', component: 'coinbase_futures' },
+        { at: now - 20, kind: 'fallback', component: 'upbit_notices' },
+        { at: now - 30, kind: 'maintenance', component: 'pipeline', commit: 'a'.repeat(40), title: '<img src=x onerror=window.historyXss=1>', detail: '검증된 개발 수정' },
+        ...Array.from({ length: 24 }, (_, index) => ({ at: now - 60 - index * 60, kind: 'recovered', component: 'binance' })),
+      ] };
+    });
+    await page.locator('#refreshHistoryBtn').click();
+    assert.ok(await page.locator('#refreshHistoryModal').isVisible());
+    assert.match(await page.locator('#refreshHistorySubtitle').textContent(), /한국시간/);
+    assert.match(await page.locator('.refresh-history-status').textContent(), /코인베이스 선물.*자동 재시도 중/);
+    assert.equal(await page.locator('.refresh-history-row').count(), 28);
+    assert.equal(await page.locator('#refreshHistoryBody img').count(), 0, 'development notes are escaped, not executed');
+    assert.equal(await page.evaluate(() => window.historyXss || 0), 0);
+    assert.match(await page.locator('[data-history-kind="failure"]').textContent(), /마지막 정상 데이터/);
+    assert.doesNotMatch(await page.locator('[data-history-kind="failure"]').textContent(), /복구 완료/);
+    await page.locator('#refreshHistoryFilter').selectOption('maintenance');
+    assert.equal(await page.locator('.refresh-history-row').count(), 1);
+    assert.equal(await page.locator('.refresh-history-detail a').getAttribute('href'), `https://github.com/fnfnfn3232/coin/commit/${'a'.repeat(40)}`);
+    await page.locator('#refreshHistoryFilter').selectOption('automatic');
+    assert.equal(await page.locator('.refresh-history-row').count(), 27);
+    await page.locator('#refreshHistoryFilter').selectOption('all');
+    await page.evaluate(() => {
+      window.BOARD_DATA.refreshHealth.events.find(event => event.kind === 'maintenance').title = '갱신 장애 자동 복구와 감시 추가';
+      renderRefreshHistory();
+    });
+    await page.locator('.refresh-history-footer a').last().focus();
+    await page.keyboard.press('Tab');
+    assert.ok(await page.locator('#refreshHistoryCloseBtn').evaluate(element => element === document.activeElement));
+    for (const width of [1440, 390, 320]) {
+      await page.setViewportSize({ width, height: 844 });
+      const box = await page.locator('.refresh-history-card').boundingBox();
+      assert.ok(box.x >= 0 && box.y >= 0 && box.x + box.width <= width + 1 && box.y + box.height <= 845, `${width}px history modal fits viewport`);
+      assert.ok(await page.locator('#refreshHistoryBody').evaluate(element => element.scrollWidth <= element.clientWidth + 1), `${width}px history text does not overflow`);
+      const close = await page.locator('#refreshHistoryCloseBtn').boundingBox();
+      await page.locator('#refreshHistoryBody').evaluate(element => element.scrollTop = element.scrollHeight);
+      assert.equal((await page.locator('#refreshHistoryCloseBtn').boundingBox()).y, close.y, 'close control stays visible while scrolling');
+      await page.locator('#refreshHistoryBody').evaluate(element => element.scrollTop = 0);
+      await page.screenshot({ path: path.join(process.env.TEMP || root, `blockscope-refresh-history-${width}.png`) });
+    }
+    await page.keyboard.press('Escape');
+    assert.ok(await page.locator('#refreshHistoryModal').evaluate(element => element.classList.contains('hidden')));
+    assert.ok(await page.locator('#refreshHistoryBtn').evaluate(element => element === document.activeElement));
+    await page.locator('#refreshHistoryBtn').click();
+    await page.evaluate(() => showSiteLock());
+    assert.ok(await page.locator('#refreshHistoryModal').evaluate(element => element.classList.contains('hidden')));
+    assert.equal(await page.locator('#refreshHistoryBody').textContent(), '');
+    await page.evaluate(() => openRefreshHistory());
+    assert.ok(await page.locator('#refreshHistoryModal').evaluate(element => element.classList.contains('hidden')), 'locked sessions cannot reopen protected history');
+    await page.evaluate(() => {
+      window.BOARD_DATA.refreshHealth = window.originalRefreshHistoryData.health;
+      window.BOARD_DATA.generatedAt = window.originalRefreshHistoryData.generatedAt;
+      hideSiteLock();
+      renderAutoStatus();
+    });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    assert.equal(calls.filter(call => call.startsWith('/api/market-data')).length, historyApiCalls, 'history viewing and filtering need no extra data requests');
+    console.log('PASS: persistent history view, honest recovery labels, manual commit links, filtering, Korean timestamps, XSS escaping, focus, scrolling, mobile sizing and lock cleanup.');
     await page.locator('#searchInput').fill('');
     await page.evaluate(() => {
       const row = document.querySelector('#tableBody tr');

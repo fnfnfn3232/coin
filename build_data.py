@@ -4832,11 +4832,21 @@ def main() -> None:
     previous_payload = load_previous_payload()
     payload = make_payload(previous_payload)
     validate_scheduled_delisting_flags(payload)
-    payload["refreshHealth"] = build_refresh_health(payload, previous_payload)
+    try:
+        maintenance = json.loads((ROOT / "maintenance_history.json").read_text(encoding="utf-8"))
+        if not isinstance(maintenance, list):
+            raise ValueError("invalid_maintenance_history")
+    except (OSError, ValueError):
+        maintenance = []
+        print("::warning title=Maintenance history unavailable::Previous history will be retained.")
+    payload["refreshHealth"] = build_refresh_health(payload, previous_payload, maintenance=maintenance)
     DATA_JS_PATH.write_text("window.BOARD_DATA = " + json.dumps(payload, ensure_ascii=False) + ";\n", encoding="utf-8")
     SNAPSHOT_JSON_PATH.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     print(f"Saved {DATA_JS_PATH}")
-    print("Refresh health audit:", json.dumps(payload["refreshHealth"], ensure_ascii=False))
+    print("Refresh health audit:", json.dumps({
+        **{key: value for key, value in payload["refreshHealth"].items() if key != "events"},
+        "historyEvents": len(payload["refreshHealth"]["events"]),
+    }, ensure_ascii=False))
     print("Futures:", json.dumps(payload["futuresStats"], ensure_ascii=False))
     print("Notice refresh audit:", json.dumps({
         "status": payload.get("noticeRefresh"),

@@ -4,6 +4,70 @@ import json
 import time
 from urllib.error import HTTPError
 
+HISTORY_RETENTION_SECONDS = 90 * 86400
+HISTORY_MAX_EVENTS = 200
+HISTORY_KINDS = {"failure", "recovered", "attention", "fallback", "fallback_active", "source_changed", "pipeline_resumed", "maintenance"}
+
+
+def build_refresh_events(payload, previous, components, maintenance, now):
+    old_health = (previous or {}).get("refreshHealth") or {}
+    old_components = old_health.get("components") or {}
+    started_at = int(old_health.get("historyStartedAt") or now)
+    events = {}
+
+    def add(event):
+        if not isinstance(event, dict) or event.get("kind") not in HISTORY_KINDS:
+            return
+        at = event.get("at")
+        component = event.get("component")
+        if not isinstance(at, int) or not now - HISTORY_RETENTION_SECONDS <= at <= now:
+            return
+        if component not in components and component != "pipeline":
+            return
+        normalized = {"id": f"{at}:{component}:{event['kind']}", "at": at, "component": component, "kind": event["kind"]}
+        if event["kind"] == "maintenance":
+            commit = str(event.get("commit") or "")
+            if len(commit) != 40 or any(char not in "0123456789abcdef" for char in commit):
+                return
+            normalized.update({"id": f"maintenance:{commit}", "commit": commit,
+                               "title": str(event.get("title") or "개발 수정")[:140],
+                               "detail": str(event.get("detail") or "")[:500]})
+        for key in ("durationSeconds", "gapSeconds"):
+            if isinstance(event.get(key), int) and event[key] >= 0:
+                normalized[key] = min(HISTORY_RETENTION_SECONDS, event[key])
+        events[normalized["id"]] = normalized
+
+    for event in old_health.get("events") or []:
+        add(event)
+    for event in maintenance or []:
+        add(event)
+    for name, current in components.items():
+        old = old_components.get(name) or {}
+        if current["state"] == "degraded" and (old.get("state") != "degraded" or not old_health.get("historyStartedAt")):
+            add({"kind": "failure", "component": name, "at": int(current.get("firstFailureAt") or now)})
+        if current["state"] == "healthy" and old.get("state") == "degraded":
+            duration = now - int(old.get("firstFailureAt") or now)
+            add({"kind": "recovered", "component": name, "at": now, "durationSeconds": max(0, duration)})
+        if current.get("needsAttention") and not old.get("needsAttention"):
+            add({"kind": "attention", "component": name, "at": now})
+    for exchange, status in (payload.get("noticeRefresh") or {}).items():
+        name = f"{exchange}_notices"
+        if name not in components or components[name]["state"] != "healthy":
+            continue
+        source = str(status.get("source") or "")
+        old_source = str(((previous or {}).get("noticeRefresh") or {}).get(exchange, {}).get("source") or "")
+        if source == "https://t.me/s/upbit_news":
+            if old_source and source != old_source:
+                add({"kind": "fallback", "component": name, "at": now})
+            elif not old_health.get("historyStartedAt"):
+                add({"kind": "fallback_active", "component": name, "at": now})
+        elif source and old_source and source != old_source:
+            add({"kind": "source_changed", "component": name, "at": now})
+    previous_generated_at = int((previous or {}).get("generatedAt") or 0)
+    if previous_generated_at > 0 and now - previous_generated_at > 1800:
+        add({"kind": "pipeline_resumed", "component": "pipeline", "at": now, "gapSeconds": now - previous_generated_at})
+    return started_at, sorted(events.values(), key=lambda event: (event["at"], event["id"]), reverse=True)[:HISTORY_MAX_EVENTS]
+
 
 class ProviderCoolingDown(RuntimeError):
     pass
@@ -34,7 +98,7 @@ def call_notice_provider(source, loader, providers, *, now=None):
     return result
 
 
-def build_refresh_health(payload, previous=None, *, now=None):
+def build_refresh_health(payload, previous=None, *, now=None, maintenance=None):
     now = int(time.time()) if now is None else int(now)
     previous_components = ((previous or {}).get("refreshHealth") or {}).get("components") or {}
     issues = payload.get("refreshIssues") or {}
@@ -60,9 +124,10 @@ def build_refresh_health(payload, previous=None, *, now=None):
                             "lastSuccessAt": last_success, "firstFailureAt": first_failure,
                             "consecutiveFailures": failures,
                             "needsAttention": not success and (failures >= 3 or now - first_failure >= 1800)}
+    started_at, events = build_refresh_events(payload, previous, components, maintenance, now)
     return {"checkedAt": now, "state": "degraded" if not all(checks.values()) else "healthy",
             "needsAttention": any(item["needsAttention"] for item in components.values()),
-            "components": components}
+            "components": components, "historyStartedAt": started_at, "events": events}
 
 
 def incident_report(payload, *, now=None):

@@ -1,10 +1,11 @@
 import copy
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
 import build_data as market
-from refresh_health import ProviderCoolingDown, build_refresh_health, call_notice_provider, incident_report
+from refresh_health import HISTORY_MAX_EVENTS, HISTORY_RETENTION_SECONDS, ProviderCoolingDown, build_refresh_health, call_notice_provider, incident_report
 
 
 class RefreshHealthTests(unittest.TestCase):
@@ -146,6 +147,100 @@ class RefreshHealthTests(unittest.TestCase):
         payload.pop('refreshHealth')
         with self.assertRaises(ValueError):
             incident_report(payload, now=10000)
+
+    def test_history_records_failure_once_and_recovery_only_after_success(self):
+        payload = self.snapshot()
+        baseline = {'refreshHealth': build_refresh_health(payload, now=10000)}
+        self.assertEqual(baseline['refreshHealth']['events'], [])
+        payload['refreshIssues']['upbit_notices'] = 'HTTP Error 403: Forbidden'
+        failure = build_refresh_health(payload, baseline, now=10300)
+        self.assertEqual([event['kind'] for event in failure['events']], ['failure'])
+        retry = build_refresh_health(payload, {'refreshHealth': failure}, now=10600)
+        self.assertEqual(retry['events'], failure['events'])
+        payload['refreshIssues'].clear()
+        recovered = build_refresh_health(payload, {'refreshHealth': retry}, now=10900)
+        self.assertEqual([event['kind'] for event in recovered['events']], ['recovered', 'failure'])
+        self.assertEqual(recovered['events'][0]['durationSeconds'], 600)
+        stable = build_refresh_health(payload, {'refreshHealth': recovered}, now=11200)
+        self.assertEqual(stable['events'], recovered['events'])
+
+    def test_existing_degraded_state_is_imported_without_fake_past_repair(self):
+        payload = self.snapshot()
+        payload['refreshIssues']['coinbase_futures'] = 'upstream failure'
+        old = build_refresh_health(payload, now=10000)
+        old.pop('events')
+        old.pop('historyStartedAt')
+        current = build_refresh_health(payload, {'refreshHealth': old}, now=10600)
+        self.assertIn({'id': '10000:coinbase_futures:failure', 'kind': 'failure', 'component': 'coinbase_futures', 'at': 10000}, current['events'])
+        self.assertNotIn('recovered', [event['kind'] for event in current['events']])
+
+    def test_fallback_baseline_and_actual_source_switch_are_distinct(self):
+        payload = self.snapshot()
+        payload['noticeRefresh']['upbit']['source'] = market.UPBIT_OFFICIAL_CHANNEL_URL
+        initial = build_refresh_health(payload, now=10000)
+        self.assertEqual(initial['events'][0]['kind'], 'fallback_active')
+        previous = {'refreshHealth': initial, 'noticeRefresh': copy.deepcopy(payload['noticeRefresh'])}
+        stable = build_refresh_health(payload, previous, now=10300)
+        self.assertEqual(stable['events'], initial['events'])
+        payload['noticeRefresh']['upbit']['source'] = market.UPBIT_ANNOUNCEMENTS_ENDPOINT
+        restored = build_refresh_health(payload, previous, now=10600)
+        self.assertEqual(restored['events'][0]['kind'], 'source_changed')
+        previous = {'refreshHealth': restored, 'noticeRefresh': copy.deepcopy(payload['noticeRefresh'])}
+        payload['noticeRefresh']['upbit']['source'] = market.UPBIT_OFFICIAL_CHANNEL_URL
+        switched = build_refresh_health(payload, previous, now=10900)
+        self.assertEqual(switched['events'][0]['kind'], 'fallback')
+
+    def test_pending_fallback_does_not_claim_successful_route_switch(self):
+        payload = self.snapshot()
+        payload['noticeRefresh']['upbit'].update({'source': market.UPBIT_OFFICIAL_CHANNEL_URL, 'error': 'partial page failure'})
+        health = build_refresh_health(payload, now=10000)
+        self.assertEqual([event['kind'] for event in health['events']], ['failure'])
+
+    def test_attention_is_logged_only_on_escalation(self):
+        payload = self.snapshot()
+        payload['refreshIssues']['bithumb'] = 'offline'
+        previous = None
+        for now in (10000, 10300, 10600, 10900):
+            health = build_refresh_health(payload, previous, now=now)
+            previous = {'refreshHealth': health}
+        self.assertEqual([event['kind'] for event in health['events']], ['attention', 'failure'])
+
+    def test_republishing_after_long_gap_is_not_invented_component_recovery(self):
+        payload = self.snapshot()
+        previous = {'generatedAt': 10000, 'refreshHealth': build_refresh_health(payload, now=10000)}
+        health = build_refresh_health(payload, previous, now=12000)
+        self.assertEqual([event['kind'] for event in health['events']], ['pipeline_resumed'])
+        self.assertEqual(health['events'][0]['gapSeconds'], 2000)
+
+    def test_history_is_bounded_retained_and_does_not_export_raw_errors(self):
+        now = 20000000
+        events = [{'at': now - index, 'component': 'upbit', 'kind': 'recovered', 'rawError': 'private'} for index in range(250)]
+        events += [{'at': now - HISTORY_RETENTION_SECONDS - 1, 'component': 'upbit', 'kind': 'failure'},
+                   {'at': now + 1, 'component': 'upbit', 'kind': 'failure'},
+                   {'at': now, 'component': 'unknown', 'kind': 'failure'}]
+        health = build_refresh_health(self.snapshot(), {'refreshHealth': {'historyStartedAt': now - 500, 'events': events}}, now=now)
+        self.assertEqual(len(health['events']), HISTORY_MAX_EVENTS)
+        self.assertNotIn('rawError', str(health['events']))
+        self.assertEqual(health['events'][0]['at'], now)
+        again = build_refresh_health(self.snapshot(), {'refreshHealth': health}, now=now + 1)
+        self.assertEqual(again['events'], health['events'])
+
+    def test_maintenance_has_verified_commit_shape_and_is_distinct_from_automatic_repair(self):
+        entry = {'kind': 'maintenance', 'component': 'pipeline', 'at': 9900, 'commit': 'a' * 40, 'title': '개발 수정', 'detail': '검증된 코드 변경'}
+        health = build_refresh_health(self.snapshot(), now=10000, maintenance=[entry, {**entry, 'commit': 'https://bad.example'}])
+        self.assertEqual(len(health['events']), 1)
+        self.assertEqual(health['events'][0]['kind'], 'maintenance')
+        self.assertEqual(health['events'][0]['commit'], 'a' * 40)
+        second = build_refresh_health(self.snapshot(), {'refreshHealth': health}, now=10300, maintenance=[entry])
+        self.assertEqual(second['events'], health['events'])
+
+    def test_maintenance_file_contains_only_valid_nonfuture_commit_entries(self):
+        import json
+        entries = json.loads(Path(__file__).with_name('maintenance_history.json').read_text(encoding='utf-8'))
+        now = max(entry['at'] for entry in entries) + 1
+        health = build_refresh_health(self.snapshot(), now=now, maintenance=entries)
+        self.assertEqual(sum(event['kind'] == 'maintenance' for event in health['events']), len(entries))
+        self.assertTrue(all(len(event['commit']) == 40 for event in health['events']))
 
 
 if __name__ == '__main__':
