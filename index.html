@@ -4149,6 +4149,58 @@
       line-height: 1.7;
     }
 
+    body.refresh-history-open { overflow: hidden; }
+    .refresh-history-card {
+      width: min(900px, 100%);
+      max-height: calc(100dvh - 44px);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      color: var(--text);
+      font-size: 15px;
+      line-height: 1.6;
+    }
+    .refresh-history-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 20px 24px 12px; }
+    .refresh-history-head h2 { margin: 0; font-size: 22px; letter-spacing: 0; }
+    .refresh-history-head p { display: flex; flex-wrap: wrap; gap: 2px 8px; margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+    .refresh-history-zone { white-space: nowrap; }
+    .refresh-history-close { flex: 0 0 36px; width: 36px; height: 36px; padding: 0; border-radius: 6px; font-size: 24px; line-height: 1; }
+    .refresh-history-tools { padding: 0 24px 14px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+    .refresh-history-tools select { width: 144px; min-height: 36px; padding: 6px 10px; border-radius: 6px; font-size: 14px; }
+    .refresh-history-tools span { color: var(--muted); font-size: 12px; }
+    .refresh-history-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 24px 20px; }
+    .refresh-history-status { padding: 12px 0; border-bottom: 1px solid var(--line); }
+    .refresh-history-status h3 { margin: 0 0 6px; font-size: 15px; letter-spacing: 0; }
+    .refresh-history-status p { margin: 3px 0; }
+    .refresh-history-status small { display: block; color: var(--muted); font-size: 12px; }
+    .refresh-history-list { margin: 0; padding: 0; list-style: none; }
+    .refresh-history-row { display: grid; grid-template-columns: 168px 144px minmax(0, 1fr); gap: 14px; padding: 16px 0; overflow-wrap: anywhere; }
+    .refresh-history-row + .refresh-history-row { border-top: 1px solid var(--line); }
+    .refresh-history-row time { color: var(--muted); font-size: 13px; }
+    .refresh-history-row strong { display: block; font-size: 14px; }
+    .refresh-history-row p { margin: 0 0 5px; }
+    .refresh-history-kind { display: inline-block; margin-top: 4px; color: var(--accent); font-size: 12px; font-weight: 700; }
+    .refresh-history-kind.failure, .refresh-history-kind.attention { color: #c8543b; }
+    .refresh-history-kind.recovered { color: #16875e; }
+    .refresh-history-detail a { color: var(--accent); font-size: 13px; }
+    .refresh-history-empty { padding: 24px 0; color: var(--muted); }
+    .refresh-history-footer { display: flex; flex-wrap: wrap; gap: 10px 18px; padding: 12px 24px; border-top: 1px solid var(--line); font-size: 13px; }
+    .refresh-history-footer a { color: var(--accent); }
+    @media (max-width: 600px) {
+      #refreshHistoryModal { padding: 10px; }
+      .refresh-history-card { max-height: calc(100dvh - 20px); }
+      .refresh-history-head { padding: 16px 16px 12px; }
+      .refresh-history-tools { padding: 0 16px 12px; flex-wrap: wrap; }
+      .refresh-history-body { padding: 0 16px 16px; }
+      .refresh-history-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 12px; }
+      .refresh-history-detail { grid-column: 1 / -1; }
+      .refresh-history-footer { padding: 12px 16px; }
+    }
+
     .coin-info-modal {
       position: fixed;
       inset: 0;
@@ -6899,6 +6951,7 @@
             <div class="auto-pill" id="fxRateStatus"></div>
             <button class="auto-pill manual-refresh-btn" id="manualRefreshBtn" type="button">수동 갱신</button>
             <div class="auto-pill" id="manualRefreshHint">수동 갱신 가능</div>
+            <button class="auto-pill manual-refresh-btn" id="refreshHistoryBtn" type="button">갱신 기록</button>
           </div>
         </div>
         </div>
@@ -7262,6 +7315,31 @@
     </section>
   </div>
 
+  <div class="coin-info-modal hidden" id="refreshHistoryModal" aria-modal="true" role="dialog" aria-labelledby="refreshHistoryTitle">
+    <section class="refresh-history-card">
+      <div class="refresh-history-head">
+        <div>
+          <h2 id="refreshHistoryTitle">갱신 기록</h2>
+          <p id="refreshHistorySubtitle"></p>
+        </div>
+        <button class="refresh-history-close" id="refreshHistoryCloseBtn" type="button" aria-label="갱신 기록 닫기" title="닫기">&times;</button>
+      </div>
+      <div class="refresh-history-tools">
+        <select id="refreshHistoryFilter" aria-label="갱신 기록 구분">
+          <option value="all">전체 기록</option>
+          <option value="automatic">자동 처리</option>
+          <option value="maintenance">개발 수정</option>
+        </select>
+        <span>최근 90일 · 최대 200건</span>
+      </div>
+      <div class="refresh-history-body" id="refreshHistoryBody"></div>
+      <div class="refresh-history-footer">
+        <a href="https://github.com/fnfnfn3232/coin/actions/workflows/auto-refresh-data.yml" target="_blank" rel="noopener noreferrer">서버 실행 기록</a>
+        <a href="https://github.com/fnfnfn3232/coin/actions/workflows/refresh-watchdog.yml" target="_blank" rel="noopener noreferrer">자동 점검 기록</a>
+      </div>
+    </section>
+  </div>
+
   <div class="coin-info-modal hidden" id="coinInfoModal" aria-modal="true" role="dialog" aria-labelledby="coinInfoTitle">
     <section class="coin-info-card">
       <div class="coin-info-head">
@@ -7615,6 +7693,13 @@
       const fxRateStatus = document.getElementById("fxRateStatus");
       const manualRefreshBtn = document.getElementById("manualRefreshBtn");
       const manualRefreshHint = document.getElementById("manualRefreshHint");
+      const refreshHistoryBtn = document.getElementById("refreshHistoryBtn");
+      const refreshHistoryModal = document.getElementById("refreshHistoryModal");
+      const refreshHistoryBody = document.getElementById("refreshHistoryBody");
+      const refreshHistorySubtitle = document.getElementById("refreshHistorySubtitle");
+      const refreshHistoryCloseBtn = document.getElementById("refreshHistoryCloseBtn");
+      const refreshHistoryFilter = document.getElementById("refreshHistoryFilter");
+      let refreshHistoryReturnFocus = null;
       const thPrice = document.getElementById("thPrice");
       const thCap = document.getElementById("thCap");
       const thFdv = document.getElementById("thFdv");
@@ -13229,6 +13314,7 @@
       }
 
       function showSiteLock() {
+        closeRefreshHistory(false);
         document.body.classList.add("locked");
         siteLock.classList.remove("hidden");
         lockPasswordInput.value = "";
@@ -13921,6 +14007,10 @@
       });
       window.addEventListener("keydown", (event) => {
         if (event.key !== "Escape") return;
+        if (!refreshHistoryModal.classList.contains("hidden")) {
+          closeRefreshHistory();
+          return;
+        }
         if (!coinInfoModal.classList.contains("hidden")) {
           closeCoinInfo();
           return;
@@ -15195,6 +15285,70 @@
         const fxRateText = Number.isFinite(fxRate) ? `${formatNumber(fxRate, 2)}원` : "-";
         const fxSourceText = fxSourceLabel(data.fxSource);
         fxRateStatus.textContent = `USDT 환율 ${fxRateText} (${fxSourceText})`;
+        if (!refreshHistoryModal.classList.contains("hidden") && !isSiteLocked()) renderRefreshHistory();
+      }
+
+      function formatRefreshHistoryTime(timestamp) {
+        const seconds = Number(timestamp);
+        if (!Number.isFinite(seconds) || seconds <= 0) return "기록 없음";
+        return new Date(seconds * 1000).toLocaleString("ko-KR", {
+          timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit",
+          hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+        });
+      }
+
+      function renderRefreshHistory() {
+        const health = data.refreshHealth || {};
+        const labels = { upbit: "업비트 시세", bithumb: "빗썸 시세", binance: "바이낸스 시세", coinbase: "코인베이스 시세",
+          upbit_notices: "업비트 공지", bithumb_notices: "빗썸 공지", binance_notices: "바이낸스 공지",
+          binance_futures: "바이낸스 선물", coinbase_futures: "코인베이스 선물", defillama: "디파이 자료", pipeline: "서버 갱신" };
+        const kinds = { failure: "장애 감지", recovered: "복구 완료", attention: "반복 장애", fallback: "예비 경로 전환",
+          fallback_active: "예비 경로 사용", source_changed: "수집 경로 변경", pipeline_resumed: "갱신 재개", maintenance: "개발 수정" };
+        const details = { failure: "수집 확인에 실패해 마지막 정상 데이터를 유지하고 있습니다.",
+          recovered: "다시 정상 수집에 성공해 최신 자료로 반영했습니다.", attention: "반복 실패 또는 장시간 지연을 감지했습니다. 자동 재시도와 장애 기록을 계속합니다.",
+          fallback: "공식 API 대신 업비트 공식 공지 채널로 전환해 수집을 이어갑니다.",
+          fallback_active: "업비트 공식 공지 채널에서 정상 수집 중입니다. 기존 API 복구 여부도 재확인합니다.",
+          source_changed: "정상 확인한 공식 수집 경로로 변경했습니다.", pipeline_resumed: "30분 이상 게시 간격이 벌어진 뒤 새 자료가 게시됐습니다." };
+        const components = Object.entries(health.components || {}).filter(([name]) => labels[name]);
+        const pending = components.filter(([, status]) => status?.state === "degraded");
+        const stale = !Number(data.generatedAt) || Date.now() / 1000 - Number(data.generatedAt) > 1800;
+        refreshHistorySubtitle.innerHTML = `<span>마지막 확인 ${escapeHtml(formatRefreshHistoryTime(health.checkedAt))}</span><span class="refresh-history-zone">한국시간</span>`;
+        let statusHtml = `<p>${health.state === "degraded" ? "일부 항목의 정상 확인이 지연되고 있습니다." : components.length ? "현재 점검 항목 정상" : "아직 서버 점검 정보가 없습니다."}</p>`;
+        if (pending.length) statusHtml = pending.map(([name, status]) => `<p><strong>${escapeHtml(labels[name])} · ${status.needsAttention ? "반복 장애" : "자동 재시도 중"}</strong><small>마지막 정상 확인 ${escapeHtml(formatRefreshHistoryTime(status.lastSuccessAt))}</small></p>`).join("");
+        if (stale) statusHtml = `<p><strong>서버 갱신 지연</strong><small>마지막 게시 ${escapeHtml(formatRefreshHistoryTime(data.generatedAt))}</small></p>` + (pending.length ? statusHtml : "");
+        const events = (Array.isArray(health.events) ? health.events : []).filter(event => event && kinds[event.kind] && labels[event.component] && Number(event.at) > 0)
+          .sort((a, b) => Number(b.at) - Number(a.at)).slice(0, 200)
+          .filter(event => refreshHistoryFilter.value === "all" || (refreshHistoryFilter.value === "maintenance" ? event.kind === "maintenance" : event.kind !== "maintenance"));
+        const rows = events.map(event => {
+          const commit = String(event.commit || "");
+          const changeLink = event.kind === "maintenance" && /^[a-f0-9]{40}$/.test(commit)
+            ? `<a href="https://github.com/fnfnfn3232/coin/commit/${commit}" target="_blank" rel="noopener noreferrer">코드 변경 확인</a>` : "";
+          const duration = Number(event.durationSeconds);
+          const durationText = event.kind === "recovered" && duration > 0 ? ` · 지연 ${Math.max(1, Math.ceil(duration / 60))}분` : "";
+          return `<li class="refresh-history-row" data-history-kind="${escapeAttr(event.kind)}"><time>${escapeHtml(formatRefreshHistoryTime(event.at))}</time>
+            <div><strong>${escapeHtml(labels[event.component])}</strong><span class="refresh-history-kind ${escapeAttr(event.kind)}">${escapeHtml(kinds[event.kind] + durationText)}</span></div>
+            <div class="refresh-history-detail">${event.kind === "maintenance" ? `<strong>${escapeHtml(event.title || "개발 수정")}</strong>` : ""}<p>${escapeHtml(event.kind === "maintenance" ? event.detail || "" : details[event.kind] || "")}</p>${changeLink}</div></li>`;
+        }).join("");
+        const scrollTop = refreshHistoryBody.scrollTop;
+        refreshHistoryBody.innerHTML = `<div class="refresh-history-status"><h3>현재 상태</h3>${statusHtml}</div><ol class="refresh-history-list">${rows || '<li class="refresh-history-empty">기록된 변경 내역이 없습니다.</li>'}</ol>`;
+        refreshHistoryBody.scrollTop = scrollTop;
+      }
+
+      function openRefreshHistory() {
+        if (isSiteLocked()) return;
+        refreshHistoryReturnFocus = document.activeElement;
+        renderRefreshHistory();
+        refreshHistoryModal.classList.remove("hidden");
+        document.body.classList.add("refresh-history-open");
+        refreshHistoryCloseBtn.focus();
+      }
+
+      function closeRefreshHistory(restoreFocus = true) {
+        refreshHistoryModal.classList.add("hidden");
+        document.body.classList.remove("refresh-history-open");
+        refreshHistoryBody.innerHTML = "";
+        if (restoreFocus && refreshHistoryReturnFocus?.isConnected) refreshHistoryReturnFocus.focus();
+        refreshHistoryReturnFocus = null;
       }
 
       function getManualRefreshLastTs() {
@@ -18599,6 +18753,29 @@
         });
       }
       applyMarketSourceVisibility();
+
+      refreshHistoryBtn.addEventListener("click", openRefreshHistory);
+      refreshHistoryCloseBtn.addEventListener("click", () => closeRefreshHistory());
+      refreshHistoryFilter.addEventListener("change", () => {
+        renderRefreshHistory();
+        refreshHistoryBody.scrollTop = 0;
+      });
+      refreshHistoryModal.addEventListener("click", event => {
+        if (event.target === refreshHistoryModal) closeRefreshHistory();
+      });
+      refreshHistoryModal.addEventListener("keydown", event => {
+        if (event.key !== "Tab") return;
+        const controls = [...refreshHistoryModal.querySelectorAll('button, select, a[href]')].filter(element => !element.disabled && element.getClientRects().length);
+        const first = controls[0];
+        const last = controls[controls.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last?.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first?.focus();
+        }
+      });
 
       manualRefreshBtn.addEventListener("click", async () => {
         const now = Date.now();
