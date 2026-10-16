@@ -4168,6 +4168,13 @@
     .refresh-history-head h2 { margin: 0; font-size: 22px; letter-spacing: 0; }
     .refresh-history-head p { display: flex; flex-wrap: wrap; gap: 2px 8px; margin: 4px 0 0; color: var(--muted); font-size: 13px; }
     .refresh-history-zone { white-space: nowrap; }
+    .refresh-history-card [hidden] { display: none !important; }
+    .refresh-history-auth-pending .refresh-history-card { width: min(440px, 100%); }
+    .refresh-history-auth-form { display: grid; min-height: 0; overflow-y: auto; gap: 12px; padding: 6px 24px 24px; }
+    .refresh-history-auth-form label { display: grid; gap: 8px; font-size: 14px; }
+    .refresh-history-auth-form input { width: 100%; min-width: 0; min-height: 42px; border-radius: 6px; font-size: 16px; }
+    .refresh-history-auth-form button { justify-self: start; min-width: 80px; min-height: 38px; border-radius: 6px; }
+    .refresh-history-auth-error { margin: 0; min-height: 22px; color: #c8543b; font-size: 13px; }
     .refresh-history-close { flex: 0 0 36px; width: 36px; height: 36px; padding: 0; border-radius: 6px; font-size: 24px; line-height: 1; }
     .refresh-history-tools { padding: 0 24px 14px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
     .refresh-history-tools select { width: 144px; min-height: 36px; padding: 6px 10px; border-radius: 6px; font-size: 14px; }
@@ -7324,7 +7331,14 @@
         </div>
         <button class="refresh-history-close" id="refreshHistoryCloseBtn" type="button" aria-label="갱신 기록 닫기" title="닫기">&times;</button>
       </div>
-      <div class="refresh-history-tools">
+      <form class="refresh-history-auth-form" id="refreshHistoryAuthForm">
+        <label for="refreshHistoryPassword">관리자 비밀번호
+          <input id="refreshHistoryPassword" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="512" required />
+        </label>
+        <button id="refreshHistorySubmitBtn" type="submit">확인</button>
+        <p class="refresh-history-auth-error" id="refreshHistoryAuthError" role="alert"></p>
+      </form>
+      <div class="refresh-history-tools" id="refreshHistoryTools" hidden>
         <select id="refreshHistoryFilter" aria-label="갱신 기록 구분">
           <option value="all">전체 기록</option>
           <option value="automatic">자동 처리</option>
@@ -7332,8 +7346,8 @@
         </select>
         <span>최근 90일 · 최대 200건</span>
       </div>
-      <div class="refresh-history-body" id="refreshHistoryBody"></div>
-      <div class="refresh-history-footer">
+      <div class="refresh-history-body" id="refreshHistoryBody" hidden></div>
+      <div class="refresh-history-footer" id="refreshHistoryFooter" hidden>
         <a href="https://github.com/fnfnfn3232/coin/actions/workflows/auto-refresh-data.yml" target="_blank" rel="noopener noreferrer">서버 실행 기록</a>
         <a href="https://github.com/fnfnfn3232/coin/actions/workflows/refresh-watchdog.yml" target="_blank" rel="noopener noreferrer">자동 점검 기록</a>
       </div>
@@ -7597,7 +7611,12 @@
         const raw = localStorage.getItem(LAST_GOOD_DATA_KEY);
         if (!raw) return null;
         const parsed = JSON.parse(raw);
-        return isValidBoardPayload(parsed) ? parsed : null;
+        if (!isValidBoardPayload(parsed)) return null;
+        const safe = marketSnapshotWithoutRefreshHistory(parsed);
+        try { localStorage.setItem(LAST_GOOD_DATA_KEY, JSON.stringify(safe)); } catch (_error) {
+          try { localStorage.removeItem(LAST_GOOD_DATA_KEY); } catch (_removeError) {}
+        }
+        return safe;
       } catch (_error) {
         return null;
       }
@@ -7606,7 +7625,7 @@
     function saveLastGoodData(payload) {
       if (!isValidBoardPayload(payload)) return false;
       try {
-        localStorage.setItem(LAST_GOOD_DATA_KEY, JSON.stringify(payload));
+        localStorage.setItem(LAST_GOOD_DATA_KEY, JSON.stringify(marketSnapshotWithoutRefreshHistory(payload)));
         return true;
       } catch (_error) {
         // Ignore localStorage quota errors to keep runtime stable.
@@ -7623,8 +7642,19 @@
       }
     }
 
+    function marketSnapshotWithoutRefreshHistory(payload) {
+      if (!payload || typeof payload !== "object") return payload;
+      const safe = { ...payload };
+      if (payload.refreshHealth && typeof payload.refreshHealth === "object") {
+        safe.refreshHealth = { state: payload.refreshHealth.state, needsAttention: payload.refreshHealth.needsAttention === true };
+      }
+      safe.noticeRefresh = Object.fromEntries(Object.entries(payload.noticeRefresh || {}).map(([name, status]) => [name, status?.error ? { error: true } : {}]));
+      safe.refreshIssues = Object.fromEntries(Object.keys(payload.refreshIssues || {}).map(name => [name, "refresh_delayed"]));
+      return safe;
+    }
+
     const appShell = document.getElementById("appShell");
-    let data = window.BOARD_DATA || {
+    let data = marketSnapshotWithoutRefreshHistory(window.BOARD_DATA || {
       generatedAt: 0,
       autoRefreshMinutes: 10,
       boards: { binance: [], upbit: [], bithumb: [], coinbase: [] },
@@ -7643,12 +7673,14 @@
       notes: {},
       defillamaRankings: { generatedAt: 0, status: "unavailable", categories: {} },
       news: { source: "worker_protected", status: "protected", protected: true, items: [] },
-    };
+    });
+    if (window.BOARD_DATA) window.BOARD_DATA = data;
     const protectedBoardMediaCache = new Map();
     let marketDataLoaded = isValidBoardPayload(window.BOARD_DATA);
     let marketDataLoadedFromServer = false;
     let marketDataLoadPromise = null;
-    const cachedData = canUseLastGoodData() ? loadLastGoodData() : null;
+    const loadedCachedData = loadLastGoodData();
+    const cachedData = canUseLastGoodData() ? loadedCachedData : null;
     if (isValidBoardPayload(cachedData)) {
       const cachedGeneratedAt = Number(cachedData.generatedAt) || 0;
       const currentGeneratedAt = Number(data.generatedAt) || 0;
@@ -7700,6 +7732,14 @@
       const refreshHistoryCloseBtn = document.getElementById("refreshHistoryCloseBtn");
       const refreshHistoryFilter = document.getElementById("refreshHistoryFilter");
       let refreshHistoryReturnFocus = null;
+      let refreshHistoryData = null;
+      let refreshHistoryRequestSerial = 0;
+      const refreshHistoryAuthForm = document.getElementById("refreshHistoryAuthForm");
+      const refreshHistoryPassword = document.getElementById("refreshHistoryPassword");
+      const refreshHistoryAuthError = document.getElementById("refreshHistoryAuthError");
+      const refreshHistorySubmitBtn = document.getElementById("refreshHistorySubmitBtn");
+      const refreshHistoryTools = document.getElementById("refreshHistoryTools");
+      const refreshHistoryFooter = document.getElementById("refreshHistoryFooter");
       const thPrice = document.getElementById("thPrice");
       const thCap = document.getElementById("thCap");
       const thFdv = document.getElementById("thFdv");
@@ -13389,6 +13429,7 @@
       }
 
       function clearSiteLoginState() {
+        closeRefreshHistory(false);
         siteAuthConfirmed = false;
         siteSessionRole = "";
         siteSessionSubject = "";
@@ -15285,7 +15326,7 @@
         const fxRateText = Number.isFinite(fxRate) ? `${formatNumber(fxRate, 2)}원` : "-";
         const fxSourceText = fxSourceLabel(data.fxSource);
         fxRateStatus.textContent = `USDT 환율 ${fxRateText} (${fxSourceText})`;
-        if (!refreshHistoryModal.classList.contains("hidden") && !isSiteLocked()) renderRefreshHistory();
+        if (!refreshHistoryModal.classList.contains("hidden") && !isSiteLocked() && refreshHistoryData) renderRefreshHistory();
       }
 
       function formatRefreshHistoryTime(timestamp) {
@@ -15298,7 +15339,8 @@
       }
 
       function renderRefreshHistory() {
-        const health = data.refreshHealth || {};
+        if (!refreshHistoryData || isSiteLocked() || refreshHistoryModal.classList.contains("hidden")) return;
+        const health = refreshHistoryData.refreshHealth || {};
         const labels = { upbit: "업비트 시세", bithumb: "빗썸 시세", binance: "바이낸스 시세", coinbase: "코인베이스 시세",
           upbit_notices: "업비트 공지", bithumb_notices: "빗썸 공지", binance_notices: "바이낸스 공지",
           binance_futures: "바이낸스 선물", coinbase_futures: "코인베이스 선물", defillama: "디파이 자료", pipeline: "서버 갱신" };
@@ -15311,11 +15353,12 @@
           source_changed: "정상 확인한 공식 수집 경로로 변경했습니다.", pipeline_resumed: "30분 이상 게시 간격이 벌어진 뒤 새 자료가 게시됐습니다." };
         const components = Object.entries(health.components || {}).filter(([name]) => labels[name]);
         const pending = components.filter(([, status]) => status?.state === "degraded");
-        const stale = !Number(data.generatedAt) || Date.now() / 1000 - Number(data.generatedAt) > 1800;
+        const generatedAt = Number(refreshHistoryData.generatedAt);
+        const stale = !generatedAt || Date.now() / 1000 - generatedAt > 1800;
         refreshHistorySubtitle.innerHTML = `<span>마지막 확인 ${escapeHtml(formatRefreshHistoryTime(health.checkedAt))}</span><span class="refresh-history-zone">한국시간</span>`;
         let statusHtml = `<p>${health.state === "degraded" ? "일부 항목의 정상 확인이 지연되고 있습니다." : components.length ? "현재 점검 항목 정상" : "아직 서버 점검 정보가 없습니다."}</p>`;
         if (pending.length) statusHtml = pending.map(([name, status]) => `<p><strong>${escapeHtml(labels[name])} · ${status.needsAttention ? "반복 장애" : "자동 재시도 중"}</strong><small>마지막 정상 확인 ${escapeHtml(formatRefreshHistoryTime(status.lastSuccessAt))}</small></p>`).join("");
-        if (stale) statusHtml = `<p><strong>서버 갱신 지연</strong><small>마지막 게시 ${escapeHtml(formatRefreshHistoryTime(data.generatedAt))}</small></p>` + (pending.length ? statusHtml : "");
+        if (stale) statusHtml = `<p><strong>서버 갱신 지연</strong><small>마지막 게시 ${escapeHtml(formatRefreshHistoryTime(generatedAt))}</small></p>` + (pending.length ? statusHtml : "");
         const events = (Array.isArray(health.events) ? health.events : []).filter(event => event && kinds[event.kind] && labels[event.component] && Number(event.at) > 0)
           .sort((a, b) => Number(b.at) - Number(a.at)).slice(0, 200)
           .filter(event => refreshHistoryFilter.value === "all" || (refreshHistoryFilter.value === "maintenance" ? event.kind === "maintenance" : event.kind !== "maintenance"));
@@ -15330,20 +15373,33 @@
             <div class="refresh-history-detail">${event.kind === "maintenance" ? `<strong>${escapeHtml(event.title || "개발 수정")}</strong>` : ""}<p>${escapeHtml(event.kind === "maintenance" ? event.detail || "" : details[event.kind] || "")}</p>${changeLink}</div></li>`;
         }).join("");
         const scrollTop = refreshHistoryBody.scrollTop;
-        refreshHistoryBody.innerHTML = `<div class="refresh-history-status"><h3>현재 상태</h3>${statusHtml}</div><ol class="refresh-history-list">${rows || '<li class="refresh-history-empty">기록된 변경 내역이 없습니다.</li>'}</ol>`;
+        refreshHistoryBody.innerHTML = `<div class="refresh-history-status"><h3>조회 시점 상태</h3>${statusHtml}</div><ol class="refresh-history-list">${rows || '<li class="refresh-history-empty">기록된 변경 내역이 없습니다.</li>'}</ol>`;
         refreshHistoryBody.scrollTop = scrollTop;
       }
 
       function openRefreshHistory() {
         if (isSiteLocked()) return;
+        closeRefreshHistory(false);
         refreshHistoryReturnFocus = document.activeElement;
-        renderRefreshHistory();
         refreshHistoryModal.classList.remove("hidden");
+        refreshHistoryModal.classList.add("refresh-history-auth-pending");
         document.body.classList.add("refresh-history-open");
-        refreshHistoryCloseBtn.focus();
+        refreshHistorySubtitle.textContent = "관리자 확인";
+        refreshHistoryAuthForm.hidden = false;
+        refreshHistoryTools.hidden = true;
+        refreshHistoryBody.hidden = true;
+        refreshHistoryFooter.hidden = true;
+        refreshHistoryPassword.focus();
       }
 
       function closeRefreshHistory(restoreFocus = true) {
+        refreshHistoryRequestSerial += 1;
+        refreshHistoryData = null;
+        refreshHistoryPassword.value = "";
+        refreshHistoryAuthError.textContent = "";
+        refreshHistorySubmitBtn.disabled = false;
+        refreshHistorySubmitBtn.textContent = "확인";
+        refreshHistorySubtitle.textContent = "";
         refreshHistoryModal.classList.add("hidden");
         document.body.classList.remove("refresh-history-open");
         refreshHistoryBody.innerHTML = "";
@@ -16604,6 +16660,7 @@
 
       function mergeMarketSnapshotWithLiveNews(snapshot) {
         if (!snapshot || typeof snapshot !== "object") return snapshot;
+        snapshot = marketSnapshotWithoutRefreshHistory(snapshot);
         const currentNews = data?.news;
         const hasLiveNewsState = liveNewsFetchedAtMs > 0
           || (Array.isArray(currentNews?.items) && currentNews.items.length > 0);
@@ -18756,6 +18813,44 @@
 
       refreshHistoryBtn.addEventListener("click", openRefreshHistory);
       refreshHistoryCloseBtn.addEventListener("click", () => closeRefreshHistory());
+      refreshHistoryAuthForm.addEventListener("submit", async event => {
+        event.preventDefault();
+        if (isSiteLocked() || refreshHistorySubmitBtn.disabled) return;
+        const password = refreshHistoryPassword.value;
+        if (!password) return;
+        refreshHistoryPassword.value = "";
+        const serial = ++refreshHistoryRequestSerial;
+        const token = getServerAuthToken();
+        refreshHistorySubmitBtn.disabled = true;
+        refreshHistorySubmitBtn.textContent = "확인 중";
+        refreshHistoryAuthError.textContent = "";
+        try {
+          const result = await fetchServerAuth("/api/admin/refresh-history", {
+            method: "POST", cache: "no-store", body: JSON.stringify({ adminPassword: password }),
+          });
+          if (serial !== refreshHistoryRequestSerial || isSiteLocked() || !siteAuthConfirmed || token !== getServerAuthToken()) return;
+          if (!result?.refreshHealth || typeof result.refreshHealth !== "object") throw new Error("refresh_history_invalid");
+          refreshHistoryData = result;
+          refreshHistoryModal.classList.remove("refresh-history-auth-pending");
+          refreshHistoryAuthForm.hidden = true;
+          refreshHistoryTools.hidden = false;
+          refreshHistoryBody.hidden = false;
+          refreshHistoryFooter.hidden = false;
+          renderRefreshHistory();
+          refreshHistoryCloseBtn.focus();
+        } catch (error) {
+          if (serial !== refreshHistoryRequestSerial || isSiteLocked()) return;
+          refreshHistoryAuthError.textContent = error.status === 429 ? getLoginErrorMessage(error)
+            : error.message === "invalid_password" || error.message === "admin_password_required" ? "관리자 비밀번호가 맞지 않습니다."
+            : "갱신 기록을 확인하지 못했습니다. 잠시 후 다시 시도해 주세요.";
+          refreshHistoryPassword.focus();
+        } finally {
+          if (serial === refreshHistoryRequestSerial) {
+            refreshHistorySubmitBtn.disabled = false;
+            refreshHistorySubmitBtn.textContent = "확인";
+          }
+        }
+      });
       refreshHistoryFilter.addEventListener("change", () => {
         renderRefreshHistory();
         refreshHistoryBody.scrollTop = 0;
@@ -18765,7 +18860,7 @@
       });
       refreshHistoryModal.addEventListener("keydown", event => {
         if (event.key !== "Tab") return;
-        const controls = [...refreshHistoryModal.querySelectorAll('button, select, a[href]')].filter(element => !element.disabled && element.getClientRects().length);
+        const controls = [...refreshHistoryModal.querySelectorAll('button, input, select, a[href]')].filter(element => !element.disabled && element.getClientRects().length);
         const first = controls[0];
         const last = controls[controls.length - 1];
         if (event.shiftKey && document.activeElement === first) {

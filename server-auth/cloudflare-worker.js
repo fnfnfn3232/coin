@@ -1537,6 +1537,7 @@ async function requireGithubOidc(request, env) {
 
 function isProtectedContentPath(url) {
   return url.pathname === "/api/market-data"
+    || url.pathname === "/api/admin/refresh-history"
     || url.pathname === "/api/l2-fees"
     || url.pathname === "/api/l1-fees"
     || url.pathname === "/api/exchange-history"
@@ -2330,6 +2331,16 @@ function normalizeMarketDataPayload(payload) {
   return normalized;
 }
 
+function marketDataWithoutRefreshHistory(payload) {
+  const safe = { ...payload };
+  if (payload.refreshHealth && typeof payload.refreshHealth === "object") {
+    safe.refreshHealth = { state: payload.refreshHealth.state, needsAttention: payload.refreshHealth.needsAttention === true };
+  }
+  safe.noticeRefresh = Object.fromEntries(Object.entries(payload.noticeRefresh || {}).map(([name, status]) => [name, status?.error ? { error: true } : {}]));
+  safe.refreshIssues = Object.fromEntries(Object.keys(payload.refreshIssues || {}).map(name => [name, "refresh_delayed"]));
+  return safe;
+}
+
 function emptyExchangeHistoryRecord() {
   return {
     version: 1,
@@ -2978,7 +2989,7 @@ export class BoardStore {
     }, 200, this.env);
   }
 
-  async handleMarketDataRequest(request, url = new URL(request.url)) {
+  async handleMarketDataRequest(request, url = new URL(request.url), includePrivate = false) {
     const since = Math.max(0, Math.floor(Number(url.searchParams.get("since")) || 0));
     if (since > 0) {
       const meta = await this.state.storage.get(MARKET_DATA_KEY);
@@ -2994,7 +3005,20 @@ export class BoardStore {
     }
     const payload = await this.readMarketData();
     if (!payload) return jsonResponse({ error: "market_data_not_ready" }, 404, this.env);
-    return jsonResponse(payload, 200, this.env);
+    return jsonResponse(includePrivate ? payload : marketDataWithoutRefreshHistory(payload), 200, this.env);
+  }
+
+  async handleRefreshHistoryRequest(request) {
+    if (request.method !== "POST") return jsonResponse({ error: "method_not_allowed" }, 405, this.env);
+    const body = await parseJsonBody(request);
+    const password = typeof body?.adminPassword === "string" ? body.adminPassword : "";
+    if (!password) return jsonResponse({ error: "admin_password_required" }, 401, this.env);
+    // A role, OTP login or previous admin verification never replaces this fresh check.
+    const denied = await this.checkAdminPassword(request, password);
+    if (denied) return denied;
+    const payload = await this.readMarketData();
+    if (!payload) return jsonResponse({ error: "market_data_not_ready" }, 404, this.env);
+    return jsonResponse({ generatedAt: payload.generatedAt, refreshHealth: payload.refreshHealth || {} }, 200, this.env);
   }
 
   async handleLivePricesRequest() {
@@ -4394,7 +4418,7 @@ export class BoardStore {
       && url.pathname === "/api/market-data"
       && request.headers.get("X-Market-Data-Sync") === "1"
     ) {
-      return this.recordApiResponse(await this.handleMarketDataRequest(request, url));
+      return this.recordApiResponse(await this.handleMarketDataRequest(request, url, true));
     }
 
     if (request.method === "POST" && url.pathname === "/api/market-data") {
@@ -4441,6 +4465,10 @@ export class BoardStore {
 
     if (request.method === "GET" && url.pathname === "/api/market-data") {
       return this.recordApiResponse(await this.handleMarketDataRequest(request, url));
+    }
+
+    if (url.pathname === "/api/admin/refresh-history") {
+      return this.recordApiResponse(await this.handleRefreshHistoryRequest(request));
     }
 
     if (request.method === "GET" && url.pathname === "/api/exchange-history") {
@@ -4946,6 +4974,10 @@ export default {
       if (!env.BOARD_STORE) return jsonResponse({ error: "market_data_storage_not_configured" }, 500, env);
       const id = env.BOARD_STORE.idFromName("free-board");
       return env.BOARD_STORE.get(id).fetch(request);
+    }
+    if (url.pathname === "/api/admin/refresh-history") {
+      if (!env.BOARD_STORE) return jsonResponse({ error: "auth_storage_unavailable" }, 503, env);
+      return env.BOARD_STORE.get(env.BOARD_STORE.idFromName("free-board")).fetch(request);
     }
     if (url.pathname === "/api/exchange-history" && request.method === "GET") {
       if (!env.BOARD_STORE) return jsonResponse({ error: "exchange_history_storage_not_configured" }, 500, env);

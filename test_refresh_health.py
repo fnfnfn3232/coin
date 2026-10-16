@@ -236,7 +236,7 @@ class RefreshHealthTests(unittest.TestCase):
 
     def test_maintenance_file_contains_only_valid_nonfuture_commit_entries(self):
         import json
-        entries = json.loads(Path(__file__).with_name('maintenance_history.json').read_text(encoding='utf-8'))
+        entries = json.loads((Path(__file__).parent / '.github' / 'maintenance_history.json').read_text(encoding='utf-8'))
         now = max(entry['at'] for entry in entries) + 1
         health = build_refresh_health(self.snapshot(), now=now, maintenance=entries)
         self.assertEqual(sum(event['kind'] == 'maintenance' for event in health['events']), len(entries))

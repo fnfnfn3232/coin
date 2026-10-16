@@ -410,11 +410,65 @@ test("upload ownership, concurrent chunks, finalization and temporary cleanup", 
   }
 });
 
+test("refresh history is absent from every ordinary market response, including admin sessions", async () => {
+  const f = await fixture();
+  const payload = {
+    generatedAt: Math.floor(Date.now() / 1000), boards: { upbit: [{ symbol: "BTC", pair: "BTC/KRW" }] },
+    refreshHealth: { state: "degraded", needsAttention: true, checkedAt: 123, components: { upbit: { state: "degraded" } },
+      events: [{ title: "admin-only-journal", kind: "maintenance" }], historyStartedAt: 123 },
+    noticeRefresh: { upbit: { error: "private-notice-error", source: "private-source", providers: { private: {} } } },
+    refreshIssues: { upbit: "private-source-error" },
+  };
+  assert.equal((await f.store.writeMarketData(new Request("https://worker.example/api/market-data", { method: "POST", body: JSON.stringify(payload) }))).status, 200);
+  for (const token of [f.memberToken, f.adminToken]) {
+    const response = await f.request("/api/market-data?includePrivate=true&history=1", "GET", undefined, token);
+    assert.equal(response.status, 200);
+    const data = await response.json();
+    assert.deepEqual(data.refreshHealth, { state: "degraded", needsAttention: true });
+    assert.deepEqual(data.noticeRefresh, { upbit: { error: true } });
+    assert.deepEqual(data.refreshIssues, { upbit: "refresh_delayed" });
+    assert.doesNotMatch(JSON.stringify(data), /admin-only-journal|private-notice-error|private-source|historyStartedAt|providers/);
+    assert.equal(data.boards.upbit[0].symbol, "BTC");
+    assert.equal((await f.request(`/api/market-data?since=${payload.generatedAt}`, "GET", undefined, token)).status, 200);
+  }
+  const internal = await f.store.handleMarketDataRequest(new Request("https://worker.example/api/market-data"), new URL("https://worker.example/api/market-data"), true);
+  assert.equal((await internal.json()).refreshHealth.events[0].title, "admin-only-journal", 'trusted sync retains history for the next automatic refresh');
+  assert.equal((await f.rawRequest("/api/market-data", "GET", undefined, f.adminToken, { "X-Market-Data-Sync": "1" })).status, 401, 'a user cannot forge the GitHub sync permission');
+});
+
+test("refresh history requires a fresh administrator password even for an admin or OTP session", async () => {
+  const f = await fixture();
+  const payload = { generatedAt: 123, boards: {}, refreshHealth: { state: "healthy", events: [{ title: "private-history" }] } };
+  await f.store.writeMarketData(new Request("https://worker.example/api/market-data", { method: "POST", body: JSON.stringify(payload) }));
+  for (const token of [f.memberToken, f.adminToken]) {
+    assert.equal((await f.request("/api/admin/refresh-history", "GET", undefined, token)).status, 405);
+    const missing = await f.request("/api/admin/refresh-history", "POST", {}, token);
+    assert.equal(missing.status, 401);
+    assert.equal((await missing.json()).error, "admin_password_required");
+    const wrong = await f.request("/api/admin/refresh-history", "POST", { adminPassword: "wrong" }, token);
+    assert.equal(wrong.status, 401);
+    assert.doesNotMatch(await wrong.text(), /private-history/);
+    const valid = await f.request("/api/admin/refresh-history", "POST", { adminPassword: f.adminPassword }, token);
+    assert.equal(valid.status, 200);
+    assert.equal(valid.headers.get("Cache-Control"), "no-store");
+    const result = await valid.json();
+    assert.equal(result.refreshHealth.events[0].title, "private-history");
+    assert.equal(result.boards, undefined);
+    assert.equal(result.token, undefined, 'password verification does not promote the site session');
+    assert.equal((await f.request("/api/admin/refresh-history", "POST", {}, token)).status, 401, 'prior verification grants no reusable history access');
+  }
+  assert.equal((await (await f.request("/api/session")).json()).role, "member");
+  assert.equal((await f.request("/api/admin/refresh-history", "POST", { adminPassword: f.adminPassword }, null)).status, 401);
+  await f.request("/api/logout", "POST", {}, f.adminToken);
+  assert.equal((await f.request("/api/admin/refresh-history", "POST", { adminPassword: f.adminPassword }, f.adminToken)).status, 401);
+  assert.equal((await f.rawRequest("/api/admin/refresh-history", "POST", JSON.stringify({ adminPassword: f.adminPassword }), f.memberToken, { Origin: "https://untrusted.example" })).status, 403);
+});
+
 test("all admin password endpoints share an atomic limit and cannot spoof the client IP header", async () => {
   const f = await fixture({ write: true });
-  const paths = ["/api/admin/verify", "/api/login", "/api/admin/members", "/api/screen-settings", "/api/board/categories", "/api/board/logs", "/api/usage/stats"];
+  const paths = ["/api/admin/verify", "/api/login", "/api/admin/members", "/api/screen-settings", "/api/board/categories", "/api/board/logs", "/api/usage/stats", "/api/admin/refresh-history"];
   const responses = await Promise.all(Array.from({ length: 20 }, (_, i) => f.rawRequest(paths[i % paths.length], "POST",
-    JSON.stringify({ password: "wrong" }), f.memberToken, { "CF-Connecting-IP": "192.0.2.10", "X-Login-Client-IP": `spoof-${i}` })));
+    JSON.stringify({ password: "wrong", adminPassword: "wrong" }), f.memberToken, { "CF-Connecting-IP": "192.0.2.10", "X-Login-Client-IP": `spoof-${i}` })));
   assert.equal(responses.filter((r) => r.status === 401).length, 9);
   assert.equal(responses.filter((r) => r.status === 429).length, 11);
   assert.equal((await f.rawRequest("/api/admin/verify", "POST", f.adminPassword, "", { "Content-Type": "text/plain", "CF-Connecting-IP": "192.0.2.10" })).status, 429);
@@ -549,7 +603,7 @@ test("a member or invalid bearer token cannot inherit a stale admin cookie", asy
 
 test("untrusted origins, missing/forged/revoked sessions cannot access private content", async () => {
   const f = await fixture();
-  for (const path of ["/api/board/posts", "/api/board/categories", "/api/board/media/media-1234567890-12345678", "/api/screen-settings", "/api/market-data", "/api/news"]) {
+  for (const path of ["/api/board/posts", "/api/board/categories", "/api/board/media/media-1234567890-12345678", "/api/screen-settings", "/api/market-data", "/api/admin/refresh-history", "/api/news"]) {
     assert.equal((await f.rawRequest(path, "GET", undefined, f.memberToken, { Origin: "https://attacker.example" })).status, 403);
     for (const token of ["", "invalid", `${f.memberToken}modified`]) assert.equal((await f.request(path, "GET", undefined, token)).status, 401);
   }
@@ -583,6 +637,7 @@ test("authentication does not fall back to stateless access without its storage 
   assert.equal((await f.request("/api/session", "GET", undefined, f.adminToken)).status, 503);
   assert.equal((await f.request("/api/screen-settings", "GET", undefined, f.adminToken)).status, 503);
   assert.equal((await f.request("/api/board/posts", "GET", undefined, f.adminToken)).status, 503);
+  assert.equal((await f.request("/api/admin/refresh-history", "POST", { adminPassword: f.adminPassword }, f.adminToken)).status, 503);
 });
 
 test("concurrent view counts, comments and post creation cannot overwrite each other", async () => {

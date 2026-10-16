@@ -4833,7 +4833,7 @@ def main() -> None:
     payload = make_payload(previous_payload)
     validate_scheduled_delisting_flags(payload)
     try:
-        maintenance = json.loads((ROOT / "maintenance_history.json").read_text(encoding="utf-8"))
+        maintenance = json.loads((ROOT / ".github" / "maintenance_history.json").read_text(encoding="utf-8"))
         if not isinstance(maintenance, list):
             raise ValueError("invalid_maintenance_history")
     except (OSError, ValueError):
