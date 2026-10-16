@@ -15179,7 +15179,11 @@
         const minutes = Number(data.autoRefreshMinutes) || 60;
         const liveMinutes = Math.max(1, Math.floor(LIVE_MARKET_REFRESH_MS / (60 * 1000)));
         const suffix = location.protocol === "file:" ? ` · ${TEXT.fileModeSource}` : "";
-        autoUpdateStatus.textContent = `${TEXT.autoUpdateOn} · 서버 ${minutes}분 + 화면 ${liveMinutes}분 보정${suffix}`;
+        const noticeDelayed = Object.keys(data.refreshIssues || {}).some(key => key.endsWith("_notices"))
+          || Object.values(data.noticeRefresh || {}).some(status => status?.error);
+        autoUpdateStatus.textContent = `${TEXT.autoUpdateOn} · 서버 ${minutes}분 + 화면 ${liveMinutes}분 보정${suffix}${noticeDelayed ? " · 공지 확인 지연" : ""}`;
+        autoUpdatePill.classList.toggle("stale", Boolean(noticeDelayed));
+        autoUpdatePill.title = noticeDelayed ? "거래소 공식 공지 확인이 지연되어 마지막으로 확인한 상태를 유지하고 있습니다." : "";
         const generatedAt = Number(data.generatedAt);
         const generatedAtMs = Number.isFinite(generatedAt) && generatedAt > 0 ? generatedAt * 1000 : 0;
         const staleThresholdMs = Math.max(30 * 60 * 1000, minutes * 3 * 60 * 1000);
@@ -16956,7 +16960,21 @@
       }
     }
 
-    function renderTable(rows) {
+      function getAssetRiskFlags(row, exchange) {
+        const existing = Array.isArray(row?.riskFlags) ? row.riskFlags : [];
+        const notices = data.scheduledDelistings?.[exchange];
+        if (!notices || typeof notices !== "object") return existing;
+        const entry = notices[String(row?.symbol || "").toUpperCase()];
+        const expires = String(entry?.expires || entry?.deadline || "");
+        const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        if (entry && !entry.cancelled && /^\d{4}-\d{2}-\d{2}$/.test(expires) && expires >= today) {
+          return [{ type: "delisting", label: "상폐예정", detail: entry.detail || "거래지원 종료 예정",
+            source: `${exchange}_official_notice`, url: entry.url || "" }];
+        }
+        return existing.filter(flag => flag.source !== `${exchange}_official_notice`);
+      }
+
+      function renderTable(rows) {
       if (!rows.length) {
         tableBody.innerHTML = `<tr><td class="empty" colspan="7" data-label="">${TEXT.empty}</td></tr>`;
         return;
@@ -16984,7 +17002,7 @@
           const displayName = getDisplayName(row, state.board);
           const riskFlags = riskBoards.flatMap((board) => {
             const boardRow = riskRowsByBoard.get(board)?.get(coinSymbol);
-            const flags = Array.isArray(boardRow?.riskFlags) ? boardRow.riskFlags : [];
+            const flags = getAssetRiskFlags(boardRow, board);
             return flags.map((flag) => ({ ...flag, board }));
           });
           const riskBadges = riskFlags.length
