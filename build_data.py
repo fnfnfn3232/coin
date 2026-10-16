@@ -297,7 +297,7 @@ def parse_notice_datetime(value: object) -> datetime | None:
 def extract_notice_symbols(title: str) -> list[str]:
     symbols = []
     for group in re.findall(r"\(([^()]*)\)", str(title or "")):
-        for symbol in re.findall(r"(?<![A-Z0-9])[A-Z][A-Z0-9]{1,14}(?![A-Z0-9])", group.upper()):
+        for symbol in re.findall(r"(?<![A-Z0-9])[A-Z][A-Z0-9]{0,14}(?![A-Z0-9])", group.upper()):
             if symbol not in symbols:
                 symbols.append(symbol)
     return symbols
@@ -362,7 +362,7 @@ def extract_delisting_symbols(title: str) -> list[str]:
     symbols: list[str] = []
     pending: list[str] = []
     # A single notice can extend caution for one asset and terminate another.
-    for clause in re.split(r"[,;]|\s+및\s+", title):
+    for clause in re.split(r"[,;](?![^()]*\))|\s+및\s+", title):
         pending.extend(extract_notice_symbols(clause))
         if "거래지원 종료" in clause:
             symbols.extend(pending)

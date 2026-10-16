@@ -203,6 +203,8 @@ class ExchangeNoticeTests(unittest.TestCase):
         self.assertEqual(market.extract_delisting_symbols(title), ['ZIL'])
         self.assertEqual(market.extract_delisting_symbols('아지트(AZIT), 쿠디스(CUDIS), 템코(TEMCO) 거래지원 종료'), ['AZIT', 'CUDIS', 'TEMCO'])
         self.assertEqual(market.extract_delisting_symbols(self.blast['title']), ['BLAST'])
+        self.assertEqual(market.extract_delisting_symbols('거래지원 종료 안내 (STORJ, JASMY)'), ['STORJ', 'JASMY'])
+        self.assertEqual(market.extract_delisting_symbols('달오픈네트워크(D), 훅트프로토콜(HOOK) 거래지원 종료'), ['D', 'HOOK'])
         payload = {'data': [{'title': title, 'categoryName1': '거래지원종료', 'publicationDateTime': '2026-10-16T16:30:00+09:00'}]}
         with patch.object(market, 'fetch_json', return_value=payload):
             result = market.fetch_bithumb_scheduled_delistings()
