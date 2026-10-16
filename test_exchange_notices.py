@@ -198,6 +198,36 @@ class ExchangeNoticeTests(unittest.TestCase):
             self.refresh(previous)
         self.assertEqual(market.ACTIVE_SCHEDULED_DELISTINGS['upbit']['BLAST']['deadline'], '2026-10-26')
 
+    def test_mixed_notice_only_terminates_the_asset_in_the_termination_clause(self):
+        title = '만트라(MANTRA) 거래유의종목 지정 연장, 질리카(ZIL) 거래지원 종료'
+        self.assertEqual(market.extract_delisting_symbols(title), ['ZIL'])
+        self.assertEqual(market.extract_delisting_symbols('아지트(AZIT), 쿠디스(CUDIS), 템코(TEMCO) 거래지원 종료'), ['AZIT', 'CUDIS', 'TEMCO'])
+        self.assertEqual(market.extract_delisting_symbols(self.blast['title']), ['BLAST'])
+        payload = {'data': [{'title': title, 'categoryName1': '거래지원종료', 'publicationDateTime': '2026-10-16T16:30:00+09:00'}]}
+        with patch.object(market, 'fetch_json', return_value=payload):
+            result = market.fetch_bithumb_scheduled_delistings()
+        self.assertTrue(result['MANTRA']['cancelled'])
+        self.assertIn('ZIL', result)
+
+    def test_mixed_upbit_notice_does_not_reuse_older_wrong_termination(self):
+        self.soph['title'] = '만트라(MANTRA) 거래 유의 종목 지정 연장 및 소폰(SOPH) 거래지원 종료 (11/16 15:00)'
+        with patch.object(market, 'fetch_json', side_effect=self.feed):
+            result = market.fetch_upbit_scheduled_delistings()
+        self.assertTrue(result['MANTRA']['cancelled'])
+        self.assertEqual(result['SOPH']['deadline'], '2026-11-16')
+
+    def test_mixed_bithumb_notice_clears_previous_misclassification_even_with_older_notice(self):
+        payload = {'data': [
+            {'title': '만트라(MANTRA) 거래지원 종료', 'categoryName1': '거래지원종료', 'publicationDateTime': '2026-10-01T10:00:00+09:00'},
+            {'title': '만트라(MANTRA) 거래유의종목 지정 연장, 질리카(ZIL) 거래지원 종료', 'categoryName1': '거래지원종료', 'publicationDateTime': '2026-10-16T16:00:00+09:00'}]}
+        with patch.object(market, 'fetch_json', return_value=payload), \
+             patch.object(market, 'fetch_upbit_scheduled_delistings', return_value={}), \
+             patch.object(market, 'fetch_binance_scheduled_delistings', return_value={}):
+            issues = {}
+            market.refresh_scheduled_delistings({'scheduledDelistings': {'bithumb': {'MANTRA': {'expires': '2026-11-01'}}}}, issues)
+        self.assertNotIn('MANTRA', market.ACTIVE_SCHEDULED_DELISTINGS['bithumb'])
+        self.assertIn('ZIL', market.ACTIVE_SCHEDULED_DELISTINGS['bithumb'])
+
 
 if __name__ == '__main__':
     unittest.main()

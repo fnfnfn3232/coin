@@ -356,6 +356,22 @@ def notice_cancels_delisting(title: str) -> bool:
     return bool(re.search(r"거래지원\s*종료(?:\s*(?:결정|공지|예정|안내))?\s*(?:철회|취소)", title))
 
 
+def extract_delisting_symbols(title: str) -> list[str]:
+    if "거래지원 종료" not in title:
+        return extract_notice_symbols(title)
+    symbols: list[str] = []
+    pending: list[str] = []
+    # A single notice can extend caution for one asset and terminate another.
+    for clause in re.split(r"[,;]|\s+및\s+", title):
+        pending.extend(extract_notice_symbols(clause))
+        if "거래지원 종료" in clause:
+            symbols.extend(pending)
+            pending = []
+        elif re.search(r"거래\s*유의", clause):
+            pending = []
+    return list(dict.fromkeys(symbols))
+
+
 class UpbitOfficialChannelParser(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -505,7 +521,11 @@ def fetch_upbit_scheduled_delistings() -> dict[str, dict]:
         title = str(notice.get("title") or "").strip()
         if "거래지원 종료" not in title:
             continue
-        symbols = [symbol for symbol in extract_notice_symbols(title) if symbol not in scheduled]
+        closing_symbols = extract_delisting_symbols(title)
+        for symbol in extract_notice_symbols(title):
+            if symbol not in closing_symbols and symbol not in scheduled:
+                scheduled[symbol] = {"cancelled": True}
+        symbols = [symbol for symbol in closing_symbols if symbol not in scheduled]
         if not symbols:
             continue
         if notice_cancels_delisting(title):
@@ -541,14 +561,19 @@ def fetch_bithumb_scheduled_delistings() -> dict[str, dict]:
     if not isinstance(notices, list):
         return {}
     scheduled: dict[str, dict] = {}
-    for notice in notices:
+    for notice in sorted((item for item in notices if isinstance(item, dict)),
+                         key=lambda item: parse_notice_datetime(item.get("publicationDateTime")) or datetime.min.replace(tzinfo=SEOUL_TIMEZONE), reverse=True):
         if not isinstance(notice, dict):
             continue
         title = str(notice.get("title") or "").strip()
         category = str(notice.get("categoryName1") or "").strip()
         if category != "거래지원종료" and "거래지원 종료" not in title:
             continue
-        symbols = extract_notice_symbols(title)
+        closing_symbols = extract_delisting_symbols(title)
+        for symbol in extract_notice_symbols(title):
+            if symbol not in closing_symbols and symbol not in scheduled:
+                scheduled[symbol] = {"cancelled": True}
+        symbols = [symbol for symbol in closing_symbols if symbol not in scheduled]
         if notice_cancels_delisting(title):
             for symbol in symbols:
                 scheduled[symbol] = {"cancelled": True}
