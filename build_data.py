@@ -13,6 +13,7 @@ from datetime import date, datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from refresh_health import build_refresh_health, call_notice_provider
+from apywa_ratings import collect_ratings, apply_ratings
 
 
 ROOT = Path(__file__).resolve().parent
@@ -4754,6 +4755,13 @@ def make_payload(previous_payload: dict | None = None) -> dict:
     for board_name, rows in boards.items():
         ensure_listing_coverage(board_name, expected_pairs[board_name], rows)
     apply_coin_logos(boards, futures, coingecko_supply_candidates, previous_payload)
+    apywa_ratings = collect_ratings((previous_payload or {}).get("apywaRatings"))
+    apywa_matched = apply_ratings(boards, apywa_ratings)
+    if apywa_ratings.get("error"):
+        refresh_issues["apywa"] = apywa_ratings["error"]
+    print("APYWA ratings audit:", json.dumps({"total": apywa_ratings.get("total", 0),
+          "matchedSpotRows": apywa_matched, "evaluationDate": apywa_ratings.get("evaluationDate"),
+          "lastSuccessAt": apywa_ratings.get("lastSuccessAt"), "error": apywa_ratings.get("error", "")}))
     coin_info = build_coin_info(boards, previous_payload)
     defillama_rankings = build_defillama_rankings(
         boards,
@@ -4785,6 +4793,7 @@ def make_payload(previous_payload: dict | None = None) -> dict:
         "fxUsdKrw": FX_USD_KRW,
         "fxSource": FX_SOURCE,
         "boards": boards,
+        "apywaRatings": apywa_ratings,
         "futures": futures,
         "coinInfo": coin_info,
         "defillamaRankings": defillama_rankings,

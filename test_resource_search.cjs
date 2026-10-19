@@ -13,6 +13,14 @@ async function main() {
   const html = fs.readFileSync(process.env.SEARCH_TEST_HTML || path.join(root, 'index.html'), 'utf8');
   for (const script of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)) new Function(script[1]);
   const snapshot = JSON.parse(fs.readFileSync(path.join(root, 'board_snapshot.json'), 'utf8'));
+  const testRating = { slug: 'bitcoin', symbol: 'BTC', name: 'Bitcoin', grade: 'A+', date: '2026-10-19', score: 95.26 };
+  snapshot.apywaRatings = { evaluationDate: testRating.date, error: '' };
+  for (const rows of Object.values(snapshot.boards)) {
+    for (const row of rows) {
+      delete row.apywaRating;
+      if (row.symbol === 'BTC') row.apywaRating = { ...testRating };
+    }
+  }
   snapshot.scheduledDelistings = { ...snapshot.scheduledDelistings, upbit: {
     ...snapshot.scheduledDelistings?.upbit,
     BLAST: { deadline: '2030-10-26', expires: '2030-10-26', detail: 'Official trading termination', url: 'https://upbit.com/service_center/notice?id=81183086' },
@@ -211,6 +219,15 @@ async function main() {
     await page.locator('#searchInput').fill('BTC');
     assert.ok(await page.locator('#tableBody tr').count() > 0);
     await page.locator('#searchInput').fill('');
+    assert.deepEqual(await page.locator('#marketTable thead th').allTextContents(),
+      ['순번', '코인', '심볼', '가격', '시총 ↓', '등급', '유통 정보', '시총 출처']);
+    assert.equal(await page.locator('#tableBody tr').first().locator('.rating-cell').innerText(), 'A+');
+    assert.equal(await page.locator('#tableBody tr').first().locator('.coin-rating').getAttribute('href'),
+      'https://www.apywa.io/en/cryptocurrencies/bitcoin');
+    assert.match(await page.locator('#tableBody tr').first().locator('.coin-rating').getAttribute('title'), /APYWA.*2026-10-19/);
+    assert.equal(await page.evaluate(() => renderCoinRating({})), '<span class="coin-rating grade-n" title="APYWA 평가 없음 또는 자산 일치 미확인">-</span>');
+    assert.doesNotMatch(await page.evaluate(() => renderCoinRating({ apywaRating: { grade: 'A+', slug: '"><script>' } })), /<script>|href=/);
+    assert.match(await page.evaluate(() => renderCoinRating({ apywaRating: { grade: 'B', slug: 'bitcoin', date: '2026-10-19', stale: true } })), /갱신 지연/);
     await page.locator('#tabUpbit').click();
     for (const symbol of ['BLAST', 'SOPH']) {
       await page.locator('#searchInput').fill(symbol);
