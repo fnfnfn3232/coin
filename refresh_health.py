@@ -114,12 +114,17 @@ def build_refresh_health(payload, previous=None, *, now=None, maintenance=None):
         checks[key] = bool((payload.get("futures") or {}).get(exchange)) and key not in issues
     defi = payload.get("defillamaRankings") or {}
     checks["defillama"] = bool(defi.get("categories")) and not any(key == "defillama" or key.startswith("defillama_") for key in issues)
+    ratings = payload.get("apywaRatings") or {}
+    if ratings or "apywa" in issues:
+        checks["apywa"] = bool(ratings.get("rows")) and not ratings.get("error") and "apywa" not in issues
     components = {}
     for name, success in checks.items():
         old = previous_components.get(name) or {}
         failures = 0 if success else int(old.get("consecutiveFailures") or 0) + 1
         first_failure = 0 if success else int(old.get("firstFailureAt") or now)
         last_success = now if success else int(old.get("lastSuccessAt") or 0)
+        if name == "apywa":
+            last_success = int(ratings.get("lastSuccessAt") or last_success)
         components[name] = {"state": "healthy" if success else "degraded", "checkedAt": now,
                             "lastSuccessAt": last_success, "firstFailureAt": first_failure,
                             "consecutiveFailures": failures,

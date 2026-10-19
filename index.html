@@ -4117,6 +4117,14 @@
     #marketTable .cap-main { font-size: 16px; }
     #marketTable .supply-main { font-size: 14px; }
 
+    #marketTable .rating-cell { width: 48px; min-width: 48px; white-space: nowrap; }
+    .coin-rating { color: #55b5ff; font-size: 15px; font-weight: 700; letter-spacing: 0; text-decoration: none; }
+    a.coin-rating:hover { text-decoration: underline; text-underline-offset: 3px; }
+    .coin-rating.grade-b { color: #55c9ad; }
+    .coin-rating.grade-c { color: #e0b762; }
+    .coin-rating.grade-d { color: #ed8b88; }
+    .coin-rating.grade-n { color: var(--muted); }
+
     @media (min-width: 821px) and (hover: hover) {
       #marketTable th,
       #marketTable td {
@@ -5501,6 +5509,9 @@
           grid-column: 2;
           min-width: 0;
         }
+
+        #marketTable .rating-cell { width: auto; min-width: 0; }
+        #marketTable .coin-rating { grid-column: 2; width: fit-content; }
 
         #marketTable .price-main,
         #marketTable .cap-main,
@@ -7056,6 +7067,7 @@
             <th id="thSymbol"></th>
             <th id="thPrice"></th>
             <th id="thCap"></th>
+            <th class="rating-cell" title="APYWA" id="thRating">등급</th>
             <th id="thFdv"></th>
             <th class="market-source-cell" id="thSource"></th>
           </tr>
@@ -15343,7 +15355,7 @@
         const health = refreshHistoryData.refreshHealth || {};
         const labels = { upbit: "업비트 시세", bithumb: "빗썸 시세", binance: "바이낸스 시세", coinbase: "코인베이스 시세",
           upbit_notices: "업비트 공지", bithumb_notices: "빗썸 공지", binance_notices: "바이낸스 공지",
-          binance_futures: "바이낸스 선물", coinbase_futures: "코인베이스 선물", defillama: "디파이 자료", pipeline: "서버 갱신" };
+          binance_futures: "바이낸스 선물", coinbase_futures: "코인베이스 선물", defillama: "디파이 자료", apywa: "APYWA 등급", pipeline: "서버 갱신" };
         const kinds = { failure: "장애 감지", recovered: "복구 완료", attention: "반복 장애", fallback: "예비 경로 전환",
           fallback_active: "예비 경로 사용", source_changed: "수집 경로 변경", pipeline_resumed: "갱신 재개", maintenance: "개발 수정" };
         const details = { failure: "수집 확인에 실패해 마지막 정상 데이터를 유지하고 있습니다.",
@@ -17186,9 +17198,21 @@
         return existing.filter(flag => flag.source !== `${exchange}_official_notice`);
       }
 
+      function renderCoinRating(row) {
+        const rating = row?.apywaRating;
+        const grade = String(rating?.grade || "");
+        if (!/^(?:[ABC][+-]?|D-?|NR)$/.test(grade) || !/^[a-zA-Z0-9_-]{1,120}$/.test(String(rating?.slug || ""))) {
+          return '<span class="coin-rating grade-n" title="APYWA 평가 없음 또는 자산 일치 미확인">-</span>';
+        }
+        const date = /^\d{4}-\d{2}-\d{2}$/.test(String(rating.date || "")) ? rating.date : "";
+        const stale = rating.stale || data.apywaRatings?.error;
+        const title = `APYWA · 평가일 ${date || "미확인"}${stale ? " · 갱신 지연, 이전 확인 등급" : ""}`;
+        return `<a class="coin-rating grade-${grade[0].toLowerCase()}" href="https://www.apywa.io/en/cryptocurrencies/${encodeURIComponent(rating.slug)}" target="_blank" rel="noopener noreferrer" title="${escapeAttr(title)}" aria-label="${escapeAttr(`${title} · ${grade} · 공식 평가 보기`)}">${escapeHtml(grade)}</a>`;
+      }
+
       function renderTable(rows) {
       if (!rows.length) {
-        tableBody.innerHTML = `<tr><td class="empty" colspan="7" data-label="">${TEXT.empty}</td></tr>`;
+        tableBody.innerHTML = `<tr><td class="empty" colspan="8" data-label="">${TEXT.empty}</td></tr>`;
         return;
       }
 
@@ -17252,6 +17276,7 @@
                 <div class="cap-main">${escapeHtml(cap.main || TEXT.unknown)}</div>
                 <div class="cap-sub">${escapeHtml(cap.sub || TEXT.noCap)}</div>
               </td>
+              <td class="rating-cell" data-label="등급">${renderCoinRating(row)}</td>
               <td data-label="${TEXT.thFdv}">
                 <div class="supply-main">${escapeHtml(supply.main || TEXT.unknown)}</div>
                 <div class="supply-sub">${escapeHtml(supply.sub || TEXT.noSupply)}</div>
