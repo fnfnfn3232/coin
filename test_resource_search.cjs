@@ -299,6 +299,52 @@ async function main() {
     }
     await page.setViewportSize({ width: 1440, height: 1000 });
     assert.equal(calls.length, robinhoodCalls, 'Robinhood switching, filtering and sorting are local');
+    const comparisonSlots = ['#compareBoardSelect', '#compareBoardSelect2', '#compareBoardSelect3'];
+    const comparisonBoards = ['binance', 'upbit', 'bithumb', 'coinbase', 'robinhood'];
+    for (const base of comparisonBoards) {
+      await page.locator('#baseBoardSelect').selectOption(base);
+      for (const slot of comparisonSlots) {
+        for (const target of comparisonBoards.filter(board => board !== base)) {
+          for (const otherSlot of comparisonSlots) await page.locator(otherSlot).selectOption('');
+          await page.locator(slot).selectOption(target);
+          assert.equal(await page.locator(slot).inputValue(), target, `${base} -> ${target} remains selected in ${slot}`);
+          const compared = await page.evaluate(({ base, target }) => {
+            const targetSymbols = new Set(getBoardRows(target).map(getComparableSymbol));
+            return { actual: getRows().map(getComparableSymbol).sort(),
+              expected: getBoardRows(base).filter(row => targetSymbols.has(getComparableSymbol(row))).map(getComparableSymbol).sort() };
+          }, { base, target });
+          assert.deepEqual(compared.actual, compared.expected, `${base} -> ${target} uses a real intersection in ${slot}`);
+          assert.ok(compared.actual.includes('BTC'), 'comparison must contain common coins, not pass with an empty list');
+        }
+      }
+    }
+    for (const slot of comparisonSlots) await page.locator(slot).selectOption('');
+    await page.locator('#baseBoardSelect').selectOption('bithumb');
+    await page.locator('#compareBoardSelect').selectOption('coinbase');
+    await page.locator('#compareBoardSelect2').selectOption('robinhood');
+    await page.locator('#compareBoardSelect3').selectOption('binance');
+    assert.equal(await page.locator('#compareBoardSelect2').inputValue(), 'robinhood', 'Robinhood remains selected alongside Coinbase and Binance');
+    const multiComparison = await page.evaluate(() => ({
+      actual: getRows().map(getComparableSymbol).sort(),
+      expected: getBoardRows('bithumb').filter(row => ['coinbase', 'robinhood', 'binance'].every(board =>
+        getBoardRows(board).some(other => getComparableSymbol(other) === getComparableSymbol(row)))).map(getComparableSymbol).sort(),
+    }));
+    assert.deepEqual(multiComparison.actual, multiComparison.expected, 'all three comparison slots participate together');
+    for (const slot of comparisonSlots) await page.locator(slot).selectOption('');
+    await page.locator('#compareBoardSelect').selectOption('robinhood');
+    await page.locator('#compareSwapBtn').click();
+    assert.equal(await page.locator('#baseBoardSelect').inputValue(), 'robinhood');
+    assert.equal(await page.locator('#compareBoardSelect').inputValue(), 'bithumb');
+    await page.locator('#compareSwapBtn').click();
+    assert.equal(await page.locator('#baseBoardSelect').inputValue(), 'bithumb');
+    assert.equal(await page.locator('#compareBoardSelect').inputValue(), 'robinhood');
+    await page.locator('#thRating').click();
+    await page.locator('#searchInput').fill('BTC');
+    assert.equal(await page.locator('#compareBoardSelect').inputValue(), 'robinhood', 'sorting and searching cannot clear Robinhood');
+    await page.locator('#searchInput').fill('');
+    for (const slot of comparisonSlots) await page.locator(slot).selectOption('');
+    await page.locator('#thCap').click();
+    console.log('PASS: all 20 directed exchange pairs in every comparison slot, four-exchange intersections, Robinhood swap, and selection persistence during sort/search.');
     await page.locator('#tabBinance').click();
     console.log('PASS: Robinhood tab, counts, indicative-price provenance, missing-price handling, no wrong websocket, comparisons, local search and desktop/mobile layout.');
     await page.locator('#tabUpbit').click();
