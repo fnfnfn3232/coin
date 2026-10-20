@@ -7754,6 +7754,7 @@
       const refreshHistoryFooter = document.getElementById("refreshHistoryFooter");
       const thPrice = document.getElementById("thPrice");
       const thCap = document.getElementById("thCap");
+      const thRating = document.getElementById("thRating");
       const thFdv = document.getElementById("thFdv");
       const baseBoardSelect = document.getElementById("baseBoardSelect");
       const compareBoardSelect = document.getElementById("compareBoardSelect");
@@ -14208,6 +14209,15 @@
           state.sortKey === "cap" && state.sortDirection === "desc"
             ? "클릭하면 낮은 시총순으로 정렬"
             : "클릭하면 높은 시총순으로 정렬";
+
+        thRating.classList.add("sortable-th");
+        thRating.innerHTML = `<span class="sort-label">등급${state.sortKey === "rating" ? (state.sortDirection === "asc" ? " ↑" : " ↓") : ""}</span>`;
+        thRating.title = state.sortKey === "rating" && state.sortDirection === "desc"
+          ? "APYWA · 클릭하면 낮은 등급순으로 정렬"
+          : "APYWA · 클릭하면 높은 등급순으로 정렬";
+        thRating.tabIndex = 0;
+        thRating.setAttribute("aria-sort", state.sortKey === "rating"
+          ? (state.sortDirection === "asc" ? "ascending" : "descending") : "none");
       }
 
       renderCapHeader();
@@ -17127,6 +17137,13 @@
         return null;
       }
 
+      function getRowRatingSortValue(row) {
+        if (!/^[a-zA-Z0-9_-]{1,120}$/.test(String(row?.apywaRating?.slug || ""))) return null;
+        const value = ["NR", "D-", "D", "C-", "C", "C+", "B-", "B", "B+", "A-", "A", "A+"]
+          .indexOf(row?.apywaRating?.grade);
+        return value < 0 ? null : value;
+      }
+
         function getRows() {
           const rows = getBoardRows(state.board);
           const activeCompareBoards = getActiveCompareBoards();
@@ -17150,8 +17167,10 @@
             if (aPriority !== bPriority) return aPriority - bPriority;
           }
 
-          const aValue = state.sortKey === "price" ? getRowPriceSortUsd(a) : toPositiveNumber(a.sortCapUsd);
-          const bValue = state.sortKey === "price" ? getRowPriceSortUsd(b) : toPositiveNumber(b.sortCapUsd);
+          const aValue = state.sortKey === "rating" ? getRowRatingSortValue(a)
+            : state.sortKey === "price" ? getRowPriceSortUsd(a) : toPositiveNumber(a.sortCapUsd);
+          const bValue = state.sortKey === "rating" ? getRowRatingSortValue(b)
+            : state.sortKey === "price" ? getRowPriceSortUsd(b) : toPositiveNumber(b.sortCapUsd);
           const aMissing = aValue === null;
           const bMissing = bValue === null;
 
@@ -17160,6 +17179,12 @@
           }
           if (aMissing) return 1;
           if (bMissing) return -1;
+
+          if (state.sortKey === "rating" && aValue === bValue) {
+            const aCap = toPositiveNumber(a.sortCapUsd);
+            const bCap = toPositiveNumber(b.sortCapUsd);
+            if (aCap !== bCap) return aCap === null ? 1 : bCap === null ? -1 : bCap - aCap;
+          }
 
           if (state.sortDirection === "asc") {
             return aValue - bValue || String(a.symbol || "").localeCompare(String(b.symbol || ""));
@@ -17421,6 +17446,20 @@
         state.page = 1;
         renderCapHeader();
         render();
+      });
+
+      thRating.addEventListener("click", () => {
+        setViewMode("market");
+        state.sortDirection = state.sortKey === "rating" && state.sortDirection === "desc" ? "asc" : "desc";
+        state.sortKey = "rating";
+        state.page = 1;
+        renderCapHeader();
+        render();
+      });
+      thRating.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        thRating.click();
       });
 
       newsPanel.addEventListener("keydown", (event) => {
