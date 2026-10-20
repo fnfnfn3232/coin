@@ -228,6 +228,43 @@ async function main() {
     assert.equal(await page.evaluate(() => renderCoinRating({})), '<span class="coin-rating grade-n" title="APYWA 평가 없음 또는 자산 일치 미확인">-</span>');
     assert.doesNotMatch(await page.evaluate(() => renderCoinRating({ apywaRating: { grade: 'A+', slug: '"><script>' } })), /<script>|href=/);
     assert.match(await page.evaluate(() => renderCoinRating({ apywaRating: { grade: 'B', slug: 'bitcoin', date: '2026-10-19', stale: true } })), /갱신 지연/);
+    const gradeOrder = ['A+', 'A', 'A-', 'B+', 'B', 'B-', 'C+', 'C', 'C-', 'D', 'D-', 'NR'];
+    const ratingApiCalls = calls.length;
+    await page.evaluate(grades => {
+      window.ratingSortOriginalRows = data.boards.binance;
+      const template = data.boards.binance.find(row => row.symbol === 'BTC');
+      data.boards.binance = grades.map((grade, index) => ({ ...template,
+        symbol: `RATING${index}`, compareSymbol: `RATING${index}`, pair: `RATING${index}/USDT`,
+        sortCapUsd: index + 1, apywaRating: { slug: 'bitcoin', grade },
+      })).concat([
+        { ...template, symbol: 'RATINGTIE', compareSymbol: 'RATINGTIE', pair: 'RATINGTIE/USDT', sortCapUsd: 1000,
+          apywaRating: { slug: 'bitcoin', grade: 'A' } },
+        { ...template, symbol: 'MISSING', compareSymbol: 'MISSING', pair: 'MISSING/USDT', apywaRating: null },
+        { ...template, symbol: 'INVALID', compareSymbol: 'INVALID', pair: 'INVALID/USDT', apywaRating: { slug: 'bitcoin', grade: 'FAKE' } },
+      ]);
+      state.query = '';
+      state.page = 2;
+    }, gradeOrder);
+    const expectedHigh = ['A+', 'A', 'A', ...gradeOrder.slice(2), '-', '-'];
+    const expectedLow = [...gradeOrder.slice(2).reverse(), 'A', 'A', 'A+', '-', '-'];
+    await page.locator('#thRating').click();
+    assert.deepEqual(await page.locator('#tableBody .rating-cell').allTextContents(), expectedHigh);
+    assert.equal(await page.locator('#thRating').innerText(), '등급 ↓');
+    assert.equal(await page.locator('#thRating').getAttribute('aria-sort'), 'descending');
+    assert.equal(await page.evaluate(() => state.page), 1);
+    assert.equal(await page.evaluate(() => getRows()[1].symbol), 'RATINGTIE', 'same grades retain market-cap descending order');
+    await page.locator('#thRating').click();
+    assert.deepEqual(await page.locator('#tableBody .rating-cell').allTextContents(), expectedLow);
+    assert.equal(await page.locator('#thRating').innerText(), '등급 ↑');
+    await page.locator('#thRating').focus();
+    await page.keyboard.press('Enter');
+    assert.deepEqual(await page.locator('#tableBody .rating-cell').allTextContents(), expectedHigh);
+    assert.equal(calls.length, ratingApiCalls, 'rating sorting is entirely local');
+    await page.evaluate(() => { data.boards.binance = window.ratingSortOriginalRows; delete window.ratingSortOriginalRows; });
+    await page.locator('#thCap').click();
+    assert.equal(await page.locator('#thCap').innerText(), '시총 ↓');
+    assert.equal(await page.locator('#thRating').innerText(), '등급');
+    console.log('PASS: every APYWA grade sorts both ways, missing grades stay last, stable cap ties, keyboard control, page reset and no extra requests.');
     await page.locator('#tabUpbit').click();
     for (const symbol of ['BLAST', 'SOPH']) {
       await page.locator('#searchInput').fill(symbol);
