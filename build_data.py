@@ -3997,7 +3997,8 @@ def build_change_block(current_rows: list[dict], previous_rows: list[dict]) -> d
 def build_changes(boards: dict[str, list[dict]], previous_payload: dict | None) -> dict[str, dict]:
     previous_boards = (previous_payload or {}).get("boards") or {}
     return {
-        board_name: build_change_block(rows, previous_boards.get(board_name) or [])
+        board_name: build_change_block(rows, rows if board_name == "robinhood" and not previous_boards.get(board_name)
+                                      else previous_boards.get(board_name) or [])
         for board_name, rows in boards.items()
     }
 

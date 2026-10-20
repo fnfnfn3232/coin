@@ -2892,6 +2892,8 @@ export class BoardStore {
       const batch = [];
 
       for (const [type, items] of [["listed", added], ["delisted", removed]]) {
+        // The first observed Robinhood list is a baseline, not 92 new listings.
+        if (exchange === "robinhood" && record.total === 0 && !record.events.length) continue;
         for (const item of items) {
           const symbol = String(item?.symbol || "").trim();
           const pair = String(item?.pair || "").trim();

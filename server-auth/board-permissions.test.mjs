@@ -422,7 +422,15 @@ test("Robinhood survives protected snapshot normalization, records listings, and
   assert.equal(data.boards.robinhood[0].symbol, 'BTC');
   const history = await (await f.request('/api/exchange-history?exchange=robinhood')).json();
   assert.equal(history.total, 1);
-  assert.equal(history.events[0].symbol, 'BTC');
+  assert.equal(history.events.length, 0, 'initial observed assets are not falsely reported as new listings');
+  await f.store.writeMarketData(new Request('https://worker.example/api/market-data', {
+    method: 'POST', body: JSON.stringify({ ...payload, generatedAt: payload.generatedAt + 600,
+      boards: { robinhood: [{ symbol: 'ETH', pair: 'ETH/USD' }] },
+      changes: { robinhood: { added: [{ symbol: 'ETH', pair: 'ETH/USD' }], removed: [{ symbol: 'BTC', pair: 'BTC/USD' }] } },
+    }),
+  }));
+  const changed = await (await f.request('/api/exchange-history?exchange=robinhood')).json();
+  assert.deepEqual(changed.events.map(event => [event.symbol, event.type]), [['ETH', 'listed'], ['BTC', 'delisted']]);
   const save = await f.request('/api/screen-settings', 'PUT', {
     adminPassword: f.adminPassword, settings: { boardOrder: ['upbit', 'binance', 'bithumb', 'coinbase'] },
   }, f.adminToken);
