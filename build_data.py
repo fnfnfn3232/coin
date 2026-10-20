@@ -14,6 +14,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from refresh_health import build_refresh_health, call_notice_provider
 from apywa_ratings import collect_ratings, apply_ratings
+from robinhood_market import build_robinhood_board
 
 
 ROOT = Path(__file__).resolve().parent
@@ -4025,6 +4026,8 @@ def exchange_listing_url(board_name: str, row: dict) -> str:
         return f"https://www.bithumb.com/trade/order/{urllib.parse.quote(symbol)}_KRW"
     if board_name == "coinbase":
         return f"https://exchange.coinbase.com/trade/{urllib.parse.quote(symbol)}-USD"
+    if board_name == "robinhood":
+        return f"https://robinhood.com/us/en/crypto/{urllib.parse.quote(symbol)}/"
     return ""
 
 
@@ -4173,6 +4176,7 @@ def build_coin_info(boards: dict[str, list[dict]], previous_payload: dict | None
                     "upbit": "업비트",
                     "bithumb": "빗썸",
                     "coinbase": "코인베이스",
+                    "robinhood": "로빈후드",
                 }.get(board_name, board_name),
                 "pair": row.get("pair") or "",
                 "url": url,
@@ -4196,7 +4200,7 @@ def build_coin_info(boards: dict[str, list[dict]], previous_payload: dict | None
 
 def build_listed_coin_index(boards: dict[str, list[dict]]) -> dict[str, dict]:
     listed: dict[str, dict] = {}
-    for board_name in ("upbit", "bithumb", "binance", "coinbase"):
+    for board_name in ("upbit", "bithumb", "binance", "coinbase", "robinhood"):
         for row in boards.get(board_name, []):
             symbol = str(
                 row.get("compareSymbol")
@@ -4754,6 +4758,13 @@ def make_payload(previous_payload: dict | None = None) -> dict:
     }
     for board_name, rows in boards.items():
         ensure_listing_coverage(board_name, expected_pairs[board_name], rows)
+    robinhood_rows, robinhood_status = build_robinhood_board(
+        lambda url: fetch_json(url, retries=2), boards, previous_payload, fx=FX_USD_KRW,
+    )
+    boards["robinhood"] = finalize_rows(robinhood_rows)
+    if robinhood_status.get("error"):
+        refresh_issues["robinhood"] = robinhood_status["error"]
+    print("Robinhood audit:", json.dumps(robinhood_status, ensure_ascii=False))
     apply_coin_logos(boards, futures, coingecko_supply_candidates, previous_payload)
     apywa_ratings = collect_ratings((previous_payload or {}).get("apywaRatings"))
     apywa_matched = apply_ratings(boards, apywa_ratings)
@@ -4794,6 +4805,7 @@ def make_payload(previous_payload: dict | None = None) -> dict:
         "fxSource": FX_SOURCE,
         "boards": boards,
         "apywaRatings": apywa_ratings,
+        "robinhoodRefresh": robinhood_status,
         "futures": futures,
         "coinInfo": coin_info,
         "defillamaRankings": defillama_rankings,
@@ -4809,6 +4821,7 @@ def make_payload(previous_payload: dict | None = None) -> dict:
             "upbit": "upbit_info_tab_cmc_first",
             "bithumb": "bithumb_main_coinmarketcap_feed",
             "coinbase": "coinbase_exchange_usd_pairs",
+            "robinhood": "robinhood_us_spot",
         },
         "refreshIssues": refresh_issues,
     }

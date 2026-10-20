@@ -57,7 +57,7 @@ const L2_FEE_CHAINS = {
 };
 const MARKET_DATA_CHUNK_PREFIX = "market-data-v1:chunk:";
 const EXCHANGE_HISTORY_KEY = "exchange-history-v1";
-const EXCHANGE_HISTORY_IDS = ["binance", "upbit", "bithumb", "coinbase"];
+const EXCHANGE_HISTORY_IDS = ["binance", "upbit", "bithumb", "coinbase", "robinhood"];
 const EXCHANGE_HISTORY_MAX_EVENTS = 3000;
 const SCREEN_SETTINGS_KEY = "screen-settings-v1";
 const LOGIN_ATTEMPT_KEY_PREFIX = "login-attempt:";
@@ -142,7 +142,7 @@ const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
 const GITHUB_OIDC_JWKS_URL = `${GITHUB_OIDC_ISSUER}/.well-known/jwks`;
 const GITHUB_OIDC_REPOSITORY = "fnfnfn3232/coin";
 const GITHUB_OIDC_AUDIENCE = "coin-board-auth-market-data";
-const SCREEN_MARKET_BOARDS = ["binance", "upbit", "bithumb", "coinbase"];
+const SCREEN_MARKET_BOARDS = ["binance", "upbit", "bithumb", "coinbase", "robinhood"];
 const SCREEN_NAV_ITEMS = ["market", "news", "board", "resources"];
 const SCREEN_RESOURCE_ITEMS = ["futures", "ranking", "audit", "l2fees", "l1fees"];
 const SCREEN_RESOURCE_LABEL_DEFAULTS = {
@@ -156,13 +156,14 @@ const DEFAULT_SCREEN_SETTINGS = {
   navOrder: ["market", "news", "board", "resources"],
   resourceOrder: [...SCREEN_RESOURCE_ITEMS],
   resourceLabels: { ...SCREEN_RESOURCE_LABEL_DEFAULTS },
-  boardOrder: ["binance", "upbit", "bithumb", "coinbase"],
+  boardOrder: ["binance", "upbit", "bithumb", "coinbase", "robinhood"],
   statusPosition: "summary",
   visibleStats: {
     binance: true,
     upbit: true,
     bithumb: true,
     coinbase: true,
+    robinhood: true,
   },
   visibleStatus: {
     auto: true,
@@ -2274,7 +2275,7 @@ function emptyMarketDataPayload() {
     autoRefreshMinutes: 10,
     fxUsdKrw: 0,
     fxSource: "worker_protected",
-    boards: { binance: [], upbit: [], bithumb: [], coinbase: [] },
+    boards: { binance: [], upbit: [], bithumb: [], coinbase: [], robinhood: [] },
     futures: { binance: [], coinbase: [], bybit: [] },
     coinInfo: {},
     news: {
@@ -2290,6 +2291,7 @@ function emptyMarketDataPayload() {
       upbit: { total: 0, withCap: 0 },
       bithumb: { total: 0, withCap: 0 },
       coinbase: { total: 0, withCap: 0 },
+      robinhood: { total: 0, withCap: 0 },
     },
     futuresStats: {
       binance: { total: 0, withCap: 0 },
@@ -2314,6 +2316,7 @@ function normalizeMarketDataPayload(payload) {
       upbit: Array.isArray(payload.boards.upbit) ? payload.boards.upbit : [],
       bithumb: Array.isArray(payload.boards.bithumb) ? payload.boards.bithumb : [],
       coinbase: Array.isArray(payload.boards.coinbase) ? payload.boards.coinbase : [],
+      robinhood: Array.isArray(payload.boards.robinhood) ? payload.boards.robinhood : [],
     },
     futures: {
       binance: Array.isArray(payload.futures?.binance) ? payload.futures.binance : [],
@@ -2337,6 +2340,7 @@ function marketDataWithoutRefreshHistory(payload) {
     safe.refreshHealth = { state: payload.refreshHealth.state, needsAttention: payload.refreshHealth.needsAttention === true };
   }
   safe.noticeRefresh = Object.fromEntries(Object.entries(payload.noticeRefresh || {}).map(([name, status]) => [name, status?.error ? { error: true } : {}]));
+  if (payload.robinhoodRefresh) safe.robinhoodRefresh = { error: Boolean(payload.robinhoodRefresh.error) };
   safe.refreshIssues = Object.fromEntries(Object.keys(payload.refreshIssues || {}).map(name => [name, "refresh_delayed"]));
   return safe;
 }
