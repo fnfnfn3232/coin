@@ -112,6 +112,15 @@ class RobinhoodTests(unittest.TestCase):
         self.assertEqual(status["freshQuotes"], 26)
         self.assertEqual(len(calls), 4)
 
+    def test_first_list_is_a_baseline_and_later_changes_are_detected(self):
+        from build_data import build_changes
+        first = {"symbol": "BTC", "pair": "BTC/USD"}
+        next_row = {"symbol": "ETH", "pair": "ETH/USD"}
+        changes = build_changes({"robinhood": [first]}, {"boards": {"robinhood": []}})
+        self.assertEqual(changes["robinhood"]["added"], [])
+        changes = build_changes({"robinhood": [first, next_row]}, {"boards": {"robinhood": [first]}})
+        self.assertEqual(changes["robinhood"]["added"][0]["symbol"], "ETH")
+
 
 if __name__ == "__main__":
     unittest.main()
