@@ -106,6 +106,8 @@ def build_refresh_health(payload, previous=None, *, now=None, maintenance=None):
     checks = {}
     for exchange in ("upbit", "bithumb", "binance", "coinbase"):
         checks[exchange] = bool((payload.get("boards") or {}).get(exchange)) and exchange not in issues
+    if "robinhood" in (payload.get("boards") or {}):
+        checks["robinhood"] = bool(payload["boards"]["robinhood"]) and "robinhood" not in issues
     for exchange in ("upbit", "bithumb", "binance"):
         status = notices.get(exchange) or {}
         checks[f"{exchange}_notices"] = bool(status.get("checkedAt")) and not status.get("error") and f"{exchange}_notices" not in issues
@@ -125,6 +127,8 @@ def build_refresh_health(payload, previous=None, *, now=None, maintenance=None):
         last_success = now if success else int(old.get("lastSuccessAt") or 0)
         if name == "apywa":
             last_success = int(ratings.get("lastSuccessAt") or last_success)
+        if name == "robinhood":
+            last_success = int((payload.get("robinhoodRefresh") or {}).get("lastSuccessAt") or last_success)
         components[name] = {"state": "healthy" if success else "degraded", "checkedAt": now,
                             "lastSuccessAt": last_success, "firstFailureAt": first_failure,
                             "consecutiveFailures": failures,

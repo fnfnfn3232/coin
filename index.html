@@ -6961,6 +6961,11 @@
             <div class="stat-value" id="statCoinbase">-</div>
             <span class="stat-history-hint">변경 내역 보기</span>
           </button>
+          <button class="stat" id="statCardRobinhood" data-stat-board="robinhood" type="button" aria-label="로빈후드 USD 변경 내역 보기">
+            <div class="stat-label" id="statLabelRobinhood"></div>
+            <div class="stat-value" id="statRobinhood">-</div>
+            <span class="stat-history-hint">변경 내역 보기</span>
+          </button>
         </div>
         <div class="auto-strip-slot summary-status-slot" id="summaryStatusSlot">
           <div class="auto-strip" id="autoStrip">
@@ -7001,6 +7006,7 @@
         <button class="tab" data-board="upbit" id="tabUpbit"></button>
         <button class="tab" data-board="bithumb" id="tabBithumb"></button>
         <button class="tab" data-board="coinbase" id="tabCoinbase"></button>
+        <button class="tab" data-board="robinhood" id="tabRobinhood"></button>
         <button class="tab" data-board="triple" id="tabTriple"></button>
       </div>
       <div class="compare-grid">
@@ -7011,6 +7017,7 @@
             <option value="upbit"></option>
             <option value="bithumb"></option>
             <option value="coinbase"></option>
+            <option value="robinhood"></option>
           </select>
         </div>
         <div class="compare-swap-wrap">
@@ -7024,6 +7031,7 @@
             <option value="upbit"></option>
             <option value="bithumb"></option>
             <option value="coinbase"></option>
+            <option value="robinhood"></option>
           </select>
         </div>
         <div class="field">
@@ -7034,6 +7042,7 @@
             <option value="upbit"></option>
             <option value="bithumb"></option>
             <option value="coinbase"></option>
+            <option value="robinhood"></option>
           </select>
         </div>
         <div class="field">
@@ -7044,6 +7053,7 @@
             <option value="upbit"></option>
             <option value="bithumb"></option>
             <option value="coinbase"></option>
+            <option value="robinhood"></option>
           </select>
         </div>
       </div>
@@ -7416,7 +7426,7 @@
     const APP_VIEW_STATE_KEY = "fdv_app_view_state_v1";
     const SCREEN_SETTINGS_KEY = "fdv_screen_settings_v1";
     const MARKET_SOURCE_VISIBLE_KEY = "fdv_market_source_visible_v1";
-    const MARKET_BOARDS = ["binance", "upbit", "bithumb", "coinbase"];
+    const MARKET_BOARDS = ["binance", "upbit", "bithumb", "coinbase", "robinhood"];
     const SCREEN_NAV_ITEMS = ["market", "news", "board", "resources"];
     const RESOURCE_MENU_ITEMS = ["futures", "ranking", "audit", "l2fees", "l1fees"];
     const RESOURCE_TOP_LEVEL_ITEMS = ["futures", "ranking", "audit"];
@@ -7457,13 +7467,14 @@
       navOrder: ["market", "news", "board", "resources"],
       resourceOrder: [...RESOURCE_MENU_ITEMS],
       resourceLabels: { ...RESOURCE_MENU_LABEL_DEFAULTS },
-      boardOrder: ["binance", "upbit", "bithumb", "coinbase"],
+      boardOrder: ["binance", "upbit", "bithumb", "coinbase", "robinhood"],
       statusPosition: "summary",
       visibleStats: {
         binance: true,
         upbit: true,
         bithumb: true,
         coinbase: true,
+        robinhood: true,
       },
       visibleStatus: {
         auto: true,
@@ -7523,6 +7534,8 @@
     const METEORA_SYMBOL = "MET";
 
     const TEXT = {
+      tabRobinhood: "로빈후드 USD",
+      robinhoodNote: "로빈후드 미국 USD 거래지원 · 지역별 지원 차이 있음 · 가격은 로빈후드 기준가(mark), 시총·유통량은 동일 자산으로 확인된 외부 자료",
         title: "블록스코프",
       defaultDescription: "\uAC70\uB798\uC18C\uBCC4 \uC0C1\uC7A5 \uCF54\uC778\uACFC \uC2DC\uCD1D \uB370\uC774\uD130\uB97C \uC815\uC801 \uD30C\uC77C\uB85C \uC800\uC7A5\uD574 \uB450\uACE0 \uD45C\uC2DC\uD569\uB2C8\uB2E4.",
       statLabelBinance: "\uBC14\uC774\uB0B8\uC2A4 USDT",
@@ -7661,6 +7674,7 @@
         safe.refreshHealth = { state: payload.refreshHealth.state, needsAttention: payload.refreshHealth.needsAttention === true };
       }
       safe.noticeRefresh = Object.fromEntries(Object.entries(payload.noticeRefresh || {}).map(([name, status]) => [name, status?.error ? { error: true } : {}]));
+      if (payload.robinhoodRefresh) safe.robinhoodRefresh = { error: Boolean(payload.robinhoodRefresh.error) };
       safe.refreshIssues = Object.fromEntries(Object.keys(payload.refreshIssues || {}).map(name => [name, "refresh_delayed"]));
       return safe;
     }
@@ -7669,7 +7683,7 @@
     let data = marketSnapshotWithoutRefreshHistory(window.BOARD_DATA || {
       generatedAt: 0,
       autoRefreshMinutes: 10,
-      boards: { binance: [], upbit: [], bithumb: [], coinbase: [] },
+      boards: { binance: [], upbit: [], bithumb: [], coinbase: [], robinhood: [] },
       futures: { binance: [], coinbase: [], bybit: [] },
       coinInfo: {},
       stats: {
@@ -7725,11 +7739,13 @@
       const statUpbit = document.getElementById("statUpbit");
       const statBithumb = document.getElementById("statBithumb");
       const statCoinbase = document.getElementById("statCoinbase");
+      const statRobinhood = document.getElementById("statRobinhood");
       const statCards = {
         binance: document.getElementById("statCardBinance"),
         upbit: document.getElementById("statCardUpbit"),
         bithumb: document.getElementById("statCardBithumb"),
         coinbase: document.getElementById("statCardCoinbase"),
+        robinhood: document.getElementById("statCardRobinhood"),
       };
       const autoUpdatePill = document.getElementById("autoUpdatePill");
       const autoUpdateStatus = document.getElementById("autoUpdateStatus");
@@ -12148,6 +12164,7 @@
       }
 
       const EXCHANGE_HISTORY_LABELS = {
+        robinhood: "로빈후드 USD",
         upbit: "업비트 KRW",
         bithumb: "빗썸 KRW",
         binance: "바이낸스 USDT",
@@ -14150,6 +14167,8 @@
     document.getElementById("statLabelUpbit").textContent = TEXT.statLabelUpbit;
     document.getElementById("statLabelBithumb").textContent = TEXT.statLabelBithumb;
     document.getElementById("statLabelCoinbase").textContent = TEXT.statLabelCoinbase;
+    document.getElementById("statLabelRobinhood").textContent = TEXT.tabRobinhood;
+    document.getElementById("tabRobinhood").textContent = TEXT.tabRobinhood;
       document.getElementById("tabBinance").textContent = TEXT.tabBinance;
       document.getElementById("tabUpbit").textContent = TEXT.tabUpbit;
       document.getElementById("tabBithumb").textContent = TEXT.tabBithumb;
@@ -14185,6 +14204,9 @@
       compareBoardSelect3.querySelector('option[value="bithumb"]').textContent = TEXT.tabBithumb;
       compareBoardSelect3.querySelector('option[value="coinbase"]').textContent = TEXT.tabCoinbase;
       compareSwapBtn.title = "\uAE30\uC900/\uBE44\uAD50 \uAC70\uB798\uC18C \uBC14\uAFB8\uAE30";
+      [baseBoardSelect, compareBoardSelect, compareBoardSelect2, compareBoardSelect3].forEach((select) => {
+        select.querySelector('option[value="robinhood"]').textContent = TEXT.tabRobinhood;
+      });
       baseBoardSelect.value = state.board;
       compareBoardSelect.value = state.compareBoard;
       compareBoardSelect2.value = state.compareBoard2;
@@ -14291,13 +14313,13 @@
       );
       if (row.nativeCurrency === "KRW") {
         return {
-          main: formatKrwPrice(Number(row.priceKrw)),
-          sub: formatUsdPrice(Number(row.priceUsd), minimumUsdFractionDigits),
+          main: formatKrwPrice(toPositiveNumber(row.priceKrw) ?? NaN),
+          sub: formatUsdPrice(toPositiveNumber(row.priceUsd) ?? NaN, minimumUsdFractionDigits),
         };
       }
       return {
-        main: formatUsdPrice(Number(row.priceUsd), minimumUsdFractionDigits),
-        sub: formatKrwPrice(Number(row.priceKrw)),
+        main: formatUsdPrice(toPositiveNumber(row.priceUsd) ?? NaN, minimumUsdFractionDigits),
+        sub: formatKrwPrice(toPositiveNumber(row.priceKrw) ?? NaN),
       };
     }
 
@@ -14361,6 +14383,8 @@
 
     function sourceLabel(code) {
       const map = {
+        robinhood_verified_reference: "동일 자산 검증 자료 (외부 시총)",
+        robinhood_missing: "시총 미확인",
         binance_exact: "\uBC14\uC774\uB0B8\uC2A4 \uC2E4\uC81C \uC2DC\uCD1D",
         upbit_cmc: "\uC5C5\uBE44\uD2B8 CMC",
         upbit_coingecko: "\uC5C5\uBE44\uD2B8 CoinGecko",
@@ -14429,6 +14453,7 @@
           upbit_info_tab_cmc_first: TEXT.upbitNote,
           bithumb_main_coinmarketcap_feed: TEXT.bithumbNote,
           coinbase_exchange_usd_pairs: TEXT.coinbaseNote,
+          robinhood_us_spot: TEXT.robinhoodNote,
         };
         return map[code] || TEXT.defaultDescription;
       }
@@ -14439,6 +14464,7 @@
           upbit: TEXT.tabUpbit,
           bithumb: TEXT.tabBithumb,
           coinbase: TEXT.tabCoinbase,
+          robinhood: TEXT.tabRobinhood,
           triple: TEXT.tabTriple,
         };
         return map[board] || board || "-";
@@ -14446,6 +14472,7 @@
 
       function boardShortLabel(board) {
         const map = {
+          robinhood: "로빈후드",
           binance: "바이낸스",
           upbit: "업비트",
           bithumb: "빗썸",
@@ -15364,6 +15391,7 @@
         if (!refreshHistoryData || isSiteLocked() || refreshHistoryModal.classList.contains("hidden")) return;
         const health = refreshHistoryData.refreshHealth || {};
         const labels = { upbit: "업비트 시세", bithumb: "빗썸 시세", binance: "바이낸스 시세", coinbase: "코인베이스 시세",
+          robinhood: "로빈후드 시세",
           upbit_notices: "업비트 공지", bithumb_notices: "빗썸 공지", binance_notices: "바이낸스 공지",
           binance_futures: "바이낸스 선물", coinbase_futures: "코인베이스 선물", defillama: "디파이 자료", apywa: "APYWA 등급", pipeline: "서버 갱신" };
         const kinds = { failure: "장애 감지", recovered: "복구 완료", attention: "반복 장애", fallback: "예비 경로 전환",
@@ -16663,6 +16691,7 @@
         statUpbit.textContent = `${formatNumber(data.stats.upbit?.total || 0, 0)} / ${formatNumber(data.stats.upbit?.withCap || 0, 0)}`;
         statBithumb.textContent = `${formatNumber(data.stats.bithumb?.total || 0, 0)} / ${formatNumber(data.stats.bithumb?.withCap || 0, 0)}`;
         statCoinbase.textContent = `${formatNumber(data.stats.coinbase?.total || 0, 0)} / ${formatNumber(data.stats.coinbase?.withCap || 0, 0)}`;
+        statRobinhood.textContent = `${formatNumber(data.stats.robinhood?.total || 0, 0)} / ${formatNumber(data.stats.robinhood?.withCap || 0, 0)}`;
       }
 
       function renderManualRefreshState() {
@@ -17294,7 +17323,7 @@
               </td>
               <td data-label="${TEXT.thSymbol}"><span class="chip">${escapeHtml(getDisplaySymbol(row))}</span></td>
               <td data-label="${TEXT.thPrice}">
-                <div class="price-main" data-live-price-main>${escapeHtml(price.main || TEXT.unknown)}</div>
+                <div class="price-main" data-live-price-main${row.exchange === "robinhood" ? ` title="${escapeAttr(`로빈후드 기준가(mark)${row.priceStale ? ' · 갱신 지연, 이전 확인 가격' : ''}${row.priceUpdatedAt ? ` · ${formatExchangeHistoryTime(row.priceUpdatedAt)}` : ''}`)}"` : ""}>${escapeHtml(price.main || TEXT.unknown)}</div>
                 <div class="price-sub" data-live-price-sub>${escapeHtml(price.sub || TEXT.noPrice)}</div>
               </td>
               <td data-label="${TEXT.thCap}">
@@ -17344,7 +17373,7 @@
         compareSwapBtn.disabled = !(state.compareBoard && state.compareBoard !== state.board);
 
         const withCapCount = rows.filter((row) => Number.isFinite(row.sortCapUsd)).length;
-        const withPriceCount = rows.filter((row) => Number.isFinite(Number(row.priceUsd)) || Number.isFinite(Number(row.priceKrw))).length;
+        const withPriceCount = rows.filter((row) => toPositiveNumber(row.priceUsd) !== null || toPositiveNumber(row.priceKrw) !== null).length;
         const withSupplyCount = rows.filter((row) =>
           toPositiveNumber(row.circulatingSupply) !== null ||
           toPositiveNumber(row.totalSupply) !== null
@@ -17361,6 +17390,9 @@
           ? new Date(data.generatedAt * 1000).toLocaleString("ko-KR")
           : "-";
         footerNote.textContent = TEXT.footer.replace("{time}", generatedAt);
+        if (state.board === "robinhood" || activeCompareBoards.includes("robinhood")) {
+          footerNote.textContent += ` | ${TEXT.robinhoodNote}`;
+        }
       }
 
       tableBody.addEventListener("click", (event) => {

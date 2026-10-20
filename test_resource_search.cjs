@@ -35,6 +35,15 @@ async function main() {
     { symbol: 'AIGENSYN', name: 'Gensyn', englishName: 'Gensyn', pair: 'AIGENSYN/USDT',
       circulatingSupply: 1841937443, totalSupply: 10000000000, marketCapUsd: 36438146.7, priceUsd: 0.01978, capSource: 'binance_exact' },
   ];
+  snapshot.boards.robinhood = snapshot.boards.coinbase.slice(0, 60).map(row => ({ ...row,
+    exchange: 'robinhood', pair: `${row.symbol}/USD`, nativeCurrency: 'USD', priceUsd: 123.45,
+    priceKrw: 123.45 * snapshot.fxUsdKrw, priceUpdatedAt: Math.floor(Date.now() / 1000),
+    capSource: 'robinhood_verified_reference', marketReferenceExchange: 'coinbase', riskFlags: [],
+  })).concat([{ symbol: 'UNPRICED', pair: 'UNPRICED/USD', name: 'Unpriced Test', englishName: 'Unpriced Test',
+    exchange: 'robinhood', nativeCurrency: 'USD', priceUsd: null, priceKrw: null, marketCapUsd: null,
+    marketCapKrw: null, sortCapUsd: null, riskFlags: [], capSource: 'robinhood_missing' }]);
+  snapshot.stats.robinhood = { total: 61, withCap: 60 };
+  snapshot.notes.robinhood = 'robinhood_us_spot';
   snapshot.boards.binance = snapshot.boards.binance.filter(row => !['AI', 'AIGENSYN'].includes(row.symbol)).concat(aiFixtures);
   snapshot.coinInfo.AI = { englishName: 'Sleepless AI', koreanName: '젠신', sources: { bithumb: { description: 'Wrong Gensyn text' } }, listings: { bithumb: { pair: 'AI/KRW' } } };
   const deriveSource = html.match(/      function recomputeDerivedFields\([\s\S]*?(?=      function normalizeKnownAssetIdentities)/)[0];
@@ -63,7 +72,7 @@ async function main() {
   }));
   if (!process.env.BYBIT_LIVE_TEST) {
     for (const rows of [...Object.values(snapshot.boards), ...Object.values(snapshot.futures)]) {
-      for (const row of rows) if (row.symbol === 'BTC') { row.priceUsd = 100; row.priceKrw = 135000; }
+      for (const row of rows) if (row.symbol === 'BTC' && row.exchange !== 'robinhood') { row.priceUsd = 100; row.priceKrw = 135000; }
     }
   }
   bybitFixture[58].contractId = '1000TEST58USDT';
@@ -265,6 +274,33 @@ async function main() {
     assert.equal(await page.locator('#thCap').innerText(), '시총 ↓');
     assert.equal(await page.locator('#thRating').innerText(), '등급');
     console.log('PASS: every APYWA grade sorts both ways, missing grades stay last, stable cap ties, keyboard control, page reset and no extra requests.');
+    const robinhoodCalls = calls.length;
+    await page.locator('#tabRobinhood').click();
+    assert.equal(await page.locator('#baseBoardSelect').inputValue(), 'robinhood');
+    assert.equal(await page.locator('#statRobinhood').innerText(), '61 / 60');
+    assert.match(await page.locator('#footerNote').innerText(), /로빈후드.*기준가.*외부 자료/);
+    assert.equal(await page.evaluate(() => buildLivePriceTarget()), null, 'Robinhood never borrows another exchange websocket quote');
+    await page.locator('#searchInput').fill('BTC');
+    assert.match(await page.locator('#tableBody tr').first().locator('.price-main').innerText(), /123/);
+    assert.match(await page.locator('#tableBody tr').first().locator('.price-main').getAttribute('title'), /로빈후드 기준가/);
+    await page.locator('#searchInput').fill('UNPRICED');
+    assert.equal(await page.locator('#tableBody .price-main').innerText(), '미확인');
+    await page.locator('#searchInput').fill('');
+    await page.locator('#compareBoardSelect').selectOption('binance');
+    const common = await page.evaluate(() => getRows().every(row => data.boards.binance.some(other => getComparableSymbol(other) === getComparableSymbol(row))));
+    assert.equal(common, true, 'Robinhood comparison uses actual listing intersection');
+    await page.locator('#compareBoardSelect').selectOption('');
+    assert.equal(await page.evaluate(() => getRows().length), 61);
+    for (const width of [1440, 390, 320]) {
+      await page.setViewportSize({ width, height: 1000 });
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `Robinhood page fits ${width}px`);
+      await page.locator('#tabRobinhood').scrollIntoViewIfNeeded();
+      await page.screenshot({ path: path.join(process.env.TEMP || root, `blockscope-robinhood-${width}.png`) });
+    }
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    assert.equal(calls.length, robinhoodCalls, 'Robinhood switching, filtering and sorting are local');
+    await page.locator('#tabBinance').click();
+    console.log('PASS: Robinhood tab, counts, indicative-price provenance, missing-price handling, no wrong websocket, comparisons, local search and desktop/mobile layout.');
     await page.locator('#tabUpbit').click();
     for (const symbol of ['BLAST', 'SOPH']) {
       await page.locator('#searchInput').fill(symbol);
