@@ -17077,7 +17077,7 @@
       }
 
       function normalizeCompareBoards() {
-        const validBoards = new Set(["binance", "upbit", "bithumb", "coinbase"]);
+        const validBoards = new Set(MARKET_BOARDS);
         let compare1 = validBoards.has(state.compareBoard) ? state.compareBoard : "";
         let compare2 = validBoards.has(state.compareBoard2) ? state.compareBoard2 : "";
         let compare3 = validBoards.has(state.compareBoard3) ? state.compareBoard3 : "";
