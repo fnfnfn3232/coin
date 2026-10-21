@@ -10107,7 +10107,8 @@
         const selection = window.getSelection();
         if (!selection) return false;
         selection.removeAllRanges();
-        if (freeBoardRichEditorRange?.startContainer?.isConnected && freeBoardRichEditorRange?.endContainer?.isConnected) {
+        if (freeBoardRichEditorRange && editor.contains(freeBoardRichEditorRange.startContainer)
+          && editor.contains(freeBoardRichEditorRange.endContainer)) {
           selection.addRange(freeBoardRichEditorRange);
           return true;
         }
@@ -10153,9 +10154,12 @@
       }
 
       function insertPlainTextIntoFreeBoardRichEditor(text, editor = getFreeBoardRichEditor()) {
-        if (!editor || !text) return;
+        if (!editor || text === null || text === undefined) return;
+        // Paste must use the live selection, even before Ctrl+A's keyup is received.
+        saveFreeBoardRichEditorSelection(editor);
         restoreFreeBoardRichEditorSelection(editor);
-        document.execCommand("insertText", false, String(text));
+        if (String(text)) document.execCommand("insertText", false, String(text));
+        else if (!window.getSelection()?.isCollapsed) document.execCommand("delete", false);
         syncFreeBoardRichEditor(editor);
         saveFreeBoardRichEditorSelection(editor);
       }
@@ -18444,9 +18448,9 @@
 
         const pastedText = event.clipboardData?.getData("text/plain") || "";
         if (!pastedText) return;
+        event.preventDefault();
         const convertedText = convertPlainMediaUrlsToMediaTokens(pastedText);
         if (convertedText === pastedText) {
-          event.preventDefault();
           insertPlainTextIntoFreeBoardRichEditor(pastedText, editor);
           return;
         }
@@ -18456,8 +18460,7 @@
           showFreeBoardMessage(`미디어는 최대 ${FREE_BOARD_MAX_MEDIA}개까지 가능합니다. 입력 내용은 유지됩니다.`, true);
           return;
         }
-        event.preventDefault();
-        if (splitPasted.body) insertPlainTextIntoFreeBoardRichEditor(splitPasted.body, editor);
+        insertPlainTextIntoFreeBoardRichEditor(splitPasted.body, editor);
         addFreeBoardComposeMediaTokens(splitPasted.tokens);
         showFreeBoardMessage("이미지/동영상 주소를 첨부파일 목록에 추가했습니다.", false);
       });
