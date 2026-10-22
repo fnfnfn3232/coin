@@ -12,7 +12,8 @@ async function main() {
   const snapshot = { generatedAt: Math.floor(Date.now() / 1000), fxUsdKrw: 1350,
     boards: { binance: [{ symbol: 'BTC', pair: 'BTC/USDT', name: 'Bitcoin', priceUsd: 100, sortCapUsd: 1000 }], upbit: [], bithumb: [], coinbase: [], robinhood: [] },
     futures: {}, stats: {}, coinInfo: {}, news: { items: [] }, notes: {} };
-  const browser = await chromium.launch({ executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true });
+  const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH
+    || (process.platform === 'win32' ? 'C:/Program Files/Google/Chrome/Application/chrome.exe' : undefined), headless: true });
   try {
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
     const page = await context.newPage();

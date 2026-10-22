@@ -1,0 +1,44 @@
+name: Board Regression Checks
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "index.html"
+      - "test_board_*.cjs"
+      - "server-auth/**"
+      - ".github/workflows/board-regression.yml"
+  pull_request:
+    paths:
+      - "index.html"
+      - "test_board_*.cjs"
+      - "server-auth/**"
+      - ".github/workflows/board-regression.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: board-regression-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  board:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Verify permissions, sessions and uploads
+        run: node --test server-auth/board-permissions.test.mjs server-auth/security-regression.test.mjs
+      - name: Install isolated browser test tools
+        run: |
+          npm install --no-save --package-lock=false playwright@1.62.1
+          npx playwright install --with-deps chromium
+      - name: Verify board editor and workflows with mocked API responses
+        run: |
+          node test_board_paste.cjs
+          node test_board_workflows.cjs

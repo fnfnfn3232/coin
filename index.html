@@ -9064,6 +9064,8 @@
       let freeBoardSelectedId = "";
       let freeBoardCommentsCollapsed = false;
       let freeBoardCommentSubmitting = false;
+      const freeBoardPostSubmissions = new WeakSet();
+      const freeBoardUploadForms = new WeakSet();
       let freeBoardCommentDeleteAuthId = "";
       let freeBoardCommentDeleteAuthError = "";
       let freeBoardCommentDeleteSubmitting = false;
@@ -9163,6 +9165,74 @@
         if (!submitButton) return;
         submitButton.disabled = Boolean(isSubmitting);
         submitButton.textContent = isSubmitting ? "등록 중..." : "등록";
+      }
+
+      function isCurrentFreeBoardComposeForm(form, generation) {
+        return generation === freeBoardCacheGeneration && canWriteFreeBoard()
+          && state.viewMode === "board" && form === document.getElementById("freeBoardForm");
+      }
+
+      function updateFreeBoardComposeBusy(form) {
+        if (!form) return;
+        const saving = freeBoardPostSubmissions.has(form);
+        const uploading = freeBoardUploadForms.has(form);
+        const submit = form.querySelector("button[type='submit']");
+        if (submit) {
+          submit.disabled = saving || uploading;
+          submit.textContent = saving ? "저장 중..." : (freeBoardMode === "edit" ? "수정 완료" : "등록");
+        }
+        form.querySelectorAll("input, textarea, select, .free-board-rich-toolbar button").forEach((node) => { node.disabled = saving; });
+        form.querySelectorAll("[data-free-board-upload-media], [data-free-board-insert-media], [data-free-board-remove-compose-media]")
+          .forEach((node) => { node.disabled = saving || uploading; });
+        const editor = form.querySelector("#freeBoardRichEditor");
+        if (editor) editor.contentEditable = saving ? "false" : "true";
+      }
+
+      async function uploadFreeBoardComposeFiles(files, imagesOnly = false) {
+        const form = document.getElementById("freeBoardForm");
+        const generation = freeBoardCacheGeneration;
+        if (!form || !canWriteFreeBoard() || freeBoardPostSubmissions.has(form)) return;
+        if (freeBoardUploadForms.has(form)) {
+          showFreeBoardMessage("진행 중인 파일 업로드가 끝난 뒤 다시 첨부해 주세요.", true);
+          return;
+        }
+        if (!hasFreeBoardServer() && !isLocalPreview()) {
+          showFreeBoardMessage("파일 첨부는 서버 게시판이 켜져 있을 때 사용할 수 있습니다.", true);
+          return;
+        }
+        const textarea = form.querySelector("#freeBoardBody");
+        if (getFreeBoardComposeMediaCount(textarea) + files.length > FREE_BOARD_MAX_MEDIA) {
+          showFreeBoardMessage(`미디어는 최대 ${FREE_BOARD_MAX_MEDIA}개까지 가능합니다. 입력 내용은 유지됩니다.`, true);
+          return;
+        }
+        freeBoardUploadForms.add(form);
+        updateFreeBoardComposeBusy(form);
+        try {
+          showFreeBoardMessage("첨부파일을 업로드 중입니다...", false);
+          for (const file of files) {
+            const upload = await uploadFreeBoardAttachment(file, (progress) => {
+              if (isCurrentFreeBoardComposeForm(form, generation)) showFreeBoardMessage(formatUploadProgress(file, progress), false);
+            });
+            if (!isCurrentFreeBoardComposeForm(form, generation)) return;
+            const kind = imagesOnly || FREE_BOARD_IMAGE_TYPES.has(String(file.type || "").toLowerCase()) ? "image" : "file";
+            // Keep each successful file even if a later file in this batch fails.
+            addFreeBoardComposeMediaTokens([createComposeMediaToken(kind, upload.url, { size: upload.size, name: upload.fileName || file.name })]);
+            updateFreeBoardComposeBusy(form);
+          }
+          showFreeBoardMessage("첨부파일을 목록에 추가했습니다. 아래에서 삭제하거나 저장할 수 있습니다.", false);
+        } catch (error) {
+          console.error(error);
+          if (!isCurrentFreeBoardComposeForm(form, generation)) return;
+          const message = error?.message === "media_too_large"
+            ? "첨부파일은 1개당 200MB 이하만 올릴 수 있습니다."
+            : error?.message === "unsupported_media_type"
+              ? "이 파일은 첨부할 수 없습니다."
+              : "파일 업로드에 실패했습니다. 잠시 후 다시 시도해 주세요.";
+          showFreeBoardMessage(`${message} 입력 내용과 이미 첨부한 파일은 유지됩니다.`, true);
+        } finally {
+          freeBoardUploadForms.delete(form);
+          updateFreeBoardComposeBusy(form);
+        }
       }
 
       function cleanFreeBoardCategoryLabel(value) {
@@ -9299,7 +9369,8 @@
         );
       }
 
-      function applyServerFreeBoardPosts(posts) {
+      function applyServerFreeBoardPosts(posts, generation = freeBoardCacheGeneration) {
+        if (generation !== freeBoardCacheGeneration || !canAccessFreeBoard()) return;
         freeBoardServerPosts = Array.isArray(posts)
           ? posts.map(normalizeFreeBoardPost).filter(Boolean).sort((a, b) => b.createdAt - a.createdAt)
           : [];
@@ -9406,7 +9477,14 @@
         const refreshPromise = freeBoardCategoriesPromise || fetchFreeBoardCategories(force);
         refreshPromise
           .then(() => {
-            if (state.viewMode === "board") renderFreeBoard();
+            if (state.viewMode !== "board") return;
+            const select = document.querySelector("#freeBoardForm #freeBoardCategory");
+            if (select) {
+              const selected = select.value;
+              select.innerHTML = getFreeBoardCategories().filter((item) => item.value !== "all")
+                .map((item) => `<option value="${escapeAttr(item.value)}">${escapeHtml(item.label)}</option>`).join("");
+              select.value = normalizeFreeBoardCategory(selected);
+            } else renderFreeBoard();
           })
           .catch((error) => {
             console.warn(error);
@@ -9423,15 +9501,17 @@
       }
 
       async function createServerFreeBoardPost(post, postPassword = "", adminPassword = "") {
+        const generation = freeBoardCacheGeneration;
         const payload = await fetchServerAuth("/api/board/posts", {
           method: "POST",
           body: JSON.stringify({ ...post, postPassword, adminPassword }),
         });
-        applyServerFreeBoardPosts(payload?.posts || []);
+        applyServerFreeBoardPosts(payload?.posts || [], generation);
         return payload?.post || null;
       }
 
       async function updateServerFreeBoardPost(postId, post, postPassword = "", adminPassword = "") {
+        const generation = freeBoardCacheGeneration;
         const payload = await fetchServerAuth(`/api/board/posts/${encodeURIComponent(postId)}`, {
           method: "PUT",
           body: JSON.stringify({
@@ -9444,7 +9524,7 @@
             adminPassword,
           }),
         });
-        applyServerFreeBoardPosts(payload?.posts || []);
+        applyServerFreeBoardPosts(payload?.posts || [], generation);
         if (adminPassword) await refreshFreeBoardAdminLogsSilently(adminPassword);
         return payload?.post || null;
       }
@@ -9487,29 +9567,32 @@
       }
 
       async function deleteServerFreeBoardPost(postId, postPassword = "", adminPassword = "") {
+        const generation = freeBoardCacheGeneration;
         const payload = await fetchServerAuth(`/api/board/posts/${encodeURIComponent(postId)}`, {
           method: "DELETE",
           body: JSON.stringify({ postPassword, adminPassword }),
         });
-        applyServerFreeBoardPosts(payload?.posts || []);
+        applyServerFreeBoardPosts(payload?.posts || [], generation);
         if (adminPassword) await refreshFreeBoardAdminLogsSilently(adminPassword);
       }
 
       async function createServerFreeBoardComment(postId, comment, commentPassword = "") {
+        const generation = freeBoardCacheGeneration;
         const payload = await fetchServerAuth(`/api/board/posts/${encodeURIComponent(postId)}/comments`, {
           method: "POST",
           body: JSON.stringify({ ...comment, commentPassword }),
         });
-        applyServerFreeBoardPosts(payload?.posts || []);
+        applyServerFreeBoardPosts(payload?.posts || [], generation);
         return payload?.comment || null;
       }
 
       async function deleteServerFreeBoardComment(postId, commentId, commentPassword = "", adminPassword = "") {
+        const generation = freeBoardCacheGeneration;
         const payload = await fetchServerAuth(`/api/board/posts/${encodeURIComponent(postId)}/comments/${encodeURIComponent(commentId)}`, {
           method: "DELETE",
           body: JSON.stringify({ commentPassword, adminPassword }),
         });
-        applyServerFreeBoardPosts(payload?.posts || []);
+        applyServerFreeBoardPosts(payload?.posts || [], generation);
         if (adminPassword) await refreshFreeBoardAdminLogsSilently(adminPassword);
       }
 
@@ -9630,6 +9713,7 @@
       }
 
       async function deleteFreeBoardAdminSelectedPosts() {
+        if (freeBoardAdminBulkDeleting) return;
         if (!freeBoardAdminMode || !freeBoardAdminPassword) {
           showFreeBoardMessage("게시판관리를 먼저 켜 주세요.", true);
           return;
@@ -9640,6 +9724,7 @@
           return;
         }
         if (!window.confirm(`선택한 글 ${selectedIds.length}개를 삭제할까요?`)) return;
+        const generation = freeBoardCacheGeneration;
         freeBoardAdminBulkDeleting = true;
         try {
           showFreeBoardMessage(`선택한 글 ${selectedIds.length}개를 삭제 중입니다...`, false);
@@ -9651,9 +9736,10 @@
                 timeoutMs: 20000,
                 body: JSON.stringify({ adminPassword: freeBoardAdminPassword }),
               });
+              if (generation !== freeBoardCacheGeneration || !canAccessFreeBoard()) return;
               if (Array.isArray(payload?.posts)) latestPosts = payload.posts;
             }
-            if (latestPosts) applyServerFreeBoardPosts(latestPosts);
+            if (latestPosts) applyServerFreeBoardPosts(latestPosts, generation);
           } else {
             const selectedSet = new Set(selectedIds);
             saveFreeBoardPosts(loadFreeBoardPosts().filter((post) => !selectedSet.has(String(post.id || ""))));
@@ -9667,6 +9753,7 @@
           writeAppHistoryState(true);
         } catch (error) {
           console.error(error);
+          if (generation !== freeBoardCacheGeneration || !canAccessFreeBoard()) return;
           showFreeBoardMessage("선택한 글을 삭제하지 못했습니다. 게시판관리를 다시 확인해 주세요.", true);
           freeBoardAdminBulkDeleting = false;
           renderFreeBoard();
@@ -9811,10 +9898,11 @@
       }
 
       async function incrementServerFreeBoardView(postId) {
+        const generation = freeBoardCacheGeneration;
         const payload = await fetchServerAuth(`/api/board/posts/${encodeURIComponent(postId)}/view`, {
           method: "POST",
         });
-        applyServerFreeBoardPosts(payload?.posts || []);
+        applyServerFreeBoardPosts(payload?.posts || [], generation);
         return payload?.post || null;
       }
 
@@ -10721,21 +10809,30 @@
       }
 
       function getFilteredFreeBoardPosts(posts) {
-        const query = freeBoardQuery.trim().toLowerCase();
+        const query = freeBoardQuery.trim().toLowerCase().replace(/\s+/g, " ");
         return posts.filter((post) => {
           const category = normalizeFreeBoardCategory(post.category);
           if (freeBoardFilter !== "all" && category !== freeBoardFilter) return false;
           if (!query) return true;
           const comments = Array.isArray(post.comments) ? post.comments : [];
+          let body = splitFreeBoardBodyAndMediaTokens(post.body).body;
+          if (post.htmlEnabled) {
+            const template = document.createElement("template");
+            template.innerHTML = body;
+            template.content.querySelectorAll("script, style, iframe, object").forEach((node) => node.remove());
+            template.content.querySelectorAll("br, p, div, li, tr, h1, h2, h3, h4, blockquote, pre")
+              .forEach((node) => node.after(document.createTextNode(" ")));
+            body = template.content.textContent || "";
+          }
           const searchValues = {
-            titleBody: [post.title, post.body],
+            titleBody: [post.title, body],
             title: [post.title],
-            body: [post.body],
+            body: [body],
             comments: comments.map((comment) => comment.body),
             author: [post.author],
           };
           return (searchValues[freeBoardSearchType] || searchValues.titleBody)
-            .some((value) => String(value || "").toLowerCase().includes(query));
+            .some((value) => String(value || "").toLowerCase().replace(/\s+/g, " ").includes(query));
         });
       }
 
@@ -10992,7 +11089,7 @@
               </div>
             </div>
             <div class="free-board-comment-list">${commentItems}</div>
-            ${canWriteFreeBoard() ? `<form class="free-board-comment-form" id="freeBoardCommentForm">
+            ${canWriteFreeBoard() ? `<form class="free-board-comment-form" id="freeBoardCommentForm" data-post-id="${escapeAttr(post.id)}">
               <div class="free-board-comment-fields">
                 <input name="author" type="text" maxlength="40" autocomplete="off" placeholder="닉네임" />
                 <input name="commentPassword" type="password" autocomplete="off" placeholder="비밀번호" required />
@@ -11058,6 +11155,7 @@
 
       function renderFreeBoardCommentsSection(options = {}) {
         if (state.viewMode !== "board" || freeBoardMode !== "read") return;
+        const draft = captureFreeBoardCommentDraft();
         const scrollAnchor = options?.preserveScroll ? getFreeBoardCommentsScrollAnchor() : null;
         const post = getSelectedFreeBoardPost();
         const currentSection = newsPanel.querySelector("[data-free-board-comments-section]");
@@ -11073,8 +11171,21 @@
           return;
         }
         currentSection.replaceWith(nextSection);
+        restoreFreeBoardCommentDraft(draft);
         updateFreeBoardReadCommentCount(post);
         restoreFreeBoardCommentsScrollAnchor(scrollAnchor);
+      }
+
+      function captureFreeBoardCommentDraft() {
+        const form = document.getElementById("freeBoardCommentForm");
+        return form ? { form, active: form.contains(document.activeElement) ? document.activeElement : null } : null;
+      }
+
+      function restoreFreeBoardCommentDraft(draft) {
+        const nextForm = document.getElementById("freeBoardCommentForm");
+        if (!draft || !nextForm || !canWriteFreeBoard() || draft.form.dataset.postId !== nextForm.dataset.postId) return;
+        nextForm.replaceWith(draft.form);
+        draft.active?.focus({ preventScroll: true });
       }
 
       function renderFreeBoard() {
@@ -11112,6 +11223,7 @@
         const selectedPost = posts.find((post) => post.id === freeBoardSelectedId);
 
         if (freeBoardMode === "read" && selectedPost) {
+          const draft = captureFreeBoardCommentDraft();
           const embeddedMediaTokens = validateEmbeddedMediaTokens(selectedPost.body).tokens;
           newsPanel.innerHTML = `
             <div class="free-board-shell">
@@ -11152,6 +11264,7 @@
               </div>
             </div>
           `;
+          restoreFreeBoardCommentDraft(draft);
           hydrateProtectedBoardMedia(newsPanel);
           return;
         }
@@ -13340,7 +13453,6 @@
         }
         if (hasFreeBoardServer()) {
           await deleteServerFreeBoardComment(id, targetCommentId, commentPassword, adminPassword);
-          await fetchFreeBoardPosts(true);
         } else {
           post.comments = (post.comments || []).filter((comment) => comment.id !== targetCommentId);
           post.commentCount = post.comments.length;
@@ -17615,7 +17727,6 @@
             };
             if (hasFreeBoardServer()) {
               await createServerFreeBoardComment(postId, comment, commentPassword);
-              await fetchFreeBoardPosts(true);
             } else {
               const posts = loadFreeBoardPosts();
               const target = posts.find((post) => post.id === postId);
@@ -17625,12 +17736,16 @@
               target.commentCount = target.comments.length;
               saveFreeBoardPosts(posts);
             }
+            if (state.viewMode !== "board" || freeBoardMode !== "read" || freeBoardSelectedId !== postId
+              || commentForm !== document.getElementById("freeBoardCommentForm")) return;
             commentForm.reset();
             showFreeBoardMessage("댓글을 등록했습니다.", false);
             renderFreeBoardCommentsSection({ preserveScroll: true });
           } catch (error) {
             console.error(error);
-            showFreeBoardMessage("댓글 등록에 실패했습니다. 입력 내용은 유지됩니다.", true);
+            if (commentForm === document.getElementById("freeBoardCommentForm")) {
+              showFreeBoardMessage("댓글 등록에 실패했습니다. 입력 내용은 유지됩니다.", true);
+            }
           } finally {
             freeBoardCommentSubmitting = false;
             setFreeBoardCommentSubmitting(commentForm, false);
@@ -17641,6 +17756,11 @@
         const form = event.target.closest("#freeBoardForm");
         if (!form) return;
         event.preventDefault();
+        if (freeBoardPostSubmissions.has(form)) return;
+        if (freeBoardUploadForms.has(form)) {
+          showFreeBoardMessage("파일 업로드가 끝난 뒤 글을 저장해 주세요.", true);
+          return;
+        }
 
         if (!canWriteFreeBoard()) {
           showFreeBoardMessage("글쓰기는 관리자의 별도 승인이 필요합니다.", true);
@@ -17665,7 +17785,7 @@
           : (freeBoardAdminMode ? freeBoardAdminPassword : "");
         const memberOwnEdit = freeBoardMode === "edit" && isCurrentMemberBoardOwner(getSelectedFreeBoardPost());
 
-        if (freeBoardMode === "edit" ? (!memberOwnEdit && !effectivePostPassword && !effectiveAdminPassword) : !postPassword) {
+        if (freeBoardMode === "edit" ? (siteSessionRole !== "admin" && !memberOwnEdit && !effectivePostPassword && !effectiveAdminPassword) : !postPassword) {
           showFreeBoardMessage(freeBoardMode === "edit" ? "글 비밀번호 또는 게시판관리 비밀번호를 입력해 주세요." : "글 비밀번호를 입력해 주세요. 이 비밀번호로 수정/삭제합니다.", true);
           return;
         }
@@ -17684,6 +17804,9 @@
           return;
         }
 
+        const generation = freeBoardCacheGeneration;
+        freeBoardPostSubmissions.add(form);
+        updateFreeBoardComposeBusy(form);
         try {
           const posts = loadFreeBoardPosts();
           if (freeBoardMode === "edit" && freeBoardSelectedId) {
@@ -17704,6 +17827,7 @@
             } else {
               saveFreeBoardPosts(posts);
             }
+            if (!isCurrentFreeBoardComposeForm(form, generation)) return;
             form.reset();
             freeBoardEditAuthPostPassword = "";
             freeBoardEditAuthAdminPassword = "";
@@ -17732,6 +17856,7 @@
             posts.unshift(newPost);
             saveFreeBoardPosts(posts);
           }
+          if (!isCurrentFreeBoardComposeForm(form, generation)) return;
           form.reset();
           showFreeBoardMessage("등록했습니다.", false);
           freeBoardMode = "list";
@@ -17740,7 +17865,10 @@
           writeAppHistoryState();
         } catch (error) {
           console.error(error);
-          showFreeBoardMessage(getFreeBoardSaveErrorMessage(error), true);
+          if (isCurrentFreeBoardComposeForm(form, generation)) showFreeBoardMessage(getFreeBoardSaveErrorMessage(error), true);
+        } finally {
+          freeBoardPostSubmissions.delete(form);
+          updateFreeBoardComposeBusy(form);
         }
       });
 
@@ -18304,7 +18432,7 @@
       });
 
       newsPanel.addEventListener("keydown", (event) => {
-        if (event.key !== "Enter") return;
+        if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
         if (!event.target.closest("#freeBoardSearchInput")) return;
         event.preventDefault();
         const searchType = document.getElementById("freeBoardSearchType");
@@ -18368,37 +18496,7 @@
         const files = Array.from(input.files || []);
         input.value = "";
         if (!files.length) return;
-        if (!hasFreeBoardServer() && !isLocalPreview()) {
-          showFreeBoardMessage("파일 첨부는 서버 게시판이 켜져 있을 때 사용할 수 있습니다. 이미지 링크는 버튼으로 넣을 수 있습니다.", true);
-          return;
-        }
-        const textarea = document.getElementById("freeBoardBody");
-        const currentMediaCount = getFreeBoardComposeMediaCount(textarea);
-        if (currentMediaCount + files.length > FREE_BOARD_MAX_MEDIA) {
-          showFreeBoardMessage(`미디어는 최대 ${FREE_BOARD_MAX_MEDIA}개까지 가능합니다. 입력 내용은 유지됩니다.`, true);
-          return;
-        }
-        try {
-          showFreeBoardMessage("첨부파일을 업로드 중입니다...", false);
-          const tokens = [];
-          for (const file of files) {
-            const upload = await uploadFreeBoardAttachment(file, (progress) => {
-              showFreeBoardMessage(formatUploadProgress(file, progress), false);
-            });
-            const kind = FREE_BOARD_IMAGE_TYPES.has(String(file.type || "").toLowerCase()) ? "image" : "file";
-            tokens.push(createComposeMediaToken(kind, upload.url, { size: upload.size, name: upload.fileName || file.name }));
-          }
-          addFreeBoardComposeMediaTokens(tokens);
-          showFreeBoardMessage("첨부파일을 목록에 추가했습니다. 아래에서 삭제하거나 저장할 수 있습니다.", false);
-        } catch (error) {
-          console.error(error);
-          const message = error?.message === "media_too_large"
-            ? "첨부파일은 1개당 200MB 이하만 올릴 수 있습니다. 입력 내용은 유지됩니다."
-            : error?.message === "unsupported_media_type"
-              ? "이 파일은 첨부할 수 없습니다. 입력 내용은 유지됩니다."
-              : "파일 업로드에 실패했습니다. 잠시 후 다시 시도해 주세요. 입력 내용은 유지됩니다.";
-          showFreeBoardMessage(message, true);
-        }
+        await uploadFreeBoardComposeFiles(files);
       });
 
       newsPanel.addEventListener("paste", async (event) => {
@@ -18414,35 +18512,7 @@
           .filter(Boolean);
         if (imageFiles.length) {
           event.preventDefault();
-          if (!hasFreeBoardServer() && !isLocalPreview()) {
-            showFreeBoardMessage("이미지 붙여넣기는 서버 게시판이 켜져 있을 때 사용할 수 있습니다. 이미지 링크는 버튼으로 넣을 수 있습니다.", true);
-            return;
-          }
-          const currentMediaCount = getFreeBoardComposeMediaCount(textarea);
-          if (currentMediaCount + imageFiles.length > FREE_BOARD_MAX_MEDIA) {
-            showFreeBoardMessage(`미디어는 최대 ${FREE_BOARD_MAX_MEDIA}개까지 가능합니다. 입력 내용은 유지됩니다.`, true);
-            return;
-          }
-          try {
-            showFreeBoardMessage("클립보드 이미지를 업로드 중입니다...", false);
-            const tokens = [];
-            for (const file of imageFiles) {
-              const upload = await uploadFreeBoardAttachment(file, (progress) => {
-                showFreeBoardMessage(formatUploadProgress(file, progress), false);
-              });
-              tokens.push(createComposeMediaToken("image", upload.url, { size: upload.size, name: upload.fileName || file.name }));
-            }
-            addFreeBoardComposeMediaTokens(tokens);
-            showFreeBoardMessage("붙여넣은 이미지를 첨부파일 목록에 추가했습니다.", false);
-          } catch (error) {
-            console.error(error);
-            const message = error?.message === "media_too_large"
-              ? "이미지 파일은 1개당 200MB 이하만 붙여넣을 수 있습니다. 입력 내용은 유지됩니다."
-              : error?.message === "unsupported_media_type"
-                ? "png/jpg/jpeg/gif/webp/avif 이미지만 붙여넣을 수 있습니다. 입력 내용은 유지됩니다."
-                : "이미지 업로드에 실패했습니다. 잠시 후 다시 붙여넣어 주세요. 입력 내용은 유지됩니다.";
-            showFreeBoardMessage(message, true);
-          }
+          await uploadFreeBoardComposeFiles(imageFiles, true);
           return;
         }
 
@@ -18456,6 +18526,10 @@
         }
         const splitPasted = splitFreeBoardBodyAndMediaTokens(convertedText);
         if (!splitPasted.tokens.length) return;
+        if (freeBoardUploadForms.has(document.getElementById("freeBoardForm"))) {
+          showFreeBoardMessage("진행 중인 파일 업로드가 끝난 뒤 다시 첨부해 주세요.", true);
+          return;
+        }
         if (getFreeBoardComposeMediaCount(textarea) + splitPasted.tokens.length > FREE_BOARD_MAX_MEDIA) {
           showFreeBoardMessage(`미디어는 최대 ${FREE_BOARD_MAX_MEDIA}개까지 가능합니다. 입력 내용은 유지됩니다.`, true);
           return;
