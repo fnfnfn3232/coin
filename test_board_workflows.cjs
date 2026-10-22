@@ -19,9 +19,9 @@ async function main() {
     const page = await context.newPage();
     const calls = [], errors = [], waiters = [];
     const held = new Set(options.held || []);
-    let posts = [{ id: 'workflow-post', title: 'Original title', body: '<p>Original body</p>', htmlEnabled: true,
+    let posts = options.posts || [{ id: 'workflow-post', title: 'Original title', body: '<p>Original body</p>', htmlEnabled: true,
       author: 'Tester', authorMemberId: 'writer', category: 'free', createdAt: Date.now(), comments: [] }];
-    let failPosts = false, failSave = false;
+    let failPosts = false, failSave = false, saveError = null;
     page.on('pageerror', error => errors.push(error.message));
     await context.route('https://**/*', async route => {
       const url = new URL(route.request().url());
@@ -37,19 +37,26 @@ async function main() {
       if (held.has(key)) await new Promise(resolve => waiters.push({ key, resolve }));
       let result = {}, status = 200;
       if (url.pathname === '/api/session') {
-        result = { authenticated: true, role: options.member ? 'member' : 'admin', subject: 'writer', boardReadApproved: true, boardWriteApproved: true,
+        result = { authenticated: true, role: options.member ? 'member' : 'admin', subject: 'writer', boardReadApproved: true, boardWriteApproved: options.write !== false,
           expiresAt: Date.now() + 86400000, extensionCount: 0, token: 'workflow-session' };
       } else if (url.pathname === '/api/market-data') result = snapshot;
       else if (key === 'GET /api/board/posts') {
         status = failPosts ? 503 : 200;
         result = status === 200 ? { posts } : { error: 'temporary_failure' };
       } else if (key === 'POST /api/board/posts' || key === 'PUT /api/board/posts/workflow-post') {
-        if (failSave) { status = 503; result = { error: 'temporary_failure' }; }
+        if (saveError?.network) return route.abort('internetdisconnected');
+        if (saveError) { status = saveError.status; result = { error: saveError.error }; }
+        else if (failSave) { status = 503; result = { error: 'temporary_failure' }; }
         else {
           const body = route.request().postDataJSON();
-          const post = { ...posts[0], ...body, id: method === 'POST' ? `created-${calls.length}` : 'workflow-post' };
-          posts = method === 'POST' ? [post, ...posts] : [post];
-          result = { posts, post };
+          if (method === 'PUT' && body.expectedRevision !== undefined && body.expectedRevision !== (posts[0].contentRevision || 1)) {
+            status = 409; result = { error: 'post_conflict' };
+          } else {
+            const post = { ...posts[0], ...body, id: method === 'POST' ? `created-${calls.length}` : 'workflow-post',
+              contentRevision: method === 'POST' ? 1 : (posts[0].contentRevision || 1) + 1 };
+            posts = method === 'POST' ? [post, ...posts] : [post];
+            result = { posts, post };
+          }
         }
       } else if (key === 'POST /api/board/posts/workflow-post/comments') {
         const comment = { ...route.request().postDataJSON(), id: 'new-comment', createdAt: Date.now() };
@@ -89,6 +96,8 @@ async function main() {
       await page.goto('https://fnfnfn3232.github.io/coin/', { waitUntil: 'domcontentloaded' });
       await page.waitForFunction(() => siteAuthConfirmed && freeBoardPostsLoaded);
       await run({ page, write, read, submit, count, held, release, installUploadStub, files,
+        setPosts: value => { posts = value; },
+        setSaveError: value => { saveError = value; },
         failPosts: value => { failPosts = value; }, failSave: value => { failSave = value; } });
       assert.deepEqual(errors, []);
       console.log(`PASS: ${name}`);
@@ -259,6 +268,139 @@ async function main() {
         assert.equal(await page.locator('#freeBoardRichEditor').isVisible(), true);
         if (width !== 390) await page.screenshot({ path: path.join(os.tmpdir(), `board-workflow-${width}.png`), fullPage: true });
       }
+    });
+    await test('all 200 server posts remain available to pagination and search, including after cache reload', async ({ page, count }) => {
+      await page.locator('#boardToggleBtn').click();
+      assert.equal(await page.evaluate(() => loadFreeBoardPosts().length), 200);
+      await page.locator('#freeBoardSearchInput').fill('Archived title 199');
+      await page.locator('#freeBoardSearchInput').press('Enter');
+      assert.equal(await page.locator('[data-free-board-open="archive-199"]:visible').count(), 1);
+      const requests = count('GET /api/board/posts');
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.waitForFunction(() => siteAuthConfirmed && freeBoardPostsLoaded);
+      assert.equal(await page.evaluate(() => loadFreeBoardPosts().length), 200);
+      assert.equal(count('GET /api/board/posts'), requests);
+    }, { posts: Array.from({ length: 200 }, (_, i) => ({ id: `archive-${i}`, title: `Archived title ${i}`, body: 'Archived body', category: 'free', createdAt: Date.now() - i * 1000 })) });
+    await test('long existing posts retain every character when read and edited', async ({ page, read }) => {
+      await read();
+      assert.ok((await page.locator('.free-board-body').textContent()).endsWith('LAST-CHARACTERS'));
+      await page.locator('[data-free-board-edit="workflow-post"]').click();
+      assert.ok((await page.locator('#freeBoardRichEditor').textContent()).endsWith('LAST-CHARACTERS'));
+    }, { posts: [{ id: 'workflow-post', title: 'Long original', body: 'a'.repeat(15000) + 'LAST-CHARACTERS', category: 'free', createdAt: Date.now() }] });
+    await test('formatted media hyperlinks and inline images keep their exact URLs on save', async ({ page, write, submit }) => {
+      await write();
+      const source = '<p><a href="https://example.com/photo.png?x=1&amp;y=2">Photo link</a></p><img src="https://example.com/inline.png">';
+      await page.locator('#freeBoardRichEditor').evaluate((editor, html) => { editor.innerHTML = html; }, source);
+      const response = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname === '/api/board/posts');
+      await submit();
+      const saved = (await response).postDataJSON().body;
+      const actual = await page.evaluate(body => {
+        const template = document.createElement('template'); template.innerHTML = body;
+        return [template.content.querySelector('a')?.getAttribute('href'), template.content.querySelector('img')?.getAttribute('src')];
+      }, saved);
+      assert.deepEqual(actual, ['https://example.com/photo.png?x=1&y=2', 'https://example.com/inline.png']);
+    });
+    await test('media-only inline HTML is not treated as an empty draft', async ({ page, write, submit, count }) => {
+      await write();
+      await page.locator('#freeBoardRichEditor').evaluate(editor => { editor.innerHTML = '<img src="https://example.com/inline.png">'; });
+      await submit();
+      await page.waitForTimeout(100);
+      assert.equal(count('POST /api/board/posts'), 1);
+    });
+    await test('eleven typed attachment tokens are rejected without silently losing the last file', async ({ page, write, submit, count }) => {
+      await write();
+      const text = Array.from({ length: 11 }, (_, i) => `[image:https://example.com/${i}.png]`).join('\n');
+      await page.locator('#freeBoardRichEditor').fill(text);
+      await submit();
+      assert.equal(count('POST /api/board/posts'), 0);
+      assert.ok((await page.locator('#freeBoardRichEditor').textContent()).includes('/10.png'));
+      assert.equal(await page.locator('#freeBoardMessage').evaluate(node => node.classList.contains('error')), true);
+    });
+    await test('market refresh cannot reset a draft, its fields or attachments', async ({ page, write }) => {
+      await write();
+      await page.evaluate(() => {
+        addFreeBoardComposeMediaTokens([createComposeMediaToken('image', 'https://example.com/draft.png')]);
+        window.originalDraft = document.getElementById('freeBoardForm');
+        renderCurrentView();
+      });
+      assert.equal(await page.locator('#freeBoardTitle').inputValue(), 'Draft title');
+      assert.equal(await page.locator('#freeBoardRichEditor').textContent(), 'Draft body');
+      assert.equal(await page.evaluate(() => originalDraft === document.getElementById('freeBoardForm') && freeBoardComposeMediaTokens.length === 1), true);
+    });
+    await test('two browser tabs cannot silently overwrite each other, even after a cache refresh', async ({ page, read }) => {
+      await read();
+      await page.locator('[data-free-board-edit="workflow-post"]').click();
+      const second = await page.context().newPage();
+      await second.goto('https://fnfnfn3232.github.io/coin/', { waitUntil: 'domcontentloaded' });
+      await second.waitForFunction(() => siteAuthConfirmed && freeBoardPostsLoaded);
+      await second.locator('#boardToggleBtn').click();
+      await second.locator('[data-free-board-open="workflow-post"]:visible').click();
+      await second.locator('[data-free-board-edit="workflow-post"]').click();
+      await page.locator('#freeBoardTitle').fill('Saved from first tab');
+      await page.locator('#freeBoardForm').evaluate(form => form.requestSubmit());
+      await page.waitForSelector('.free-board-read-title');
+      await second.evaluate(() => applyServerFreeBoardPosts(loadFreeBoardPosts().map(post => ({ ...post, contentRevision: 2 }))));
+      await second.locator('#freeBoardTitle').fill('Unsaved second tab title');
+      const response = second.waitForResponse(response => response.request().method() === 'PUT' && response.url().endsWith('/api/board/posts/workflow-post'));
+      await second.locator('#freeBoardForm').evaluate(form => form.requestSubmit());
+      const savedResponse = await response;
+      assert.equal(savedResponse.request().postDataJSON().expectedRevision, 1, 'submit uses the revision when editing began, not a newer cache revision');
+      assert.equal(savedResponse.status(), 409);
+      await second.waitForFunction(() => document.querySelector('#freeBoardMessage')?.classList.contains('error'));
+      assert.equal(await second.locator('#freeBoardTitle').inputValue(), 'Unsaved second tab title');
+      assert.equal(await second.locator('#freeBoardForm button[type=submit]').isEnabled(), true);
+      await second.close();
+    });
+    await test('offline save, daily quota and revoked write approval preserve a retryable draft', async ({ page, write, submit, setSaveError, count }) => {
+      await write();
+      for (const error of [{ network: true }, { status: 429, error: 'board_daily_post_limit' }, { status: 403, error: 'board_write_approval_required' }]) {
+        setSaveError(error);
+        await submit();
+        await page.waitForFunction(() => !freeBoardPostSubmissions.has(document.getElementById('freeBoardForm'))
+          && document.querySelector('#freeBoardMessage')?.classList.contains('error'));
+        assert.equal(await page.locator('#freeBoardTitle').inputValue(), 'Draft title');
+        assert.equal(await page.locator('#freeBoardRichEditor').textContent(), 'Draft body');
+        assert.equal(await page.locator('#freeBoardForm button[type=submit]').isEnabled(), true);
+      }
+      setSaveError(null);
+      await submit();
+      await page.waitForSelector('.free-board-list');
+      assert.equal(count('POST /api/board/posts'), 4);
+    }, { member: true });
+    await test('session expiry during save locks the site and clears private cached content', async ({ page, write, submit, setSaveError }) => {
+      await write();
+      setSaveError({ status: 401, error: 'auth_required' });
+      await submit();
+      await page.waitForFunction(() => document.body.classList.contains('locked'));
+      assert.equal(await page.evaluate(() => freeBoardServerPosts.length), 0);
+      assert.equal(await page.evaluate(() => sessionStorage.getItem('blockscope_content_cache_v1')), null);
+    });
+    await test('read-only members can open posts but never see writing or management controls', async ({ page, count }) => {
+      await page.locator('#boardToggleBtn').click();
+      assert.equal(await page.locator('[data-free-board-write]').count(), 0);
+      await page.locator('[data-free-board-open="workflow-post"]:visible').click();
+      await page.waitForSelector('.free-board-read-title');
+      assert.equal(await page.locator('#freeBoardCommentForm, [data-free-board-edit], [data-free-board-delete]').count(), 0);
+      assert.equal(count('POST /api/board/posts'), 0);
+    }, { member: true, write: false });
+    await test('untrusted HTML is sanitized while code samples and safe links remain textually intact', async ({ page, write, submit }) => {
+      await write();
+      await page.locator('#freeBoardRichEditor').evaluate(editor => {
+        const untrusted = '<p onclick="window.auditAttack=1">Text</p><img src="https://example.com/a.png" onerror="window.auditAttack=1">'
+          + '<a href="javascript:window.auditAttack=1">Bad link</a><code>https://example.com/code.png</code>';
+        // Inspect untrusted markup inertly, as the reader/editor hydration path does.
+        editor.innerHTML = sanitizeSafeHtml(untrusted);
+        editor.querySelector('p').setAttribute('onclick', 'window.auditAttack=1');
+      });
+      const request = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname === '/api/board/posts');
+      await submit();
+      const body = (await request).postDataJSON().body;
+      const unsafe = await page.evaluate(body => {
+        const template = document.createElement('template'); template.innerHTML = body;
+        return { attrs: template.content.querySelectorAll('[onclick], [onerror], [href^="javascript:"]').length,
+          code: template.content.querySelector('code')?.textContent, executed: Boolean(window.auditAttack) };
+      }, body);
+      assert.deepEqual(unsafe, { attrs: 0, code: 'https://example.com/code.png', executed: false });
     });
   } finally { await browser.close(); }
   assert.deepEqual(failures, [], 'board workflow regressions');
