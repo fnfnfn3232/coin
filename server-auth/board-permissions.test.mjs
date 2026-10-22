@@ -307,7 +307,7 @@ test("concurrent posts stop at three; deleting posts and restarting cannot resto
   const created = rows.filter((row) => row.authorMemberId === f.member.id);
   assert.equal(created.length, 3);
   assert.ok(created.every((row) => row.createdAt > 1));
-  for (const row of created) assert.equal((await f.request(`/api/board/posts/${row.id}`, "DELETE", {})).status, 200);
+  for (const row of created) assert.equal((await f.request(`/api/board/posts/${row.id}`, "DELETE", { postPassword: "PostPassword1" })).status, 200);
   assert.equal((await f.post()).status, 429);
   const freshStore = new BoardStore({ storage: f.storage }, f.store.env);
   const result = await freshStore.createPostWithDailyLimit({ id: "another", title: "x", body: "y" }, {
@@ -361,8 +361,8 @@ test("another writer cannot edit or delete posts/comments even with their legacy
     ["DELETE", `${path}/comments/${comment.id}`, { commentPassword: "KnownPassword1" }],
   ]) assert.equal((await f.request(route, method, body, otherToken)).status, 401, route);
   assert.equal((await f.request(path, "PUT", { title: "Owner edit", body: "body" })).status, 200);
-  assert.equal((await f.request(`${path}/comments/${comment.id}`, "DELETE", {})).status, 200);
-  assert.equal((await f.request(path, "DELETE", {}, f.adminToken)).status, 200);
+  assert.equal((await f.request(`${path}/comments/${comment.id}`, "DELETE", { commentPassword: "KnownPassword1" })).status, 200);
+  assert.equal((await f.request(path, "DELETE", { adminPassword: f.adminPassword }, f.adminToken)).status, 200);
 });
 
 test("comment IDs, timestamps and ownership cannot be supplied by the client", async () => {
@@ -724,4 +724,29 @@ test("comments and views do not invalidate content revisions, and legacy edits r
   const legacy = await f.request(path, "PUT", { title: "Legacy client", body: "Compatible" });
   assert.equal(legacy.status, 200);
   assert.equal((await legacy.json()).post.contentRevision, 3);
+});
+
+test("admin and owner sessions alone cannot delete posts or comments; the actual password must match", async () => {
+  const f = await fixture({ write: true });
+  const post = (await (await f.post()).json()).post;
+  const path = `/api/board/posts/${post.id}`;
+  const comment = (await (await f.request(`${path}/comments`, "POST", { body: "Comment", commentPassword: "CommentPassword1" })).json()).comment;
+  const commentPath = `${path}/comments/${comment.id}`;
+  for (const token of [f.adminToken, f.memberToken]) {
+    for (const body of [{}, { adminMode: true }, { adminPassword: "wrong", postPassword: "wrong", commentPassword: "wrong" }]) {
+      assert.equal((await f.request(path, "DELETE", body, token)).status, 401);
+      assert.equal((await f.request(commentPath, "DELETE", body, token)).status, 401);
+    }
+  }
+  assert.equal((await f.store.readPosts()).find(row => row.id === post.id).comments.length, 1);
+  assert.equal((await f.request(commentPath, "DELETE", { commentPassword: "CommentPassword1" })).status, 200);
+  assert.equal((await f.request(path, "DELETE", { postPassword: "PostPassword1" })).status, 200);
+});
+
+test("a verified administrator password permits immediate management deletion, not a claimed mode flag", async () => {
+  const f = await fixture({ write: true });
+  const path = '/api/board/posts/original';
+  const comment = (await (await f.request(`${path}/comments`, "POST", { body: "Comment", commentPassword: "CommentPassword1" })).json()).comment;
+  assert.equal((await f.request(`${path}/comments/${comment.id}`, "DELETE", { adminPassword: f.adminPassword }, f.adminToken)).status, 200);
+  assert.equal((await f.request(path, "DELETE", { adminPassword: f.adminPassword }, f.adminToken)).status, 200);
 });

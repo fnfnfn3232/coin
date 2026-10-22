@@ -18420,19 +18420,14 @@
             return;
           }
           const commentId = String(commentDeleteButton.dataset.freeBoardCommentDelete || "");
-          const selectedPost = getSelectedFreeBoardPost();
-          const targetComment = selectedPost?.comments?.find((comment) => String(comment.id || "") === commentId);
-          if (siteSessionRole === "admin" || freeBoardAdminMode || isCurrentMemberBoardOwner(targetComment)) {
+          if (freeBoardAdminMode && freeBoardAdminPassword) {
             deleteFreeBoardCommentById(freeBoardSelectedId, commentId, "", freeBoardAdminPassword)
               .catch((error) => {
                 console.error(error);
                 showFreeBoardMessage("댓글을 삭제하지 못했습니다. 게시판관리를 다시 확인해 주세요.", true);
               });
           } else {
-            freeBoardCommentDeleteAuthId = commentId;
-            freeBoardCommentDeleteAuthError = "";
-            renderFreeBoardCommentsSection({ preserveScroll: true });
-            window.setTimeout(() => newsPanel.querySelector("[data-free-board-comment-delete-auth-form] input")?.focus(), 0);
+            showDeleteAuthModal(freeBoardSelectedId, "comment", commentId);
           }
           return;
         }
@@ -18444,9 +18439,7 @@
           return;
         }
         const postId = deleteButton.dataset.freeBoardDelete || "";
-        const targetPost = loadFreeBoardPosts().find((post) => post.id === postId);
-        if (siteSessionRole === "admin" || freeBoardAdminMode || isCurrentMemberBoardOwner(targetPost)) {
-          if (!freeBoardAdminMode && !window.confirm("이 글을 삭제할까요?")) return;
+        if (freeBoardAdminMode && freeBoardAdminPassword) {
           deleteFreeBoardPostById(postId, "", freeBoardAdminPassword)
             .catch((error) => {
               console.error(error);
