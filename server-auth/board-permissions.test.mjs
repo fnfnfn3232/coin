@@ -687,3 +687,41 @@ test("concurrent view counts, comments and post creation cannot overwrite each o
   assert.equal(original.comments.length, 10);
   assert.equal(posts.length, 4);
 });
+
+test("stale edits from another tab are rejected atomically without overwriting the saved post", async () => {
+  const f = await fixture({ write: true });
+  const created = await (await f.post({ contentRevision: 999 })).json();
+  const id = created.post.id;
+  assert.equal(created.post.contentRevision, 1, "revision is assigned by the server");
+  const responses = await Promise.all(["First tab", "Second tab"].map(title => f.request(`/api/board/posts/${id}`, "PUT", {
+    title, body: title, expectedRevision: 1, contentRevision: 999,
+  })));
+  assert.deepEqual(responses.map(response => response.status).sort(), [200, 409]);
+  const saved = await responses.find(response => response.status === 200).json();
+  const rejected = await responses.find(response => response.status === 409).json();
+  assert.equal(rejected.error, "post_conflict");
+  assert.equal(saved.post.contentRevision, 2);
+  const stored = (await f.store.readPosts()).find(post => post.id === id);
+  assert.equal(stored.body, saved.post.body);
+  assert.equal(stored.contentRevision, 2);
+});
+
+test("comments and views do not invalidate content revisions, and legacy edits remain compatible", async () => {
+  const f = await fixture({ write: true });
+  const created = await (await f.post()).json();
+  const path = `/api/board/posts/${created.post.id}`;
+  assert.equal((await f.request(`${path}/view`, "POST", {})).status, 200);
+  assert.equal((await f.request(`${path}/comments`, "POST", { body: "Comment", commentPassword: "Password1" })).status, 201);
+  const edited = await f.request(path, "PUT", { title: "Edited", body: "Content", expectedRevision: 1 });
+  assert.equal(edited.status, 200);
+  const { post } = await edited.json();
+  assert.equal(post.contentRevision, 2);
+  assert.equal(post.views, 1);
+  assert.equal(post.comments.length, 1);
+  for (const expectedRevision of [0, -1, "2", 2.5, null]) {
+    assert.equal((await f.request(path, "PUT", { title: "Invalid version", body: "Invalid", expectedRevision })).status, 400);
+  }
+  const legacy = await f.request(path, "PUT", { title: "Legacy client", body: "Compatible" });
+  assert.equal(legacy.status, 200);
+  assert.equal((await legacy.json()).post.contentRevision, 3);
+});

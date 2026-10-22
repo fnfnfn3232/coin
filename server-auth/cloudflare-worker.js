@@ -1160,6 +1160,7 @@ function normalizeBoardPost(raw, fallback = {}) {
     passwordHash: normalizePasswordHash(raw?.passwordHash),
     createdAt: Number.isFinite(createdAt) ? createdAt : Date.now(),
     updatedAt: Number.isFinite(Number(raw?.updatedAt)) ? Number(raw.updatedAt) : undefined,
+    contentRevision: Number.isSafeInteger(raw?.contentRevision) && raw.contentRevision >= 1 ? raw.contentRevision : 1,
     views: Math.max(0, Math.floor(Number(raw?.views) || 0)),
     likes: Math.max(0, Math.floor(Number(raw?.likes) || 0)),
   };
@@ -4577,6 +4578,7 @@ export class BoardStore {
         comments: [],
         views: 0,
         likes: 0,
+        contentRevision: 1,
         authorMemberId: access.claims?.role === "member" ? access.claims.subject : "",
       });
       if (!post) return jsonResponse({ error: "invalid_post" }, 400, this.env);
@@ -4682,6 +4684,14 @@ export class BoardStore {
         return jsonResponse({ error: "invalid_password" }, 401, this.env);
       }
       const beforePost = posts[index];
+      if (body.expectedRevision !== undefined) {
+        if (!Number.isSafeInteger(body.expectedRevision) || body.expectedRevision < 1) {
+          return jsonResponse({ error: "invalid_post_revision" }, 400, this.env);
+        }
+        if (body.expectedRevision !== beforePost.contentRevision) {
+          return jsonResponse({ error: "post_conflict" }, 409, this.env);
+        }
+      }
       const adminMode = await isAdminPassword(body?.adminPassword || "", this.env);
       const nextPost = {
         ...beforePost,
@@ -4692,6 +4702,7 @@ export class BoardStore {
         likes: beforePost.likes,
         comments: beforePost.comments,
         authorMemberId: beforePost.authorMemberId,
+        contentRevision: beforePost.contentRevision + 1,
         passwordHash: cleanBoardText(body?.newPostPassword, 200)
           ? await sha256Hex(body.newPostPassword)
           : beforePost.passwordHash,

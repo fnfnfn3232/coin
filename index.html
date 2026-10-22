@@ -7485,7 +7485,8 @@
       },
     };
     const FREE_BOARD_STORAGE_KEY = "fdv_free_board_posts_v1";
-    const FREE_BOARD_MAX_POSTS = 80;
+    const FREE_BOARD_MAX_POSTS = 200;
+    const FREE_BOARD_MAX_BODY_LENGTH = 20000;
     const FREE_BOARD_MAX_MEDIA = 10;
     const FREE_BOARD_MAX_UPLOAD_FILE_BYTES = 200 * 1024 * 1024;
     const FREE_BOARD_UPLOAD_PARALLEL_CHUNKS = 8;
@@ -9290,7 +9291,7 @@
       function normalizeFreeBoardPost(post) {
         if (!post || typeof post !== "object") return null;
         const title = String(post.title || "").trim().slice(0, 120);
-        const body = String(post.body || "").trim().slice(0, 12000);
+        const body = String(post.body || "").trim().slice(0, FREE_BOARD_MAX_BODY_LENGTH);
         if (!title || !body) return null;
         const createdAt = Number(post.createdAt);
         const comments = Array.isArray(post.comments)
@@ -9315,6 +9316,7 @@
           comments,
           commentCount: Math.max(comments.length, Math.floor(Number(post.commentCount) || 0)),
           createdAt: Number.isFinite(createdAt) ? createdAt : Date.now(),
+          contentRevision: Number.isSafeInteger(post.contentRevision) && post.contentRevision >= 1 ? post.contentRevision : 1,
           views: Math.max(0, Math.floor(Number(post.views) || 0)),
           likes: Math.max(0, Math.floor(Number(post.likes) || 0)),
         };
@@ -9510,7 +9512,7 @@
         return payload?.post || null;
       }
 
-      async function updateServerFreeBoardPost(postId, post, postPassword = "", adminPassword = "") {
+      async function updateServerFreeBoardPost(postId, post, postPassword = "", adminPassword = "", expectedRevision = null) {
         const generation = freeBoardCacheGeneration;
         const payload = await fetchServerAuth(`/api/board/posts/${encodeURIComponent(postId)}`, {
           method: "PUT",
@@ -9520,6 +9522,7 @@
             author: post?.author,
             body: post?.body,
             htmlEnabled: Boolean(post?.htmlEnabled),
+            ...(expectedRevision === null ? {} : { expectedRevision }),
             postPassword,
             adminPassword,
           }),
@@ -9539,6 +9542,9 @@
       function getFreeBoardSaveErrorMessage(error) {
         const message = String(error?.message || "");
         const status = Math.max(0, Math.floor(Number(error?.status) || 0));
+        if (message === "post_conflict") {
+          return "다른 창에서 글이 수정되어 덮어쓰기를 막았습니다. 입력 내용은 유지됩니다. 최신 글을 확인한 뒤 다시 수정해 주세요.";
+        }
         if (message === "board_daily_post_limit") {
           return "하루에 글은 3개까지 등록할 수 있습니다. 한국시간 자정 이후 다시 작성해 주세요. 삭제한 글도 작성 횟수에 포함됩니다.";
         }
@@ -10129,12 +10135,12 @@
           const key = getComposeMediaTokenKey(normalized);
           if (seen.has(key)) return;
           seen.add(key);
-          if (merged.length < FREE_BOARD_MAX_MEDIA) merged.push(normalized);
+          merged.push(normalized);
         });
         return merged;
       }
 
-      function splitFreeBoardBodyAndMediaTokens(value) {
+      function splitFreeBoardBodyAndMediaTokens(value, { trim = true } = {}) {
         const tokens = [];
         const body = String(value || "").replace(/\[(image|video|file):([^\]\r\n]+)\]/gi, (match, kind, payload) => {
           const { url, meta } = parseMediaTokenPayload(payload);
@@ -10144,7 +10150,7 @@
           return "";
         });
         return {
-          body: body.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim(),
+          body: trim ? body.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim() : body,
           tokens,
         };
       }
@@ -10155,8 +10161,24 @@
           .join("\n");
       }
 
-      function buildFreeBoardStoredBody(rawBody) {
-        const splitBody = splitFreeBoardBodyAndMediaTokens(convertPlainMediaUrlsToMediaTokens(rawBody));
+      function buildFreeBoardStoredBody(rawBody, htmlEnabled = false) {
+        let splitBody;
+        if (htmlEnabled) {
+          const template = document.createElement("template");
+          template.innerHTML = rawBody;
+          const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+          const tokens = [];
+          // Convert visible text only; attributes and intentional links must stay intact.
+          for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            if (node.parentElement?.closest("a, code, pre")) continue;
+            const part = splitFreeBoardBodyAndMediaTokens(convertPlainMediaUrlsToMediaTokens(node.data), { trim: false });
+            node.data = part.body;
+            tokens.push(...part.tokens);
+          }
+          splitBody = { body: template.innerHTML, tokens };
+        } else {
+          splitBody = splitFreeBoardBodyAndMediaTokens(convertPlainMediaUrlsToMediaTokens(rawBody));
+        }
         freeBoardComposeMediaTokens = mergeComposeMediaTokens([...freeBoardComposeMediaTokens, ...splitBody.tokens]);
         const tokenText = serializeComposeMediaTokens();
         return [splitBody.body, tokenText].filter(Boolean).join("\n\n").trim();
@@ -10210,7 +10232,7 @@
       function getFreeBoardRichEditorHtml(editor = getFreeBoardRichEditor()) {
         if (!editor) return "";
         const text = String(editor.textContent || "").replace(/\u200b/g, "").trim();
-        const hasStructuredContent = Boolean(editor.querySelector("hr, blockquote, ul, ol, table"));
+        const hasStructuredContent = Boolean(editor.querySelector("hr, blockquote, ul, ol, table, img, video"));
         return text || hasStructuredContent ? String(editor.innerHTML || "").replace(/\u200b/g, "") : "";
       }
 
@@ -11221,6 +11243,10 @@
         const pageOffset = (freeBoardPage - 1) * FREE_BOARD_PAGE_SIZE;
         const pagePosts = filteredPosts.slice(pageOffset, freeBoardPage * FREE_BOARD_PAGE_SIZE);
         const selectedPost = posts.find((post) => post.id === freeBoardSelectedId);
+        const currentForm = document.getElementById("freeBoardForm");
+        if (canWriteFreeBoard() && currentForm?.dataset.composeMode === freeBoardMode
+          && currentForm.dataset.postId === (freeBoardMode === "edit" ? freeBoardSelectedId : "")
+          && (freeBoardMode === "write" || (freeBoardMode === "edit" && selectedPost))) return;
 
         if (freeBoardMode === "read" && selectedPost) {
           const draft = captureFreeBoardCommentDraft();
@@ -11296,7 +11322,7 @@
           newsPanel.innerHTML = `
             <div class="free-board-shell">
               <section class="free-board-card">
-                <form class="free-board-form" id="freeBoardForm">
+                <form class="free-board-form" id="freeBoardForm" data-compose-mode="${freeBoardMode}" data-post-id="${escapeAttr(editingPost?.id || "")}" data-content-revision="${editingPost?.contentRevision || 1}">
                   <div>
                     <h2 class="free-board-title">${freeBoardMode === "edit" ? "글 수정" : "글쓰기"}</h2>
                     ${siteSessionRole === "member" && freeBoardMode === "write" ? '<p class="free-board-desc">하루 최대 3개 · 한국시간 자정 초기화 · 삭제한 글 포함</p>' : ""}
@@ -11383,7 +11409,7 @@
                       </div>
                     </div>
                     <input id="freeBoardHtmlEnabled" name="htmlEnabled" type="checkbox" checked hidden />
-                    <textarea id="freeBoardBody" name="body" maxlength="12000" hidden>${escapeHtml(composeBodyParts.body)}</textarea>
+                    <textarea id="freeBoardBody" name="body" maxlength="${FREE_BOARD_MAX_BODY_LENGTH}" hidden>${escapeHtml(composeBodyParts.body)}</textarea>
                     <div class="free-board-rich-editor" id="freeBoardRichEditor" contenteditable="true" role="textbox" aria-multiline="true" spellcheck="true" data-placeholder="내용을 입력하세요.">${composeEditorHtml}</div>
                     <div class="free-board-compose-preview" id="freeBoardComposePreview" hidden></div>
                     <div class="free-board-compose-attachments" id="freeBoardComposeAttachments" hidden></div>
@@ -17776,7 +17802,7 @@
         const author = String(formData.get("author") || "").trim();
         const htmlEnabled = formData.get("htmlEnabled") === "on";
         const rawBody = String(formData.get("body") || "");
-        const body = buildFreeBoardStoredBody(htmlEnabled ? sanitizeSafeHtml(rawBody) : rawBody);
+        const body = buildFreeBoardStoredBody(htmlEnabled ? sanitizeSafeHtml(rawBody) : rawBody, htmlEnabled);
         const effectivePostPassword = freeBoardMode === "edit"
           ? (postPassword || freeBoardEditAuthPostPassword)
           : postPassword;
@@ -17793,8 +17819,8 @@
           showFreeBoardMessage("제목과 내용을 입력해 주세요.", true);
           return;
         }
-        if (body.length > 12000) {
-          showFreeBoardMessage("글 내용은 서식을 포함해 12,000자 이하로 작성해 주세요.", true);
+        if (body.length > FREE_BOARD_MAX_BODY_LENGTH) {
+          showFreeBoardMessage("글 내용은 서식을 포함해 20,000자 이하로 작성해 주세요.", true);
           return;
         }
 
@@ -17823,7 +17849,7 @@
             target.updatedAt = Date.now();
             if (hasFreeBoardServer()) {
               showFreeBoardMessage("서버에 수정 중입니다...", false);
-              await updateServerFreeBoardPost(target.id, target, effectivePostPassword, effectiveAdminPassword);
+              await updateServerFreeBoardPost(target.id, target, effectivePostPassword, effectiveAdminPassword, Number(form.dataset.contentRevision));
             } else {
               saveFreeBoardPosts(posts);
             }
