@@ -1685,6 +1685,18 @@ async function canManageCommentForClaims(comment, body, claims, env) {
   return claims?.role === "member" && comment?.authorMemberId === claims.subject;
 }
 
+async function canDeletePostForClaims(post, body, claims, env) {
+  if (!await canManagePostForClaims(post, body, claims, env)) return false;
+  return await isAdminPassword(body?.adminPassword || "", env)
+    || await isMatchingPassword(body?.postPassword || body?.password || "", post?.passwordHash);
+}
+
+async function canDeleteCommentForClaims(comment, body, claims, env) {
+  if (!await canManageCommentForClaims(comment, body, claims, env)) return false;
+  return await isAdminPassword(body?.adminPassword || "", env)
+    || await isMatchingPassword(body?.commentPassword || body?.password || "", comment?.passwordHash);
+}
+
 async function readBoundedRequestBody(request, maxBytes) {
   if (Number(request.headers.get("Content-Length")) > maxBytes) {
     await request.body?.cancel();
@@ -4653,7 +4665,7 @@ export class BoardStore {
       const comments = Array.isArray(target.comments) ? target.comments : [];
       const comment = comments.find((item) => item.id === commentId);
       if (!comment) return jsonResponse({ error: "not_found" }, 404, this.env);
-      if (!await canManageCommentForClaims(comment, body, access.claims, this.env)) {
+      if (!await canDeleteCommentForClaims(comment, body, access.claims, this.env)) {
         return jsonResponse({ error: "invalid_password" }, 401, this.env);
       }
       const adminMode = await isAdminPassword(body?.adminPassword || "", this.env);
@@ -4740,7 +4752,7 @@ export class BoardStore {
       const posts = await this.readPosts();
       const target = posts.find((post) => post.id === postId);
       if (!target) return jsonResponse({ error: "not_found" }, 404, this.env);
-      if (!await canManagePostForClaims(target, body, access.claims, this.env)) {
+      if (!await canDeletePostForClaims(target, body, access.claims, this.env)) {
         return jsonResponse({ error: "invalid_password" }, 401, this.env);
       }
       const adminMode = await isAdminPassword(body?.adminPassword || "", this.env);

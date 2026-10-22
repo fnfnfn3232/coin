@@ -50,7 +50,7 @@ Date: 2026-10-23 (Asia/Seoul)
 
 ## Verification and Automation
 
-- The expanded browser workflow suite contains 24 cases (previously 13).
+- The expanded browser workflow suite contains 28 cases (previously 13).
 - Worker tests cover revision conflicts, invalid versions and legacy clients.
 - `Board Regression Checks` runs paste/workflow and Worker permission/security
   tests on relevant pushes and pull requests. It uses mocked APIs, not live data.
@@ -64,6 +64,14 @@ node --test server-auth/board-permissions.test.mjs server-auth/security-regressi
 ```
 
 ## Limits and Remaining Scope
+
+Deletion-policy follow-up: administrator login and ownership are not substitutes
+for deletion confirmation. Outside password-verified board management, both posts
+and comments now require the matching content password or administrator password.
+The Worker rejects empty/wrong passwords and forged management flags, even for an
+administrator or owner session. Existing ownership restrictions still apply.
+The original test assumption allowing passwordless owner/admin deletion was wrong
+for this site's intended behavior and has been replaced with explicit denial tests.
 
 - Narrow desktop-browser viewports are not real-device iOS/Safari or Android
   testing. Firefox, Safari and actual phone keyboards remain unverified.

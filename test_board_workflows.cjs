@@ -62,6 +62,16 @@ async function main() {
         const comment = { ...route.request().postDataJSON(), id: 'new-comment', createdAt: Date.now() };
         posts[0].comments.push(comment);
         result = { posts, post: posts[0], comment };
+      } else if (method === 'DELETE' && url.pathname.startsWith('/api/board/posts/')) {
+        const body = route.request().postDataJSON();
+        const comment = url.pathname.includes('/comments/');
+        if (body.adminPassword !== 'admin-password' && (comment ? body.commentPassword !== 'comment-password' : body.postPassword !== 'post-password')) {
+          status = 401; result = { error: 'invalid_password' };
+        } else {
+          if (comment) posts[0].comments = [];
+          else posts = [];
+          result = { posts, ok: true };
+        }
       } else if (url.pathname.startsWith('/api/board/posts/')) result = { posts, post: posts[0] };
       else if (url.pathname === '/api/board/categories') result = { categories: [{ value: 'free', label: 'Free board' }, { value: 'games', label: 'Games' }] };
       else if (url.pathname === '/api/screen-settings') result = { settings: {} };
@@ -402,6 +412,48 @@ async function main() {
       }, body);
       assert.deepEqual(unsafe, { attrs: 0, code: 'https://example.com/code.png', executed: false });
     });
+    for (const member of [false, true]) {
+      await test(`${member ? 'owner' : 'admin'} outside management must confirm the real post password before deletion`, async ({ page, read, count }) => {
+        page.on('dialog', dialog => dialog.accept());
+        await read();
+        await page.locator('[data-free-board-delete="workflow-post"]').click();
+        assert.equal(count('DELETE /api/board/posts/workflow-post'), 0);
+        assert.equal(await page.locator('#deleteAuthModal').isVisible(), true);
+        await page.locator('#deleteAuthForm').evaluate(form => form.requestSubmit());
+        assert.equal(count('DELETE /api/board/posts/workflow-post'), 0);
+        await page.locator('#deleteAuthPasswordInput').fill('wrong');
+        await page.locator('#deleteAuthForm').evaluate(form => form.requestSubmit());
+        await page.waitForFunction(() => document.querySelector('#deleteAuthError')?.textContent.includes('맞지'));
+        assert.equal(await page.locator('.free-board-read-title').textContent(), 'Original title');
+        await page.locator('#deleteAuthPasswordInput').fill('post-password');
+        await page.locator('#deleteAuthForm').evaluate(form => form.requestSubmit());
+        await page.waitForSelector('.free-board-list');
+        assert.equal(count('DELETE /api/board/posts/workflow-post'), 2);
+      }, { member });
+    }
+    await test('only password-verified management mode permits immediate post and comment deletion', async ({ page, read, count }) => {
+      await read();
+      await page.evaluate(() => { freeBoardAdminMode = true; freeBoardAdminPassword = 'admin-password'; });
+      await page.locator('[data-free-board-comment-delete="delete-comment"]').click();
+      await page.waitForFunction(() => !document.querySelector('[data-free-board-comment-delete="delete-comment"]'));
+      assert.equal(count('DELETE /api/board/posts/workflow-post/comments/delete-comment'), 1);
+      await page.locator('[data-free-board-delete="workflow-post"]').click();
+      await page.waitForSelector('.free-board-list');
+      assert.equal(count('DELETE /api/board/posts/workflow-post'), 1);
+      assert.equal(await page.locator('#deleteAuthModal').isVisible(), false);
+    }, { posts: [{ id: 'workflow-post', title: 'Original title', body: 'Body', category: 'free', createdAt: Date.now(),
+      comments: [{ id: 'delete-comment', body: 'Comment', author: 'Tester', createdAt: Date.now() }] }] });
+    await test('comment deletion also requires password confirmation outside management', async ({ page, read, count }) => {
+      await read();
+      await page.locator('[data-free-board-comment-delete="delete-comment"]').click();
+      assert.equal(count('DELETE /api/board/posts/workflow-post/comments/delete-comment'), 0);
+      assert.equal(await page.locator('#deleteAuthModal').isVisible(), true);
+      await page.locator('#deleteAuthAdminPasswordInput').fill('admin-password');
+      await page.locator('#deleteAuthForm').evaluate(form => form.requestSubmit());
+      await page.waitForFunction(() => document.querySelector('#deleteAuthModal')?.classList.contains('hidden'));
+      assert.equal(count('DELETE /api/board/posts/workflow-post/comments/delete-comment'), 1);
+    }, { posts: [{ id: 'workflow-post', title: 'Original title', body: 'Body', category: 'free', createdAt: Date.now(),
+      comments: [{ id: 'delete-comment', body: 'Comment', author: 'Tester', createdAt: Date.now() }] }] });
   } finally { await browser.close(); }
   assert.deepEqual(failures, [], 'board workflow regressions');
 }
