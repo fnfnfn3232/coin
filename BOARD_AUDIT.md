@@ -83,3 +83,22 @@ for this site's intended behavior and has been replaced with explicit denial tes
   tabs to receive the new conflict protection. No offline write queue was added.
 - The server's existing 200-post retention policy remains unchanged; historical
   archiving beyond that limit is a separate feature.
+
+## Post-Link Follow-Up (2026-10-24)
+
+Post navigation previously changed only browser history state, not the URL. A
+copied address therefore could not identify the displayed post in another tab.
+
+- Posts now use `#board/post/<post-id>` URLs; the list uses `#board`.
+- Explicit post URLs take priority over the tab's previously saved view and are
+  retained while initial login is required. Existing board approval still applies.
+- A fresh cache that lacks the requested post is refreshed once. Missing posts,
+  loading and upstream failures have distinct states, including a retry action.
+- A post-level copy command copies the canonical address without exposing login
+  credentials or granting access. Clipboard denial is reported rather than hidden.
+- `test_board_links.cjs` contains 11 cases covering clean tabs, reload, login,
+  stale navigation state, cache misses, slow/failing APIs, history/hash navigation,
+  denied access, invalid identifiers, clipboard failure and mobile layout.
+- The link suite runs in Chrome and Edge locally and in the existing browser CI.
+- Old copies of the bare homepage URL cannot identify a post retroactively;
+  reload the site and copy the address again from the relevant post.

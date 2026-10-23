@@ -11248,6 +11248,19 @@
           && currentForm.dataset.postId === (freeBoardMode === "edit" ? freeBoardSelectedId : "")
           && (freeBoardMode === "write" || (freeBoardMode === "edit" && selectedPost))) return;
 
+        if (freeBoardMode === "read" && !selectedPost) {
+          const loading = !freeBoardServerError && (!freeBoardPostsLoaded || Boolean(freeBoardPostsPromise));
+          const message = loading ? "게시글을 불러오는 중입니다."
+            : freeBoardServerError ? "게시글을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요."
+              : "삭제되었거나 찾을 수 없는 게시글입니다.";
+          newsPanel.innerHTML = `<div class="free-board-shell"><section class="free-board-card">
+            <p role="status">${escapeHtml(message)}</p>
+            <button class="free-board-list-btn" type="button" data-free-board-list>전체글</button>
+            ${freeBoardServerError ? '<button class="free-board-list-btn" type="button" data-free-board-retry>다시 시도</button>' : ""}
+          </section></div>`;
+          return;
+        }
+
         if (freeBoardMode === "read" && selectedPost) {
           const draft = captureFreeBoardCommentDraft();
           const embeddedMediaTokens = validateEmbeddedMediaTokens(selectedPost.body).tokens;
@@ -11279,6 +11292,8 @@
               <div class="free-board-detail-actions">
                 <div class="free-board-detail-actions-left">
                   <button class="free-board-list-btn" type="button" data-free-board-list>전체글</button>
+                  <button class="free-board-list-btn" type="button" data-free-board-copy-link="${escapeAttr(selectedPost.id)}">링크 복사</button>
+                  <span class="free-board-message" data-free-board-share-status role="status" hidden></span>
                 </div>
                 <div class="free-board-detail-actions-right">
                   ${canManageFreeBoardRecord(selectedPost) ? `
@@ -12632,7 +12647,7 @@
         requestFreeBoardCategoriesRefresh(true);
         requestFreeBoardPostsRefresh(false);
         renderHeroNewsPreview();
-        const savedView = loadAppViewState();
+        const savedView = readBoardLocationState() || loadAppViewState();
         if (state.viewMode === "market" && savedView?.viewMode === "board" && canAccessFreeBoard()) {
           applyAppHistoryState(savedView);
           writeAppHistoryState(true);
@@ -17000,11 +17015,47 @@
         const payload = getCurrentAppHistoryState();
         saveAppViewState(payload);
         if (isApplyingHistoryState || !window.history?.pushState) return;
+        const url = new URL(window.location.href);
+        if (payload.viewMode === "board") {
+          url.hash = payload.freeBoardMode === "read" && payload.freeBoardSelectedId
+            ? `board/post/${encodeURIComponent(payload.freeBoardSelectedId)}` : "board";
+        } else if (/^#board(?:\/|$)/.test(url.hash)) {
+          url.hash = "";
+        }
         if (replace) {
-          window.history.replaceState(payload, "", window.location.href);
+          window.history.replaceState(payload, "", url.href);
           return;
         }
-        window.history.pushState(payload, "", window.location.href);
+        window.history.pushState(payload, "", url.href);
+      }
+
+      function readBoardLocationState() {
+        const match = window.location.hash.match(/^#board(?:\/post\/([^/]+))?$/);
+        if (!match) return null;
+        let postId = "";
+        try { postId = match[1] ? decodeURIComponent(match[1]) : ""; } catch (_error) { return null; }
+        if (postId && !/^[a-z0-9_-]{1,80}$/i.test(postId)) return null;
+        return { app: "exchange-market-cap", viewMode: "board", freeBoardMode: postId ? "read" : "list", freeBoardSelectedId: postId };
+      }
+
+      async function copyFreeBoardPostLink(button) {
+        const status = newsPanel.querySelector("[data-free-board-share-status]");
+        const url = new URL(window.location.href);
+        url.hash = `board/post/${encodeURIComponent(button.dataset.freeBoardCopyLink)}`;
+        try {
+          await navigator.clipboard.writeText(url.href);
+          if (status?.isConnected) {
+            status.hidden = false;
+            status.classList.remove("error");
+            status.textContent = "링크를 복사했습니다.";
+          }
+        } catch (_error) {
+          if (status?.isConnected) {
+            status.hidden = false;
+            status.classList.add("error");
+            status.textContent = "복사하지 못했습니다. 주소창의 주소를 복사해 주세요.";
+          }
+        }
       }
 
       function applyAppHistoryState(payload) {
@@ -17086,6 +17137,12 @@
         } else {
           destroyMarketChart();
         }
+        if (isBoardMode && (freeBoardMode === "list" || freeBoardMode === "read")) {
+          const missingPost = freeBoardMode === "read" && freeBoardPostsLoaded && freeBoardSelectedId
+            && !freeBoardServerPosts.some(post => post.id === freeBoardSelectedId)
+            && freeBoardServerRetryAfterMs <= Date.now();
+          requestFreeBoardPostsRefresh(Boolean(missingPost));
+        }
         if (isNewsMode || isBoardMode || isResourcesMode || isExchangeHistoryMode) {
           renderContentPanel();
         }
@@ -17098,9 +17155,6 @@
         if (chainFeesStates[state.viewMode]) requestChainFees();
         if (isNewsMode) {
           requestLiveNewsRefresh(false);
-        }
-        if (isBoardMode && (freeBoardMode === "list" || freeBoardMode === "read")) {
-          requestFreeBoardPostsRefresh(false);
         }
         if (options.writeHistory !== false) {
           writeAppHistoryState(Boolean(options.replaceHistory));
@@ -17968,6 +18022,16 @@
         const clickTarget = event.target instanceof Element ? event.target : event.target?.parentElement;
         if (!clickTarget) return;
 
+        const copyPostLinkButton = clickTarget.closest("[data-free-board-copy-link]");
+        if (copyPostLinkButton) {
+          await copyFreeBoardPostLink(copyPostLinkButton);
+          return;
+        }
+        if (clickTarget.closest("[data-free-board-retry]")) {
+          requestFreeBoardPostsRefresh(true);
+          return;
+        }
+
         if (clickTarget.closest("[data-exchange-history-back]")) {
           setViewMode("market");
           return;
@@ -18695,7 +18759,15 @@
       });
 
       window.addEventListener("popstate", (event) => {
-        applyAppHistoryState(event.state);
+        applyAppHistoryState(readBoardLocationState() || event.state);
+      });
+
+      window.addEventListener("hashchange", () => {
+        const route = readBoardLocationState();
+        if (!route || (!siteAuthConfirmed && !isLocalPreview())) return;
+        if (state.viewMode !== "board" || freeBoardMode !== route.freeBoardMode || freeBoardSelectedId !== route.freeBoardSelectedId) {
+          applyAppHistoryState(route);
+        }
       });
 
       titleHeading.addEventListener("click", () => {
@@ -18744,7 +18816,7 @@
       renderAutoStatus();
       renderManualRefreshState();
       renderLockTtl();
-      const savedAppViewState = loadAppViewState();
+      const savedAppViewState = readBoardLocationState() || loadAppViewState();
       if (savedAppViewState) {
         if (savedAppViewState.viewMode === "board" && !canAccessFreeBoard()) {
           setViewMode("market", { writeHistory: false });
