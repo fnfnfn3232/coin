@@ -360,7 +360,7 @@ test("another writer cannot edit or delete posts/comments even with their legacy
     ["DELETE", path, { postPassword: "PostPassword1" }],
     ["DELETE", `${path}/comments/${comment.id}`, { commentPassword: "KnownPassword1" }],
   ]) assert.equal((await f.request(route, method, body, otherToken)).status, 401, route);
-  assert.equal((await f.request(path, "PUT", { title: "Owner edit", body: "body" })).status, 200);
+  assert.equal((await f.request(path, "PUT", { title: "Owner edit", body: "body", postPassword: "PostPassword1" })).status, 200);
   assert.equal((await f.request(`${path}/comments/${comment.id}`, "DELETE", { commentPassword: "KnownPassword1" })).status, 200);
   assert.equal((await f.request(path, "DELETE", { adminPassword: f.adminPassword }, f.adminToken)).status, 200);
 });
@@ -694,7 +694,7 @@ test("stale edits from another tab are rejected atomically without overwriting t
   const id = created.post.id;
   assert.equal(created.post.contentRevision, 1, "revision is assigned by the server");
   const responses = await Promise.all(["First tab", "Second tab"].map(title => f.request(`/api/board/posts/${id}`, "PUT", {
-    title, body: title, expectedRevision: 1, contentRevision: 999,
+    title, body: title, expectedRevision: 1, contentRevision: 999, postPassword: "PostPassword1",
   })));
   assert.deepEqual(responses.map(response => response.status).sort(), [200, 409]);
   const saved = await responses.find(response => response.status === 200).json();
@@ -712,16 +712,16 @@ test("comments and views do not invalidate content revisions, and legacy edits r
   const path = `/api/board/posts/${created.post.id}`;
   assert.equal((await f.request(`${path}/view`, "POST", {})).status, 200);
   assert.equal((await f.request(`${path}/comments`, "POST", { body: "Comment", commentPassword: "Password1" })).status, 201);
-  const edited = await f.request(path, "PUT", { title: "Edited", body: "Content", expectedRevision: 1 });
+  const edited = await f.request(path, "PUT", { title: "Edited", body: "Content", expectedRevision: 1, postPassword: "PostPassword1" });
   assert.equal(edited.status, 200);
   const { post } = await edited.json();
   assert.equal(post.contentRevision, 2);
   assert.equal(post.views, 1);
   assert.equal(post.comments.length, 1);
   for (const expectedRevision of [0, -1, "2", 2.5, null]) {
-    assert.equal((await f.request(path, "PUT", { title: "Invalid version", body: "Invalid", expectedRevision })).status, 400);
+    assert.equal((await f.request(path, "PUT", { title: "Invalid version", body: "Invalid", expectedRevision, postPassword: "PostPassword1" })).status, 400);
   }
-  const legacy = await f.request(path, "PUT", { title: "Legacy client", body: "Compatible" });
+  const legacy = await f.request(path, "PUT", { title: "Legacy client", body: "Compatible", postPassword: "PostPassword1" });
   assert.equal(legacy.status, 200);
   assert.equal((await legacy.json()).post.contentRevision, 3);
 });
@@ -749,4 +749,21 @@ test("a verified administrator password permits immediate management deletion, n
   const comment = (await (await f.request(`${path}/comments`, "POST", { body: "Comment", commentPassword: "CommentPassword1" })).json()).comment;
   assert.equal((await f.request(`${path}/comments/${comment.id}`, "DELETE", { adminPassword: f.adminPassword }, f.adminToken)).status, 200);
   assert.equal((await f.request(path, "DELETE", { adminPassword: f.adminPassword }, f.adminToken)).status, 200);
+});
+
+test("editing and edit verification require matching passwords even for admin and owner sessions", async () => {
+  const f = await fixture({ write: true });
+  const original = (await (await f.post()).json()).post;
+  const path = `/api/board/posts/${original.id}`;
+  for (const token of [f.adminToken, f.memberToken]) {
+    for (const credentials of [{}, { adminMode: true }, { postPassword: "wrong", adminPassword: "wrong" }]) {
+      assert.equal((await f.request(`${path}/verify`, "POST", credentials, token)).status, 401);
+      assert.equal((await f.request(path, "PUT", { title: "Unauthorized change", body: "Bad", ...credentials }, token)).status, 401);
+    }
+    assert.equal((await f.request(`${path}/verify`, "POST", { postPassword: "PostPassword1" }, token)).status, 200);
+    assert.equal((await f.request(path, "PUT", { title: "Still unauthorized", body: "Bad" }, token)).status, 401, 'verification does not authorize a later passwordless request');
+  }
+  assert.equal((await f.store.readPosts()).find(post => post.id === original.id).title, original.title);
+  assert.equal((await f.request(path, "PUT", { title: "Owner confirmed", body: "Saved", postPassword: "PostPassword1" })).status, 200);
+  assert.equal((await f.request(path, "PUT", { title: "Admin confirmed", body: "Saved", adminPassword: f.adminPassword }, f.adminToken)).status, 200);
 });
