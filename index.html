@@ -11331,8 +11331,8 @@
           const composeEditorHtml = editingPost?.htmlEnabled
             ? sanitizeSafeHtml(composeBodyParts.body)
             : escapeHtml(composeBodyParts.body).replace(/\r\n?|\n/g, "<br>");
-          const adminEditing = freeBoardMode === "edit" && (freeBoardAdminMode || siteSessionRole === "admin");
-          const memberEditing = freeBoardMode === "edit" && isCurrentMemberBoardOwner(editingPost);
+          const adminEditing = freeBoardMode === "edit" && freeBoardAdminMode && Boolean(freeBoardAdminPassword);
+          const passwordEditing = freeBoardMode === "edit" && Boolean(freeBoardEditAuthPostPassword || freeBoardEditAuthAdminPassword);
           freeBoardComposeMediaTokens = mergeComposeMediaTokens(composeBodyParts.tokens);
           newsPanel.innerHTML = `
             <div class="free-board-shell">
@@ -11341,7 +11341,7 @@
                   <div>
                     <h2 class="free-board-title">${freeBoardMode === "edit" ? "글 수정" : "글쓰기"}</h2>
                     ${siteSessionRole === "member" && freeBoardMode === "write" ? '<p class="free-board-desc">하루 최대 3개 · 한국시간 자정 초기화 · 삭제한 글 포함</p>' : ""}
-                    <p class="free-board-desc">${freeBoardMode === "edit" ? (adminEditing || memberEditing ? "작성자 권한으로 비밀번호 입력 없이 수정합니다." : "작성 시 정한 글 비밀번호 또는 게시판관리 비밀번호로 수정합니다.") : "글 등록용 비밀번호를 따로 정합니다. 회원 작성자 권한으로도 나중에 수정/삭제할 수 있습니다."}</p>
+                    <p class="free-board-desc">${freeBoardMode === "edit" ? (adminEditing ? "게시판관리에서 확인한 비밀번호로 수정합니다." : passwordEditing ? "확인한 비밀번호로 수정합니다." : "글 비밀번호 또는 게시판관리 비밀번호를 확인한 뒤 수정합니다.") : "글 등록용 비밀번호를 따로 정합니다. 수정/삭제 시 글 비밀번호 또는 게시판관리 비밀번호를 확인합니다."}</p>
                   </div>
                   <div class="free-board-compose-top">
                     <div class="free-board-field">
@@ -11353,11 +11353,11 @@
                           .join("")}
                       </select>
                     </div>
-                    ${adminEditing || memberEditing ? "" : `<div class="free-board-field">
+                    ${adminEditing || passwordEditing ? "" : `<div class="free-board-field">
                       <label for="freeBoardPassword">${freeBoardMode === "edit" ? "글 비밀번호" : "글 등록 비밀번호"}</label>
                       <input id="freeBoardPassword" name="postPassword" type="password" autocomplete="off" placeholder="${freeBoardMode === "edit" ? "글 비밀번호로 수정" : "수정/삭제에 사용할 비밀번호"}" value="${freeBoardMode === "edit" ? escapeAttr(freeBoardEditAuthPostPassword) : ""}"${freeBoardMode === "edit" ? "" : " required"} />
                     </div>`}
-                    ${freeBoardMode === "edit" && !adminEditing && !memberEditing ? `
+                    ${freeBoardMode === "edit" && !adminEditing && !passwordEditing ? `
                       <div class="free-board-field">
                         <label for="freeBoardEditAdminPassword">게시판관리 비밀번호</label>
                         <input id="freeBoardEditAdminPassword" name="adminPassword" type="password" autocomplete="off" placeholder="게시판관리 비밀번호로 수정" value="${escapeAttr(freeBoardEditAuthAdminPassword)}" />
@@ -17863,9 +17863,7 @@
         const effectiveAdminPassword = freeBoardMode === "edit"
           ? (editAdminPassword || freeBoardEditAuthAdminPassword || (freeBoardAdminMode ? freeBoardAdminPassword : ""))
           : (freeBoardAdminMode ? freeBoardAdminPassword : "");
-        const memberOwnEdit = freeBoardMode === "edit" && isCurrentMemberBoardOwner(getSelectedFreeBoardPost());
-
-        if (freeBoardMode === "edit" ? (siteSessionRole !== "admin" && !memberOwnEdit && !effectivePostPassword && !effectiveAdminPassword) : !postPassword) {
+        if (freeBoardMode === "edit" ? (!effectivePostPassword && !effectiveAdminPassword) : !postPassword) {
           showFreeBoardMessage(freeBoardMode === "edit" ? "글 비밀번호 또는 게시판관리 비밀번호를 입력해 주세요." : "글 비밀번호를 입력해 주세요. 이 비밀번호로 수정/삭제합니다.", true);
           return;
         }
@@ -18462,10 +18460,9 @@
             return;
           }
           const postId = String(editButton.dataset.freeBoardEdit || "");
-          const targetPost = loadFreeBoardPosts().find((post) => post.id === postId);
           freeBoardEditAuthPostPassword = "";
           freeBoardEditAuthAdminPassword = freeBoardAdminMode ? freeBoardAdminPassword : "";
-          if (siteSessionRole === "admin" || freeBoardAdminMode || isCurrentMemberBoardOwner(targetPost)) {
+          if (freeBoardAdminMode && freeBoardAdminPassword) {
             freeBoardSelectedId = postId;
             freeBoardMode = "edit";
             showFreeBoardMessage("", false);

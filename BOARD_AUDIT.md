@@ -50,7 +50,7 @@ Date: 2026-10-23 (Asia/Seoul)
 
 ## Verification and Automation
 
-- The expanded browser workflow suite contains 28 cases (previously 13).
+- The expanded browser workflow suite contains 31 cases (previously 13).
 - Worker tests cover revision conflicts, invalid versions and legacy clients.
 - `Board Regression Checks` runs paste/workflow and Worker permission/security
   tests on relevant pushes and pull requests. It uses mocked APIs, not live data.
@@ -102,3 +102,24 @@ copied address therefore could not identify the displayed post in another tab.
 - The link suite runs in Chrome and Edge locally and in the existing browser CI.
 - Old copies of the bare homepage URL cannot identify a post retroactively;
   reload the site and copy the address again from the relevant post.
+
+## Edit-Password Follow-Up (2026-10-24)
+
+The deletion fix had not applied the same confirmation policy to editing. Admin
+login and ownership still bypassed both the edit dialog and server validation.
+
+- Outside verified board management, clicking Edit now opens the password dialog.
+- Both `/verify` and `PUT` check the actual post/administrator password, in
+  addition to the existing role/ownership and write-approval checks.
+- Edit verification alone does not authorize a later passwordless save. The
+  confirmed password accompanies the save and is checked again by the Worker.
+- Already verified board management reuses its password; leaving management
+  restores the per-edit prompt. No credentials are added to URLs or storage.
+- Post verification, updating and deletion share the password-enforcing helper
+  so the destructive actions no longer use different confirmation policies.
+- Browser regressions cover admin and owner prompts, empty/wrong passwords,
+  cancellation, confirmed saves, re-opening, a forced editor without credentials,
+  actual management login and leaving management. Worker tests reject direct
+  passwordless/incorrect requests even from an authenticated administrator.
+- The former regression expectation that admin sessions could edit without a
+  password has been corrected, rather than retained as the site's intended rule.

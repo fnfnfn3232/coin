@@ -1685,7 +1685,7 @@ async function canManageCommentForClaims(comment, body, claims, env) {
   return claims?.role === "member" && comment?.authorMemberId === claims.subject;
 }
 
-async function canDeletePostForClaims(post, body, claims, env) {
+async function canManagePostWithPasswordForClaims(post, body, claims, env) {
   if (!await canManagePostForClaims(post, body, claims, env)) return false;
   return await isAdminPassword(body?.adminPassword || "", env)
     || await isMatchingPassword(body?.postPassword || body?.password || "", post?.passwordHash);
@@ -4618,7 +4618,7 @@ export class BoardStore {
       const posts = await this.readPosts();
       const target = posts.find((post) => post.id === id);
       if (!target) return jsonResponse({ error: "not_found" }, 404, this.env);
-      if (!await canManagePostForClaims(target, body, access.claims, this.env)) {
+      if (!await canManagePostWithPasswordForClaims(target, body, access.claims, this.env)) {
         return jsonResponse({ error: "invalid_password" }, 401, this.env);
       }
       return jsonResponse({ ok: true }, 200, this.env);
@@ -4692,7 +4692,7 @@ export class BoardStore {
       const posts = await this.readPosts();
       const index = posts.findIndex((post) => post.id === postId);
       if (index < 0) return jsonResponse({ error: "not_found" }, 404, this.env);
-      if (!await canManagePostForClaims(posts[index], body, access.claims, this.env)) {
+      if (!await canManagePostWithPasswordForClaims(posts[index], body, access.claims, this.env)) {
         return jsonResponse({ error: "invalid_password" }, 401, this.env);
       }
       const beforePost = posts[index];
@@ -4752,7 +4752,7 @@ export class BoardStore {
       const posts = await this.readPosts();
       const target = posts.find((post) => post.id === postId);
       if (!target) return jsonResponse({ error: "not_found" }, 404, this.env);
-      if (!await canDeletePostForClaims(target, body, access.claims, this.env)) {
+      if (!await canManagePostWithPasswordForClaims(target, body, access.claims, this.env)) {
         return jsonResponse({ error: "invalid_password" }, 401, this.env);
       }
       const adminMode = await isAdminPassword(body?.adminPassword || "", this.env);

@@ -49,7 +49,9 @@ async function main() {
         else if (failSave) { status = 503; result = { error: 'temporary_failure' }; }
         else {
           const body = route.request().postDataJSON();
-          if (method === 'PUT' && body.expectedRevision !== undefined && body.expectedRevision !== (posts[0].contentRevision || 1)) {
+          if (method === 'PUT' && body.adminPassword !== 'admin-password' && body.postPassword !== 'post-password') {
+            status = 401; result = { error: 'invalid_password' };
+          } else if (method === 'PUT' && body.expectedRevision !== undefined && body.expectedRevision !== (posts[0].contentRevision || 1)) {
             status = 409; result = { error: 'post_conflict' };
           } else {
             const post = { ...posts[0], ...body, id: method === 'POST' ? `created-${calls.length}` : 'workflow-post',
@@ -72,6 +74,13 @@ async function main() {
           else posts = [];
           result = { posts, ok: true };
         }
+      } else if (key === 'POST /api/board/posts/workflow-post/verify') {
+        const body = route.request().postDataJSON();
+        status = body.adminPassword === 'admin-password' || body.postPassword === 'post-password' ? 200 : 401;
+        result = status === 200 ? { ok: true } : { error: 'invalid_password' };
+      } else if (key === 'POST /api/board/logs') {
+        status = route.request().postDataJSON().adminPassword === 'admin-password' ? 200 : 401;
+        result = status === 200 ? { logs: [] } : { error: 'invalid_password' };
       } else if (url.pathname.startsWith('/api/board/posts/')) result = { posts, post: posts[0] };
       else if (url.pathname === '/api/board/categories') result = { categories: [{ value: 'free', label: 'Free board' }, { value: 'games', label: 'Games' }] };
       else if (url.pathname === '/api/screen-settings') result = { settings: {} };
@@ -92,6 +101,12 @@ async function main() {
       await page.locator('[data-free-board-open="workflow-post"]:visible').click();
       await page.waitForSelector('#freeBoardCommentForm');
     }
+    async function edit(tab = page) {
+      await tab.locator('[data-free-board-edit="workflow-post"]').click();
+      await tab.locator('#deleteAuthAdminPasswordInput').fill('admin-password');
+      await tab.locator('#deleteAuthForm').evaluate(form => form.requestSubmit());
+      await tab.waitForSelector('#freeBoardRichEditor');
+    }
     async function submit() { await page.locator('#freeBoardForm').evaluate(form => form.requestSubmit()); }
     async function installUploadStub() {
       await page.evaluate(() => {
@@ -105,7 +120,7 @@ async function main() {
     try {
       await page.goto('https://fnfnfn3232.github.io/coin/', { waitUntil: 'domcontentloaded' });
       await page.waitForFunction(() => siteAuthConfirmed && freeBoardPostsLoaded);
-      await run({ page, write, read, submit, count, held, release, installUploadStub, files,
+      await run({ page, write, read, edit, submit, count, held, release, installUploadStub, files,
         setPosts: value => { posts = value; },
         setSaveError: value => { saveError = value; },
         failPosts: value => { failPosts = value; }, failSave: value => { failSave = value; } });
@@ -115,9 +130,9 @@ async function main() {
     finally { for (const key of held) release(key); await context.close(); }
   }
   try {
-    await test('admin can save an edit using its existing authenticated session', async ({ page, read, count }) => {
+    await test('admin can save an edit only after verifying the password', async ({ page, read, edit, count }) => {
       await read();
-      await page.locator('[data-free-board-edit="workflow-post"]').click();
+      await edit();
       await page.locator('#freeBoardTitle').fill('Admin edited');
       await page.locator('#freeBoardForm').evaluate(form => form.requestSubmit());
       await page.waitForTimeout(100);
@@ -265,13 +280,13 @@ async function main() {
       });
       assert.deepEqual(matches, [1, 1, 0]);
     });
-    await test('desktop and mobile board read/write/edit remain usable without page overflow', async ({ page, read }) => {
+    await test('desktop and mobile board read/write/edit remain usable without page overflow', async ({ page, read, edit }) => {
       await read();
       for (const width of [1440, 390, 320]) {
         await page.setViewportSize({ width, height: 900 });
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
       }
-      await page.locator('[data-free-board-edit="workflow-post"]').click();
+      await edit();
       for (const width of [1440, 390, 320]) {
         await page.setViewportSize({ width, height: 900 });
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
@@ -291,10 +306,10 @@ async function main() {
       assert.equal(await page.evaluate(() => loadFreeBoardPosts().length), 200);
       assert.equal(count('GET /api/board/posts'), requests);
     }, { posts: Array.from({ length: 200 }, (_, i) => ({ id: `archive-${i}`, title: `Archived title ${i}`, body: 'Archived body', category: 'free', createdAt: Date.now() - i * 1000 })) });
-    await test('long existing posts retain every character when read and edited', async ({ page, read }) => {
+    await test('long existing posts retain every character when read and edited', async ({ page, read, edit }) => {
       await read();
       assert.ok((await page.locator('.free-board-body').textContent()).endsWith('LAST-CHARACTERS'));
-      await page.locator('[data-free-board-edit="workflow-post"]').click();
+      await edit();
       assert.ok((await page.locator('#freeBoardRichEditor').textContent()).endsWith('LAST-CHARACTERS'));
     }, { posts: [{ id: 'workflow-post', title: 'Long original', body: 'a'.repeat(15000) + 'LAST-CHARACTERS', category: 'free', createdAt: Date.now() }] });
     await test('formatted media hyperlinks and inline images keep their exact URLs on save', async ({ page, write, submit }) => {
@@ -337,15 +352,15 @@ async function main() {
       assert.equal(await page.locator('#freeBoardRichEditor').textContent(), 'Draft body');
       assert.equal(await page.evaluate(() => originalDraft === document.getElementById('freeBoardForm') && freeBoardComposeMediaTokens.length === 1), true);
     });
-    await test('two browser tabs cannot silently overwrite each other, even after a cache refresh', async ({ page, read }) => {
+    await test('two browser tabs cannot silently overwrite each other, even after a cache refresh', async ({ page, read, edit }) => {
       await read();
-      await page.locator('[data-free-board-edit="workflow-post"]').click();
+      await edit();
       const second = await page.context().newPage();
       await second.goto('https://fnfnfn3232.github.io/coin/', { waitUntil: 'domcontentloaded' });
       await second.waitForFunction(() => siteAuthConfirmed && freeBoardPostsLoaded);
       await second.locator('#boardToggleBtn').click();
       await second.locator('[data-free-board-open="workflow-post"]:visible').click();
-      await second.locator('[data-free-board-edit="workflow-post"]').click();
+      await edit(second);
       await page.locator('#freeBoardTitle').fill('Saved from first tab');
       await page.locator('#freeBoardForm').evaluate(form => form.requestSubmit());
       await page.waitForSelector('.free-board-read-title');
@@ -454,6 +469,60 @@ async function main() {
       assert.equal(count('DELETE /api/board/posts/workflow-post/comments/delete-comment'), 1);
     }, { posts: [{ id: 'workflow-post', title: 'Original title', body: 'Body', category: 'free', createdAt: Date.now(),
       comments: [{ id: 'delete-comment', body: 'Comment', author: 'Tester', createdAt: Date.now() }] }] });
+    for (const member of [false, true]) {
+      await test(`${member ? 'owner' : 'admin'} must verify the password before editing and cannot bypass it on save`, async ({ page, read, count }) => {
+        await read();
+        await page.locator('[data-free-board-edit="workflow-post"]').click();
+        assert.equal(await page.locator('#deleteAuthModal').isVisible(), true);
+        assert.equal(await page.locator('#freeBoardRichEditor').count(), 0);
+        await page.locator('#deleteAuthForm').evaluate(form => form.requestSubmit());
+        assert.equal(count('POST /api/board/posts/workflow-post/verify'), 0);
+        await page.locator('#deleteAuthPasswordInput').fill('wrong');
+        await page.locator('#deleteAuthForm').evaluate(form => form.requestSubmit());
+        await page.waitForFunction(() => document.querySelector('#deleteAuthError')?.textContent.includes('맞지'));
+        assert.equal(await page.locator('#freeBoardRichEditor').count(), 0);
+        assert.equal(count('PUT /api/board/posts/workflow-post'), 0);
+        await page.locator('#deleteAuthCancelBtn').click();
+        await page.locator('[data-free-board-edit="workflow-post"]').click();
+        await page.locator('#deleteAuthPasswordInput').fill('post-password');
+        await page.locator('#deleteAuthForm').evaluate(form => form.requestSubmit());
+        await page.waitForSelector('#freeBoardRichEditor');
+        await page.locator('#freeBoardTitle').fill('Password confirmed edit');
+        await page.locator('#freeBoardForm').evaluate(form => form.requestSubmit());
+        await page.waitForSelector('.free-board-read-title');
+        assert.equal(await page.locator('.free-board-read-title').textContent(), 'Password confirmed edit');
+        assert.equal(count('PUT /api/board/posts/workflow-post'), 1);
+        await page.locator('[data-free-board-edit="workflow-post"]').click();
+        assert.equal(await page.locator('#deleteAuthModal').isVisible(), true, 'a new edit must ask again outside management');
+        await page.locator('#deleteAuthCancelBtn').click();
+        await page.evaluate(() => { freeBoardMode = 'edit'; renderFreeBoard(); });
+        await page.locator('#freeBoardForm').evaluate(form => form.requestSubmit());
+        assert.equal(count('PUT /api/board/posts/workflow-post'), 1, 'forcing the editor open cannot bypass save validation');
+        assert.equal(await page.locator('#freeBoardMessage').evaluate(node => node.classList.contains('error')), true);
+      }, { member });
+    }
+    await test('verified board management edits directly; leaving management restores the password prompt', async ({ page, count }) => {
+      await page.locator('#boardToggleBtn').click();
+      await page.locator('[data-free-board-admin-toggle]').click();
+      await page.locator('#freeBoardAdminPassword').fill('admin-password');
+      await page.locator('[data-free-board-admin-form]').evaluate(form => form.requestSubmit());
+      await page.waitForFunction(() => freeBoardAdminMode && !freeBoardAdminLoginSubmitting);
+      await page.locator('[data-free-board-open="workflow-post"]:visible').click();
+      await page.locator('[data-free-board-edit="workflow-post"]').click();
+      await page.waitForSelector('#freeBoardRichEditor');
+      assert.equal(await page.locator('#deleteAuthModal').isVisible(), false);
+      assert.equal(count('POST /api/board/posts/workflow-post/verify'), 0);
+      await page.locator('#freeBoardTitle').fill('Management edit');
+      await page.locator('#freeBoardForm').evaluate(form => form.requestSubmit());
+      await page.waitForSelector('.free-board-read-title');
+      assert.equal(await page.locator('.free-board-read-title').textContent(), 'Management edit');
+      await page.locator('[data-free-board-list]').click();
+      await page.locator('[data-free-board-admin-logout]').click();
+      await page.locator('[data-free-board-open="workflow-post"]:visible').click();
+      await page.locator('[data-free-board-edit="workflow-post"]').click();
+      assert.equal(await page.locator('#deleteAuthModal').isVisible(), true);
+      assert.equal(await page.locator('#freeBoardRichEditor').count(), 0);
+    });
   } finally { await browser.close(); }
   assert.deepEqual(failures, [], 'board workflow regressions');
 }

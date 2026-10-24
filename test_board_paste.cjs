@@ -96,6 +96,8 @@ async function main() {
         await page.evaluate(() => { freeBoardMode = 'list'; renderFreeBoard(); });
         await page.locator('[data-free-board-open="paste-test-post"]:visible').click();
         await page.locator('[data-free-board-edit="paste-test-post"]').click();
+        await page.locator('#deleteAuthAdminPasswordInput').fill('paste-test-admin-password');
+        await page.locator('#deleteAuthForm').evaluate(form => form.requestSubmit());
       }
       await page.waitForSelector('#freeBoardRichEditor');
       await seed('Original text must disappear');
