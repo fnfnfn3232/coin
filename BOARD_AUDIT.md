@@ -123,3 +123,29 @@ login and ownership still bypassed both the edit dialog and server validation.
   passwordless/incorrect requests even from an authenticated administrator.
 - The former regression expectation that admin sessions could edit without a
   password has been corrected, rather than retained as the site's intended rule.
+
+## Attachment-Progress Follow-Up (2026-10-25)
+
+The client previously counted bytes only after each chunk's HTTP response. With
+8 MiB R2 chunks, small files could stay at 0% throughout the actual transfer.
+Upload initialization also awaited a scan and deletion of expired temporary files.
+
+- Chunk requests now use XHR upload events through the existing authenticated
+  request helper. Normal JSON requests remain on fetch. Credentials, timeout,
+  session expiration and HTTP-error handling are preserved.
+- Preparation, transferred bytes, waiting for the server and final storage
+  confirmation have distinct states. Transfer 100% is not a saved-file guarantee.
+- Concurrent progress includes both acknowledged and in-flight bytes; retries
+  reset only the failed chunk's attempt. Failed batches settle existing workers
+  without starting new chunks or publishing late progress.
+- Temporary cleanup runs with DurableObjectState.waitUntil and is shared by
+  simultaneous starts. Cleanup errors are logged and retried on a later start.
+  No periodic job, upload-size increase or concurrency increase was introduced.
+- `test_board_upload.cjs` covers deterministic progress, parallel accounting,
+  retries, timeouts, authentication failures, finalization failure, bounds and
+  fetch fallback. A real loopback HTTP/CORS transfer checks native browser XHR.
+  The existing browser workflow suite covers draft and stale-form safeguards.
+- Worker tests hold cleanup pending while two new sessions return successfully,
+  and check recovery from cleanup failure. Existing ownership/storage tests stay.
+- These checks do not measure production throughput, guarantee instant uploads,
+  or replace real-device Safari/Android and production-network testing.
