@@ -43,3 +43,4 @@ jobs:
           node test_board_paste.cjs
           node test_board_workflows.cjs
           node test_board_links.cjs
+          node test_board_upload.cjs

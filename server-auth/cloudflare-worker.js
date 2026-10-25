@@ -2545,6 +2545,7 @@ export class BoardStore {
     this.state = state;
     this.env = env;
     this.mediaUploadOperations = new Map();
+    this.mediaUploadCleanupPromise = null;
     this.boardPostsOperation = Promise.resolve();
     this.l2FeesPromise = null;
   }
@@ -3504,7 +3505,6 @@ export class BoardStore {
   async createMediaUpload(request) {
     const access = await this.getBoardWriteClaims(request);
     if (access.response) return access.response;
-    await this.cleanupExpiredMediaUploads();
     const body = await parseJsonBody(request);
     const size = Math.max(0, Math.floor(Number(body?.size) || 0));
     if (!size || size > BOARD_MEDIA_MAX_BYTES) {
@@ -3530,6 +3530,14 @@ export class BoardStore {
       uploadedChunks: [],
     };
     await this.state.storage.put(getBoardMediaUploadKey(uploadId), meta);
+    // Cleanup is shared by concurrent starts and must not delay a new transfer.
+    if (!this.mediaUploadCleanupPromise) {
+      this.mediaUploadCleanupPromise = this.cleanupExpiredMediaUploads()
+        .catch((error) => console.error("media_upload_cleanup_failed", error))
+        .finally(() => { this.mediaUploadCleanupPromise = null; });
+    }
+    if (typeof this.state.waitUntil === "function") this.state.waitUntil(this.mediaUploadCleanupPromise);
+    else await this.mediaUploadCleanupPromise;
     return jsonResponse({
       uploadId,
       chunkSize,

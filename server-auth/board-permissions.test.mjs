@@ -84,6 +84,49 @@ const feeSource = (fee = 12) => ({ protocols: [
   { slug: "ethereum", name: "Ethereum", category: "Chain", protocolType: "chain", total24h: 200, total7d: 1400, total30d: 6000 },
 ] });
 
+test("new uploads do not await stale-file cleanup and concurrent starts share cleanup", { timeout: 5000 }, async () => {
+  const { store, request } = await fixture({ write: true });
+  const tasks = [];
+  store.state.waitUntil = (task) => tasks.push(task);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let cleanups = 0;
+  store.cleanupExpiredMediaUploads = async () => { cleanups += 1; await gate; };
+  try {
+    for (let i = 0; i < 2; i += 1) {
+      const response = await request("/api/board/media/uploads", "POST", { fileName: "test.txt", size: 10 });
+      assert.equal(response.status, 201);
+      assert.ok((await response.json()).uploadId);
+    }
+    assert.equal(cleanups, 1);
+    assert.equal(tasks.length, 2);
+  } finally {
+    release();
+    await Promise.all(tasks);
+  }
+  assert.equal(store.mediaUploadCleanupPromise, null);
+});
+
+test("background upload cleanup failures do not reject new sessions and can be retried", async () => {
+  const { store, request } = await fixture({ write: true });
+  const tasks = [];
+  store.state.waitUntil = (task) => tasks.push(task);
+  const originalError = console.error;
+  const logs = [];
+  console.error = (...args) => logs.push(args[0]);
+  try {
+    store.cleanupExpiredMediaUploads = async () => { throw new Error("storage temporarily unavailable"); };
+    assert.equal((await request("/api/board/media/uploads", "POST", { size: 10 })).status, 201);
+    await Promise.all(tasks);
+    assert.deepEqual(logs, ["media_upload_cleanup_failed"]);
+    let cleaned = false;
+    store.cleanupExpiredMediaUploads = async () => { cleaned = true; };
+    assert.equal((await request("/api/board/media/uploads", "POST", { size: 10 })).status, 201);
+    await Promise.all(tasks);
+    assert.equal(cleaned, true);
+  } finally { console.error = originalError; }
+});
+
 test("L2 fees exclude L1s and app fees, keep zero and missing metrics distinct", () => {
   const input = feeSource(0);
   input.protocols.push(
