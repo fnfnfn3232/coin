@@ -40,6 +40,9 @@ checked again after deployment.
 Production follow-up confirmed Gate's 2,031 spot identities, including ZBT,
 FRAX, KGEN and MLK. A real browser on the site's origin also received Binance's
 public bulk quotes (HTTP 200), including ZBT/FRAX, despite the Worker being blocked.
+The final Worker probe returned the official XDP identity and fresh OKX price;
+immediate repeated Gate/OKX requests returned their shared caches without upstream
+waits. The browser-origin OKX check also returned XDP successfully (HTTP 200).
 These are point-in-time checks, not a guarantee of zero latency or all-network availability.
 
 ## Reference Site Findings
