@@ -1,5 +1,37 @@
 # Price Difference (2026-10-29)
 
+## Production Failure Investigation
+
+The deployment's trusted GitHub OIDC probe reproduced failures in the actual
+Worker, not just from the developer's network: Binance REST returned 451,
+Bybit/Bitget returned 403, and all four CoinPaprika exchange-market catalogs
+returned 402. Valid Gate/OKX quotes were discarded because no catalog loaded.
+
+- Binance now uses its officially documented public-market-data REST host
+  `data-api.binance.vision`; spot WebSockets use standard port 443, not 9443.
+- Gate identities come from its official `/spot/currencies` API and are limited
+  to currently quoted USDT spot products. Delisted/ambiguous entries are excluded.
+- If an exchange-market catalog is unavailable, the free CoinPaprika coin list
+  supplies only active, globally unambiguous symbols present in the exchange's
+  actual spot quote response. Prices never come from this metadata source.
+- The new OKX XDP identity is supported by its official spot listing announcement:
+  https://www.okx.com/help/okx-to-list-xdp-usdt-doppler-finance-for-spot-trading
+  This reviewed exception cannot create an unlisted price or apply to another exchange.
+- Reviewed name variants cover KGeN, MiL.k/MiL.k Alliance, and the renamed FXS
+  governance asset Frax/Frax Finance. Legacy Frax Dollar (`frax-frax`) is rejected.
+  FXS migration evidence: https://feed.bithumb.com/notice/1651781
+- Login's authenticated snapshot load prewarms bulk quotes and independent FX
+  before opening the market view. Existing owner-bound session caching remains.
+- Failures and source details are inspectable through the deployment-only probe;
+  regular member/admin sessions cannot invoke this diagnostic route.
+- A first uncached visit still requires network access. Upstream restrictions,
+  ambiguous tokens and stale data must not be concealed with invented values.
+
+Tests cover the five reported symbols, paid-catalog failure/free fallback,
+official Gate filtering, legacy FRAX and AI ticker collisions, session caching,
+WebSocket lifecycle, authentication and expiry. Production probe results are
+checked again after deployment.
+
 ## Reference Site Findings
 
 The public HTML and client bundles at https://kimpga.com/ were inspected. The

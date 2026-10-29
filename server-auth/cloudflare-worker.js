@@ -384,7 +384,7 @@ async function fetchLiveFxUsdKrw() {
 }
 
 async function fetchBinanceLivePriceMap() {
-  const payload = await fetchJsonWithTimeout("https://api.binance.com/api/v3/ticker/price");
+  const payload = await fetchJsonWithTimeout("https://data-api.binance.vision/api/v3/ticker/price");
   const prices = {};
   if (!Array.isArray(payload)) return prices;
   for (const item of payload) {
@@ -568,6 +568,43 @@ function normalizeComparisonCatalog(source) {
   }
   for (const symbol of ambiguous) delete assets[symbol];
   if (!Object.keys(assets).length) throw new Error("empty_spot_catalog");
+  return assets;
+}
+
+function normalizeGateComparisonCatalog(source, prices) {
+  if (!Array.isArray(source)) throw new Error("invalid_gate_catalog");
+  const assets = {};
+  const ambiguous = new Set();
+  for (const row of source) {
+    const symbol = String(row.currency || "");
+    const name = String(row.name || "").trim();
+    if (row.delisted === true || !toPositiveNumber(prices?.[symbol]) || !/^[A-Z0-9]{1,40}$/.test(symbol) || !name || name.length > 120) continue;
+    if (assets[symbol] && assets[symbol][0] !== name) ambiguous.add(symbol);
+    assets[symbol] = [name, `gate-${symbol.toLowerCase()}`];
+  }
+  for (const symbol of ambiguous) delete assets[symbol];
+  if (!Object.keys(assets).length) throw new Error("empty_gate_catalog");
+  return assets;
+}
+
+function normalizeUniqueCoinCatalog(source, prices, exchange) {
+  if (!Array.isArray(source)) throw new Error("invalid_coin_catalog");
+  const assets = {};
+  const ambiguous = new Set();
+  for (const row of source) {
+    const symbol = String(row.symbol || "").toUpperCase();
+    const name = String(row.name || "").trim();
+    if (row.is_active !== true || !toPositiveNumber(prices?.[symbol]) || !/^[A-Z0-9]{1,40}$/.test(symbol)
+      || !name || name.length > 120 || !/^[a-z0-9-]{1,120}$/.test(row.id || "")) continue;
+    if (assets[symbol] && assets[symbol][1] !== row.id) ambiguous.add(symbol);
+    assets[symbol] = [name, row.id];
+  }
+  for (const symbol of ambiguous) delete assets[symbol];
+  // New listings may precede aggregators. This exception is exchange-specific,
+  // and still requires a current USDT spot quote, never a perpetual instrument.
+  // https://www.okx.com/help/okx-to-list-xdp-usdt-doppler-finance-for-spot-trading
+  if (exchange === "okx" && toPositiveNumber(prices?.XDP)) assets.XDP = ["Doppler Finance", "okx-doppler-finance"];
+  if (!Object.keys(assets).length) throw new Error("empty_coin_catalog");
   return assets;
 }
 
@@ -3143,8 +3180,8 @@ export class BoardStore {
     }
   }
 
-  async readComparisonCatalog(exchange) {
-    const key = `price-difference-catalog-v1:${exchange}`;
+  async readComparisonCatalog(exchange, prices = {}) {
+    const key = `price-difference-catalog-v2:${exchange}`;
     const now = Date.now();
     const stored = await this.state.storage.get(key);
     if (stored && now - stored.checkedAt < (stored.error ? 300000 : 6 * 3600000)) {
@@ -3154,8 +3191,26 @@ export class BoardStore {
       const pending = (async () => {
         let payload;
         try {
-          const source = await fetchJsonWithTimeout(`https://api.coinpaprika.com/v1/exchanges/${ADDITIONAL_SPOT_SOURCES[exchange].catalog}/markets?quotes=USD`, 8000);
-          payload = { assets: normalizeComparisonCatalog(source), fetchedAt: now, checkedAt: now, error: "" };
+          let assets;
+          let sourceName;
+          if (exchange === "gateio") {
+            assets = normalizeGateComparisonCatalog(await fetchJsonWithTimeout("https://api.gateio.ws/api/v4/spot/currencies", 8000), prices);
+            sourceName = "Gate official currencies";
+          } else {
+            try {
+              assets = normalizeComparisonCatalog(await fetchJsonWithTimeout(`https://api.coinpaprika.com/v1/exchanges/${ADDITIONAL_SPOT_SOURCES[exchange].catalog}/markets?quotes=USD`, 2500));
+              sourceName = "CoinPaprika";
+            } catch (_error) {
+              if (!this.comparisonCoinsPromise) {
+                this.comparisonCoinsPromise = fetchJsonWithTimeout("https://api.coinpaprika.com/v1/coins", 8000);
+                this.comparisonCoinsPromise.catch(() => { this.comparisonCoinsPromise = null; });
+                this.comparisonCoinsExpiresAt = now + 6 * 3600000;
+              }
+              assets = normalizeUniqueCoinCatalog(await this.comparisonCoinsPromise, prices, exchange);
+              sourceName = "CoinPaprika unique assets / official listing";
+            }
+          }
+          payload = { assets, source: sourceName, fetchedAt: now, checkedAt: now, error: "" };
         } catch (error) {
           payload = { assets: now - Number(stored?.fetchedAt || 0) <= 86400000 ? stored?.assets || {} : {},
             fetchedAt: stored?.fetchedAt || 0, checkedAt: now, error: "identity_catalog_refresh_failed", errorDetail: String(error?.message || "unknown_error").slice(0, 160) };
@@ -3172,14 +3227,14 @@ export class BoardStore {
     const exchange = url.searchParams.get("exchange");
     const additional = Object.hasOwn(ADDITIONAL_SPOT_SOURCES, exchange);
     if (!additional && !["upbit", "bithumb", "binance", "coinbase"].includes(exchange)) return jsonResponse({ error: "invalid_exchange" }, 400, this.env);
-    const catalogPromise = additional ? this.readComparisonCatalog(exchange) : null;
     const key = `price-difference-quotes-v1:${exchange}`;
     const now = Date.now();
     const stored = await this.state.storage.get(key);
     const respond = async (value) => {
-      const catalog = catalogPromise ? await catalogPromise : null;
+      if (this.comparisonCoinsExpiresAt && now > this.comparisonCoinsExpiresAt) this.comparisonCoinsPromise = null;
+      const catalog = additional ? await this.readComparisonCatalog(exchange, value?.prices || {}) : null;
       return jsonResponse({ ...value, ...(catalog ? { assets: catalog.assets, catalogAt: catalog.fetchedAt,
-        identitySource: "CoinPaprika", identityError: catalog.error, identityErrorDetail: catalog.errorDetail || "" } : {}) }, Object.keys(value?.prices || {}).length ? 200 : 503, this.env);
+        identitySource: catalog.source || "", identityError: catalog.error, identityErrorDetail: catalog.errorDetail || "" } : {}) }, Object.keys(value?.prices || {}).length ? 200 : 503, this.env);
     };
     if (stored && now - stored.checkedAt < (stored.error ? 15000 : 25000)) return respond(stored);
     let pending = this.comparisonQuotePromises.get(exchange);

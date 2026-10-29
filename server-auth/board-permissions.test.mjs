@@ -15,9 +15,11 @@ const {
   normalizeL1Fees,
   normalizeAdditionalSpotQuotes,
   normalizeComparisonCatalog,
+  normalizeGateComparisonCatalog,
+  normalizeUniqueCoinCatalog,
   verifyMemberPassword,
 } = await import(
-  `data:text/javascript;base64,${Buffer.from(`${source}\nexport { createMemberPasswordCredentials, createSessionToken, deriveMemberPasswordHash, MEMBER_PASSWORD_ITERATIONS, normalizeMemberRecord, normalizeL2Fees, normalizeL1Fees, normalizeAdditionalSpotQuotes, normalizeComparisonCatalog, verifyMemberPassword };\n//# sourceURL=cloudflare-worker-under-test.mjs`).toString("base64")}`
+  `data:text/javascript;base64,${Buffer.from(`${source}\nexport { createMemberPasswordCredentials, createSessionToken, deriveMemberPasswordHash, MEMBER_PASSWORD_ITERATIONS, normalizeMemberRecord, normalizeL2Fees, normalizeL1Fees, normalizeAdditionalSpotQuotes, normalizeComparisonCatalog, normalizeGateComparisonCatalog, normalizeUniqueCoinCatalog, verifyMemberPassword };\n//# sourceURL=cloudflare-worker-under-test.mjs`).toString("base64")}`
 );
 
 class MemoryStorage {
@@ -113,6 +115,51 @@ test("comparison identity catalogs reject derivatives, outliers and conflicting 
   assert.throws(() => normalizeComparisonCatalog([{ ...asset, quote_currency_id: "usdc-usd-coin" }]));
 });
 
+test("official Gate names repair missing identities without admitting delisted or unquoted currencies", () => {
+  const assets = normalizeGateComparisonCatalog([
+    { currency: "KGEN", name: "KGeN", delisted: false },
+    { currency: "MLK", name: "MiL.k", delisted: false },
+    { currency: "ZBT", name: "ZEROBASE", delisted: false },
+    { currency: "OLD", name: "Old", delisted: true },
+    { currency: "MISSING", name: "Not a USDT market", delisted: false },
+  ], { KGEN: 1, MLK: 2, ZBT: 3, OLD: 4 });
+  assert.deepEqual(assets, { KGEN: ["KGeN", "gate-kgen"], MLK: ["MiL.k", "gate-mlk"], ZBT: ["ZEROBASE", "gate-zbt"] });
+});
+
+test("free identity fallback rejects ticker collisions and bounds the reviewed XDP listing to OKX spot", () => {
+  const coins = [
+    { symbol: "AI", name: "Gensyn", id: "ai-gensyn", is_active: true },
+    { symbol: "AI", name: "Sleepless AI", id: "ai-sleepless-ai", is_active: true },
+    { symbol: "KGEN", name: "KGeN", id: "kgen-kgen", is_active: true },
+    { symbol: "OLD", name: "Old", id: "old-asset", is_active: false },
+  ];
+  assert.deepEqual(normalizeUniqueCoinCatalog(coins, { AI: 1, KGEN: 1, OLD: 1, XDP: 1 }, "okx"), {
+    KGEN: ["KGeN", "kgen-kgen"], XDP: ["Doppler Finance", "okx-doppler-finance"],
+  });
+  assert.deepEqual(normalizeUniqueCoinCatalog(coins, { KGEN: 1 }, "okx"), { KGEN: ["KGeN", "kgen-kgen"] });
+  assert.deepEqual(normalizeUniqueCoinCatalog(coins, { KGEN: 1, XDP: 1 }, "bybit"), { KGEN: ["KGeN", "kgen-kgen"] });
+});
+
+test("a paid exchange catalog failure uses the free metadata endpoint while prices remain official", async () => {
+  const { request } = await fixture();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async url => {
+    const value = String(url);
+    if (value.includes("/exchanges/")) return new Response("payment_required", { status: 402 });
+    if (value.endsWith("/v1/coins")) return Response.json([{ symbol: "KGEN", name: "KGeN", id: "kgen-kgen", is_active: true }]);
+    if (value.includes("okx")) return Response.json({ code: "0", data: [{ instType: "SPOT", instId: "XDP-USDT", last: "0.02" }] });
+    throw new Error("unexpected_source");
+  };
+  try {
+    const response = await request("/api/price-difference-quotes?exchange=okx");
+    const value = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(value.prices.XDP, 0.02);
+    assert.deepEqual(value.assets.XDP, ["Doppler Finance", "okx-doppler-finance"]);
+    assert.equal(value.identityError, "");
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("four additional exchanges cache quote data separately from shared asset catalogs", async () => {
   const { request, storage } = await fixture();
   const originalFetch = globalThis.fetch;
@@ -120,6 +167,7 @@ test("four additional exchanges cache quote data separately from shared asset ca
   globalThis.fetch = async (url) => {
     const text = String(url); calls.push(text);
     if (text.includes("coinpaprika")) return Response.json([{ category: "Spot", pair: "XCN/USDT", quote_currency_id: "usdt-tether", base_currency_name: "Onyxcoin", base_currency_id: "xcn-chain" }]);
+    if (text.includes("spot/currencies")) return Response.json([{ currency: "XCN", name: "Onyxcoin", delisted: false }]);
     if (text.includes("gateio")) return Response.json([{ currency_pair: "XCN_USDT", last: "0.004" }]);
     if (text.includes("bybit")) return Response.json({ retCode: 0, result: { category: "spot", list: [{ symbol: "XCNUSDT", lastPrice: "0.004" }] } });
     if (text.includes("bitget")) return Response.json({ code: "00000", data: [{ symbol: "XCNUSDT", lastPr: "0.004" }] });
@@ -133,12 +181,12 @@ test("four additional exchanges cache quote data separately from shared asset ca
         assert.equal(response.status, 200);
         const value = await response.json();
         assert.equal(value.prices.XCN, 0.004);
-        assert.deepEqual(value.assets.XCN, ["Onyxcoin", "xcn-chain"]);
-        assert.equal(value.identitySource, "CoinPaprika");
+        assert.deepEqual(value.assets.XCN, ["Onyxcoin", board === "gateio" ? "gate-xcn" : "xcn-chain"]);
+        assert.equal(value.identitySource, board === "gateio" ? "Gate official currencies" : "CoinPaprika");
       }
       const cached = await storage.get(`price-difference-quotes-v1:${board}`);
       assert.equal(cached.assets, undefined);
-      assert.ok((await storage.get(`price-difference-catalog-v1:${board}`)).assets.XCN);
+      assert.ok((await storage.get(`price-difference-catalog-v2:${board}`)).assets.XCN);
     }
     assert.equal(calls.length, 8);
   } finally { globalThis.fetch = originalFetch; }
@@ -148,13 +196,13 @@ test("catalog failures preserve bounded identity age but never relabel or renew 
   const { request, storage } = await fixture();
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
-    if (String(url).includes("coinpaprika")) throw new Error("identity_provider_unavailable");
+    if (String(url).includes("spot/currencies")) throw new Error("identity_provider_unavailable");
     return Response.json([{ currency_pair: "XCN_USDT", last: "0.004" }]);
   };
   try {
     for (const hours of [8, 25]) {
       const at = Date.now() - hours * 3600000;
-      await storage.put("price-difference-catalog-v1:gateio", { assets: { XCN: ["Onyxcoin", "xcn-chain"] }, fetchedAt: at, checkedAt: 0 });
+      await storage.put("price-difference-catalog-v2:gateio", { assets: { XCN: ["Onyxcoin", "xcn-chain"] }, fetchedAt: at, checkedAt: 0 });
       const value = await (await request("/api/price-difference-quotes?exchange=gateio")).json();
       assert.equal(value.prices.XCN, 0.004);
       assert.equal(value.catalogAt, at);
