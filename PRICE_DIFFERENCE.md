@@ -22,6 +22,11 @@ returned 402. Valid Gate/OKX quotes were discarded because no catalog loaded.
   FXS migration evidence: https://feed.bithumb.com/notice/1651781
 - Login's authenticated snapshot load prewarms bulk quotes and independent FX
   before opening the market view. Existing owner-bound session caching remains.
+- Worker upstream restrictions can persist even on the public-data host. After
+  an authenticated 503 (or an expired failed cached response), Binance/OKX can
+  bootstrap from their official public APIs in the browser, without cookies or
+  site Authorization headers. Site 401/403 responses never trigger this fallback.
+  OKX retains the server's verified identity metadata; derivatives are excluded.
 - Failures and source details are inspectable through the deployment-only probe;
   regular member/admin sessions cannot invoke this diagnostic route.
 - A first uncached visit still requires network access. Upstream restrictions,
@@ -31,6 +36,11 @@ Tests cover the five reported symbols, paid-catalog failure/free fallback,
 official Gate filtering, legacy FRAX and AI ticker collisions, session caching,
 WebSocket lifecycle, authentication and expiry. Production probe results are
 checked again after deployment.
+
+Production follow-up confirmed Gate's 2,031 spot identities, including ZBT,
+FRAX, KGEN and MLK. A real browser on the site's origin also received Binance's
+public bulk quotes (HTTP 200), including ZBT/FRAX, despite the Worker being blocked.
+These are point-in-time checks, not a guarantee of zero latency or all-network availability.
 
 ## Reference Site Findings
 

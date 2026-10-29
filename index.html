@@ -16786,6 +16786,25 @@
         if (usdt && Date.now() - usdt.at < PRICE_DIFFERENCE_MAX_AGE_MS) applyComparisonQuote(priceDifferenceUsdt, "coinbase", usdt.price, usdt.at);
       }
 
+      async function fetchPublicComparisonQuotes(board, metadata = {}) {
+        const observedAt = Date.now();
+        const url = board === "binance" ? "https://data-api.binance.vision/api/v3/ticker/price"
+          : "https://www.okx.com/api/v5/market/tickers?instType=SPOT";
+        const response = await fetch(url, { credentials: "omit", signal: AbortSignal.timeout(6000) });
+        if (!response.ok) throw new Error(`public_quote_failed:${response.status}`);
+        const source = await response.json();
+        const rows = board === "binance" ? source : source?.code === "0" ? source.data : null;
+        if (!Array.isArray(rows)) throw new Error("invalid_public_quotes");
+        const prices = {};
+        for (const row of rows) {
+          if (board === "okx" && row.instType !== "SPOT") continue;
+          const match = String(row.symbol || row.instId || "").match(board === "binance" ? /^([A-Z0-9]{1,40})USDT$/ : /^([A-Z0-9]{1,40})-USDT$/);
+          const price = toPositiveNumber(board === "binance" ? row.price : row.last);
+          if (match && price) prices[match[1]] = price;
+        }
+        return { ...metadata, exchange: board, prices, observedAt, error: "", revalidating: false };
+      }
+
       function requestPriceDifferenceQuotes(prewarm = false) {
         if (isLocalPreview() || !hasServerAuth() || !siteAuthConfirmed || isSiteLocked() || document.hidden || !navigator.onLine || (!prewarm && state.viewMode !== "market")) return;
         const exchange = state.board === "triple" ? "bithumb" : state.board;
@@ -16823,6 +16842,17 @@
           const pending = { pending: true, retryAt: Date.now() + 15000 };
           priceDifferenceQuoteRequests.set(board, pending);
           fetchServerAuth(`/api/price-difference-quotes?exchange=${board}`, { method: "GET", timeoutMs: 15000 })
+            .catch(async error => {
+              // A public quote fallback cannot replace site authentication.
+              if (!["binance", "okx"].includes(board) || error.status !== 503 || !siteAuthConfirmed || isSiteLocked()
+                || generation !== priceDifferenceGeneration || comparisonCacheOwner() !== owner) throw error;
+              return fetchPublicComparisonQuotes(board, error.payload);
+            })
+            .then(payload => {
+              if (["binance", "okx"].includes(board) && payload?.error && Date.now() - payload.observedAt > PRICE_DIFFERENCE_MAX_AGE_MS
+                && generation === priceDifferenceGeneration && comparisonCacheOwner() === owner && !isSiteLocked()) return fetchPublicComparisonQuotes(board, payload);
+              return payload;
+            })
             .then((payload) => {
               if (generation !== priceDifferenceGeneration || comparisonCacheOwner() !== owner || isSiteLocked()) return;
               if (payload?.exchange !== board || !Number.isFinite(payload.observedAt) || payload.observedAt > Date.now() + 5000

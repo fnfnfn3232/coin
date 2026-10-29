@@ -35,6 +35,9 @@ async function main() {
   let fxCalls = 0;
   let bulkEnabled = false;
   const bulkCalls = [];
+  let bootstrapFailure = 0;
+  let bootstrapFailureBoard = 'binance';
+  let directCalls = 0;
   page.on('pageerror', error => { errors.push(error.message); console.error('Browser error:', error.message); });
   await context.addInitScript(() => {
     window.testSockets = [];
@@ -51,6 +54,14 @@ async function main() {
   });
   await context.route('https://**/*', async route => {
     const url = new URL(route.request().url());
+    if (url.hostname === 'data-api.binance.vision' || url.hostname === 'www.okx.com') {
+      directCalls++;
+      assert.equal(route.request().headers().authorization, undefined);
+      if (url.hostname === 'www.okx.com') return route.fulfill({ json: { code: '0', data: [
+        { instType: 'SPOT', instId: 'OKXONLY-USDT', last: '42' }, { instType: 'SWAP', instId: 'OKXONLY-USDT-SWAP', last: '999' },
+      ] } });
+      return route.fulfill({ json: [{ symbol: 'BTCUSDT', price: '101' }, { symbol: 'BTCUSDC', price: '999' }] });
+    }
     if (url.hostname === 'fnfnfn3232.github.io') {
       if (url.pathname === '/coin/') return route.fulfill({ body: html, contentType: 'text/html; charset=utf-8' });
       if (url.pathname.endsWith('/data.js')) return route.fulfill({ body: `window.BOARD_DATA=${JSON.stringify(snapshot)};`, contentType: 'text/javascript' });
@@ -68,6 +79,8 @@ async function main() {
     } else if (url.pathname === '/api/price-difference-quotes') {
       const exchange = url.searchParams.get('exchange');
       bulkCalls.push(exchange);
+      if (exchange === bootstrapFailureBoard && bootstrapFailure) return route.fulfill({ status: bootstrapFailure,
+        json: { error: 'quote_refresh_failed', assets: exchange === 'okx' ? { OKXONLY: ['Okx Only Asset', 'okxonly-asset'] } : {}, catalogAt: Date.now() } });
       result = { exchange, prices: bulkEnabled ? Object.fromEntries((snapshot.boards[exchange] || []).map(row => [row.symbol, ['upbit', 'bithumb'].includes(exchange) ? row.priceKrw : row.priceUsd])) : {}, observedAt: Date.now() };
       const fixture = fallbackFixtures[exchange];
       if (fixture && bulkEnabled) result = { exchange, prices: { [fixture.symbol]: fixture.price }, observedAt: Date.now(),
@@ -102,6 +115,9 @@ async function main() {
   try {
     await page.goto('https://fnfnfn3232.github.io/coin/', { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => siteAuthConfirmed && !isSiteLocked());
+    await page.waitForFunction(() => priceDifferenceQuoteRequests.size > 0 && !!priceDifferenceFx);
+    assert.ok(bulkCalls.includes('binance'));
+    console.log('PASS: authenticated home snapshot prewarms bulk quotes and FX before opening market');
     await page.locator('#marketToggleBtn').click();
     await page.locator('#baseBoardSelect').selectOption('upbit');
     await page.locator('#priceDifferenceBoard').selectOption('binance');
@@ -289,6 +305,28 @@ async function main() {
     });
     assert.deepEqual(reviewedProjects, { ZBT: true, KGEN: true, MLK: true, FRAX: true, XDP: true, rejectLegacyFrax: true, port443: true });
     console.log('PASS: actual ZBT/KGEN/MLK/FRAX/XDP name variants resolve; legacy FRAX is rejected and Binance uses port 443');
+
+    for (const status of [503, 401, 403]) {
+      bootstrapFailure = status;
+      const before = directCalls;
+      await page.evaluate(() => {
+        clearPriceDifferenceCache();
+        for (const rows of Object.values(data.boards)) for (const row of rows) { row.livePriceUpdatedAt = 0; row.comparisonPriceAt = 0; }
+        requestPriceDifferenceQuotes();
+      });
+      await page.waitForFunction(() => priceDifferenceQuoteRequests.get('binance')?.pending === false);
+      assert.equal(directCalls - before, status === 503 ? 1 : 0);
+      if (status === 503) assert.equal(await page.evaluate(() => priceDifferenceQuoteCache.binance.BTC.price), 101);
+    }
+    console.log('PASS: Worker source failure can bootstrap public Binance quotes without credentials; 401/403 never fall back');
+    bootstrapFailureBoard = 'okx';
+    bootstrapFailure = 503;
+    const beforeOkx = directCalls;
+    await page.evaluate(() => { clearPriceDifferenceCache(); requestPriceDifferenceQuotes(); });
+    await page.waitForFunction(() => priceDifferenceQuoteRequests.get('okx')?.pending === false);
+    assert.equal(directCalls - beforeOkx, 1);
+    assert.equal(await page.evaluate(() => priceDifferenceQuoteCache.okx.OKXONLY.price), 42);
+    console.log('PASS: OKX public fallback retains verified metadata and excludes perpetual contracts');
 
     await page.evaluate(() => window.dispatchEvent(new Event('offline')));
     assert.equal(await page.evaluate(() => testSockets.filter(socket => socket.readyState === 1).length), 0);
