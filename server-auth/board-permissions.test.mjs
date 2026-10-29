@@ -160,6 +160,20 @@ test("a paid exchange catalog failure uses the free metadata endpoint while pric
   } finally { globalThis.fetch = originalFetch; }
 });
 
+test("an unavailable aggregator cannot suppress the reviewed official XDP spot identity", async () => {
+  const { request } = await fixture();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async url => String(url).includes("coinpaprika")
+    ? new Response("unavailable", { status: 402 })
+    : Response.json({ code: "0", data: [{ instType: "SPOT", instId: "XDP-USDT", last: "0.02" }] });
+  try {
+    const value = await (await request("/api/price-difference-quotes?exchange=okx")).json();
+    assert.deepEqual(value.assets, { XDP: ["Doppler Finance", "okx-doppler-finance"] });
+    assert.equal(value.identityError, "");
+    assert.equal(value.prices.XDP, 0.02);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("four additional exchanges cache quote data separately from shared asset catalogs", async () => {
   const { request, storage } = await fixture();
   const originalFetch = globalThis.fetch;
@@ -186,7 +200,7 @@ test("four additional exchanges cache quote data separately from shared asset ca
       }
       const cached = await storage.get(`price-difference-quotes-v1:${board}`);
       assert.equal(cached.assets, undefined);
-      assert.ok((await storage.get(`price-difference-catalog-v2:${board}`)).assets.XCN);
+      assert.ok((await storage.get(`price-difference-catalog-v3:${board}`)).assets.XCN);
     }
     assert.equal(calls.length, 8);
   } finally { globalThis.fetch = originalFetch; }
@@ -202,7 +216,7 @@ test("catalog failures preserve bounded identity age but never relabel or renew 
   try {
     for (const hours of [8, 25]) {
       const at = Date.now() - hours * 3600000;
-      await storage.put("price-difference-catalog-v2:gateio", { assets: { XCN: ["Onyxcoin", "xcn-chain"] }, fetchedAt: at, checkedAt: 0 });
+      await storage.put("price-difference-catalog-v3:gateio", { assets: { XCN: ["Onyxcoin", "xcn-chain"] }, fetchedAt: at, checkedAt: 0 });
       const value = await (await request("/api/price-difference-quotes?exchange=gateio")).json();
       assert.equal(value.prices.XCN, 0.004);
       assert.equal(value.catalogAt, at);

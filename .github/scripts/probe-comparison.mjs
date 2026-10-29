@@ -5,7 +5,7 @@ if (!mint.ok) throw new Error(`oidc_mint_failed:${mint.status}`);
 const { value: token } = await mint.json();
 if (!token) throw new Error("oidc_token_missing");
 let failed = 0;
-for (const board of ["upbit", "bithumb", "binance", "coinbase", "gateio", "bybit", "bitget", "okx"]) {
+for (const board of ["upbit", "bithumb", "binance", "coinbase", "gateio", "bybit", "bitget", "okx", "gateio", "okx"]) {
   try {
     let result;
     for (let attempt = 0; attempt < 13; attempt += 1) {
@@ -14,7 +14,7 @@ for (const board of ["upbit", "bithumb", "binance", "coinbase", "gateio", "bybit
       });
       if (!response.ok) throw new Error(`probe_http_${response.status}`);
       result = await response.json();
-      if (result.implementation === 2) break;
+      if (result.implementation === 3) break;
       // Worker deployment acknowledgement precedes worldwide propagation.
       if (attempt === 12) throw new Error("new_worker_not_propagated");
       await new Promise(resolve => setTimeout(resolve, 5000));

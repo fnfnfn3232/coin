@@ -3181,12 +3181,13 @@ export class BoardStore {
   }
 
   async readComparisonCatalog(exchange, prices = {}) {
-    const key = `price-difference-catalog-v2:${exchange}`;
+    const key = `price-difference-catalog-v3:${exchange}`;
     const now = Date.now();
     const stored = await this.state.storage.get(key);
     if (stored && now - stored.checkedAt < (stored.error ? 300000 : 6 * 3600000)) {
       return now - stored.fetchedAt <= 86400000 ? stored : { ...stored, assets: {} };
     }
+    if (!Object.keys(prices).length) return { assets: {}, fetchedAt: 0, error: "spot_quotes_unavailable" };
     if (!this.comparisonCatalogPromises.has(exchange)) {
       const pending = (async () => {
         let payload;
@@ -3206,7 +3207,13 @@ export class BoardStore {
                 this.comparisonCoinsPromise.catch(() => { this.comparisonCoinsPromise = null; });
                 this.comparisonCoinsExpiresAt = now + 6 * 3600000;
               }
-              assets = normalizeUniqueCoinCatalog(await this.comparisonCoinsPromise, prices, exchange);
+              let coins;
+              try { coins = await this.comparisonCoinsPromise; }
+              catch (error) {
+                if (exchange !== "okx" || !toPositiveNumber(prices.XDP)) throw error;
+                coins = [];
+              }
+              assets = normalizeUniqueCoinCatalog(coins, prices, exchange);
               sourceName = "CoinPaprika unique assets / official listing";
             }
           }
@@ -3276,7 +3283,7 @@ export class BoardStore {
     const payload = await response.json();
     const market = await this.readMarketData();
     const symbols = ["ZBT", "FRAX", "KGEN", "MLK", "XDP"];
-    return jsonResponse({ implementation: 2, exchange, status: response.status, elapsedMs: Date.now() - started,
+    return jsonResponse({ implementation: 3, exchange, status: response.status, elapsedMs: Date.now() - started,
       quoteCount: Object.keys(payload.prices || {}).length, identityCount: Object.keys(payload.assets || {}).length,
       error: payload.error || "", errorDetail: payload.errorDetail || "", identityError: payload.identityError || "",
       identityErrorDetail: payload.identityErrorDetail || "", observedAt: payload.observedAt || 0,
