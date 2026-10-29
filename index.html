@@ -4132,6 +4132,7 @@
     #marketTable .rating-cell { width: 48px; min-width: 48px; white-space: nowrap; }
     #marketTable .price-difference-cell { min-width: 96px; white-space: nowrap; font-variant-numeric: tabular-nums; }
     .price-difference-value { font-size: 15px; font-weight: 700; }
+    .price-difference-state { font-size: 12px; font-weight: 400; color: var(--muted); }
     .price-difference-value.positive { color: #087b67; }
     .price-difference-value.negative { color: #bd3b46; }
     .price-difference-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
@@ -13718,6 +13719,7 @@
       }
 
       function clearSiteLoginState() {
+        clearPriceDifferenceCache();
         closeLivePriceSocket();
         closePriceDifferenceStreams();
         closeRefreshHistory(false);
@@ -16617,18 +16619,156 @@
       let priceDifferenceReferences = new WeakMap();
       const priceDifferenceSockets = new Map();
       const priceDifferenceUsdt = { symbol: "USDT", pair: "USDT/USD", englishName: "Tether" };
+      const PRICE_DIFFERENCE_CACHE_KEY = "price-difference-session-v2";
+      let priceDifferenceQuoteCache = {};
+      let priceDifferenceCacheOwner = "";
+      let priceDifferenceSaveTimer = 0;
+      let priceDifferenceGeneration = 0;
+      const priceDifferenceQuoteRequests = new Map();
+
+      function comparisonCacheOwner() {
+        return siteAuthConfirmed ? `${siteSessionRole}:${siteSessionSubject}` : "";
+      }
+
+      function savePriceDifferenceCache() {
+        window.clearTimeout(priceDifferenceSaveTimer);
+        priceDifferenceSaveTimer = 0;
+        if (!siteAuthConfirmed || isSiteLocked()) return;
+        try {
+          sessionStorage.setItem(PRICE_DIFFERENCE_CACHE_KEY, JSON.stringify({ owner: comparisonCacheOwner(), fx: priceDifferenceFx, quotes: priceDifferenceQuoteCache }));
+        } catch (_error) { /* Cache availability must not affect live prices. */ }
+      }
+
+      function schedulePriceDifferenceCacheSave() {
+        if (!priceDifferenceSaveTimer) priceDifferenceSaveTimer = window.setTimeout(savePriceDifferenceCache, 3000);
+      }
+
+      function clearPriceDifferenceCache() {
+        priceDifferenceGeneration += 1;
+        window.clearTimeout(priceDifferenceSaveTimer);
+        priceDifferenceSaveTimer = 0;
+        priceDifferenceQuoteCache = {};
+        priceDifferenceCacheOwner = "";
+        priceDifferenceFx = null;
+        priceDifferenceFxPromise = null;
+        priceDifferenceFxRetryAt = 0;
+        priceDifferenceQuoteRequests.clear();
+        try { sessionStorage.removeItem(PRICE_DIFFERENCE_CACHE_KEY); } catch (_error) { /* Optional cache. */ }
+      }
+
+      function applyComparisonQuote(row, exchange, price, at) {
+        if (!row || at <= comparisonPriceTimestamp(row)) return;
+        const fx = toPositiveNumber(data.fxUsdKrw);
+        if (exchange === "upbit" || exchange === "bithumb") {
+          row.priceKrw = price;
+          if (fx) row.priceUsd = price / fx;
+        } else {
+          row.priceUsd = price;
+          if (fx) row.priceKrw = price * fx;
+        }
+        row.comparisonPriceAt = at;
+      }
+
+      function rememberComparisonQuote(exchange, symbol, price, at) {
+        if (!["upbit", "bithumb", "binance", "coinbase"].includes(exchange) || !/^[A-Z0-9]{1,40}$/.test(symbol)
+          || !toPositiveNumber(price) || !Number.isFinite(at) || at > Date.now() + 5000 || Date.now() - at > PRICE_DIFFERENCE_MAX_AGE_MS) return;
+        const quotes = priceDifferenceQuoteCache[exchange] ||= {};
+        if (!quotes[symbol] || quotes[symbol].at < at) quotes[symbol] = { price, at };
+      }
+
+      function restorePriceDifferenceCache() {
+        const owner = comparisonCacheOwner();
+        if (!owner || isSiteLocked()) return;
+        if (priceDifferenceCacheOwner !== owner) {
+          if (priceDifferenceCacheOwner) {
+            priceDifferenceQuoteCache = {};
+            priceDifferenceFx = null;
+            priceDifferenceFxRetryAt = 0;
+          }
+          priceDifferenceCacheOwner = owner;
+          try {
+            const cached = JSON.parse(sessionStorage.getItem(PRICE_DIFFERENCE_CACHE_KEY) || "null");
+            if (cached?.owner === owner) {
+              for (const [board, quotes] of Object.entries(cached.quotes || {})) {
+                for (const [symbol, quote] of Object.entries(quotes || {})) rememberComparisonQuote(board, symbol, quote?.price, quote?.at);
+              }
+              const fx = cached.fx;
+              if (toPositiveNumber(fx?.rate) && !fx.stale && /^\d{4}-\d{2}-\d{2}$/.test(String(fx.date))
+                && Date.now() - Number(fx.checkedAt) < 3600000 && Number(fx.checkedAt) <= Date.now() + 5000) {
+                priceDifferenceFx = fx;
+                priceDifferenceFxRetryAt = Number(fx.checkedAt) + 3600000;
+                priceDifferenceFxStatus.textContent = `원/달러 ${formatNumber(fx.rate, 2)}원 · 일일 기준 ${fx.date}`;
+              }
+            }
+          } catch (_error) { /* Ignore incomplete or inaccessible session caches. */ }
+        }
+        for (const [board, quotes] of Object.entries(priceDifferenceQuoteCache)) {
+          for (const row of data.boards?.[board] || []) {
+            const quote = quotes[String(row.symbol || "").toUpperCase()];
+            if (quote && Date.now() - quote.at < PRICE_DIFFERENCE_MAX_AGE_MS) applyComparisonQuote(row, board, quote.price, quote.at);
+          }
+        }
+        const usdt = priceDifferenceQuoteCache.coinbase?.USDT;
+        if (usdt && Date.now() - usdt.at < PRICE_DIFFERENCE_MAX_AGE_MS) applyComparisonQuote(priceDifferenceUsdt, "coinbase", usdt.price, usdt.at);
+      }
+
+      function requestPriceDifferenceQuotes() {
+        if (isLocalPreview() || !hasServerAuth() || !siteAuthConfirmed || isSiteLocked() || document.hidden || !navigator.onLine || state.viewMode !== "market") return;
+        const exchange = state.board === "triple" ? "bithumb" : state.board;
+        const boards = new Set([exchange, state.priceDifferenceBoard]);
+        if (boards.has("binance")) boards.add("coinbase");
+        const models = new Map((data.boards?.[exchange] || []).map((row) => [liveSpotProductId(row, exchange), row]));
+        const visibleRows = Array.from(tableBody.querySelectorAll("tr[data-live-product]"), (element) => models.get(element.dataset.liveProduct)).filter(Boolean);
+        for (const board of boards) {
+          if (!["upbit", "bithumb", "binance", "coinbase"].includes(board)) continue;
+          const request = priceDifferenceQuoteRequests.get(board);
+          if (request?.pending || Date.now() < (request?.retryAt || 0)) continue;
+          let relevant = board === exchange ? visibleRows : board === state.priceDifferenceBoard ? visibleRows.map(priceDifferenceReference).filter(Boolean) : [];
+          if (board === "coinbase" && boards.has("binance")) relevant = [...relevant, priceDifferenceUsdt];
+          if (!relevant.length || relevant.every((row) => Date.now() - comparisonPriceTimestamp(row) < 60000)) continue;
+          const owner = comparisonCacheOwner();
+          const generation = priceDifferenceGeneration;
+          const pending = { pending: true, retryAt: Date.now() + 15000 };
+          priceDifferenceQuoteRequests.set(board, pending);
+          fetchServerAuth(`/api/price-difference-quotes?exchange=${board}`, { method: "GET", timeoutMs: 15000 })
+            .then((payload) => {
+              if (generation !== priceDifferenceGeneration || comparisonCacheOwner() !== owner || isSiteLocked()) return;
+              if (payload?.exchange !== board || !Number.isFinite(payload.observedAt) || payload.observedAt > Date.now() + 5000
+                || Date.now() - payload.observedAt > PRICE_DIFFERENCE_MAX_AGE_MS || !payload.prices || typeof payload.prices !== "object") throw new Error("invalid_comparison_quotes");
+              if (!Object.keys(payload.prices).length) throw new Error("empty_comparison_quotes");
+              if (!payload.error && Date.now() - payload.observedAt < PRICE_DIFFERENCE_MAX_AGE_MS) {
+                for (const row of data.boards?.[board] || []) {
+                  if (!toPositiveNumber(payload.prices[String(row.symbol || "").toUpperCase()])) row.comparisonQuoteMissingAt = payload.observedAt;
+                }
+              }
+              for (const [symbol, price] of Object.entries(payload.prices)) rememberComparisonQuote(board, symbol, price, payload.observedAt);
+              restorePriceDifferenceCache();
+              refreshPriceDifferenceCells();
+              schedulePriceDifferenceCacheSave();
+              pending.retryAt = Date.now() + (payload.revalidating || payload.error ? 5000 : 30000);
+            })
+            .catch(() => { pending.error = true; pending.retryAt = Date.now() + 15000; refreshPriceDifferenceCells(); })
+            .finally(() => { pending.pending = false; });
+        }
+      }
+
+      window.addEventListener("pagehide", savePriceDifferenceCache);
 
       function priceDifferenceReference(row) {
         if (priceDifferenceReferences.has(row)) return priceDifferenceReferences.get(row);
         const symbol = getComparableSymbol(row);
         const names = (item) => [item.englishName, ...(item.nameKeys || [])]
-          .map((name) => String(name || "").toLowerCase().replace(/[^a-z0-9]/g, ""))
+          .map((name) => String(name || "").toLowerCase().replace(/[^a-z0-9가-힣]/g, ""))
           .filter((name) => name && name !== String(item.symbol || "").toLowerCase());
         const ownNames = names(row);
         const candidates = (data.boards?.[state.priceDifferenceBoard] || []).filter((candidate) => {
           if (getComparableSymbol(candidate) !== symbol || row.marketIdentityVerified === false || candidate.marketIdentityVerified === false) return false;
           if (row.coingeckoId && candidate.coingeckoId) return row.coingeckoId === candidate.coingeckoId;
-          return ownNames.length && names(candidate).some((name) => ownNames.includes(name));
+          const candidateNames = names(candidate);
+          const englishNames = ownNames.filter((name) => /^[a-z0-9]+$/.test(name));
+          const candidateEnglish = candidateNames.filter((name) => /^[a-z0-9]+$/.test(name));
+          if (englishNames.length && candidateEnglish.length) return englishNames.some((name) => candidateEnglish.includes(name));
+          return ownNames.length && candidateNames.some((name) => ownNames.includes(name));
         });
         const result = candidates.length === 1 ? candidates[0] : null;
         priceDifferenceReferences.set(row, result);
@@ -16646,8 +16786,22 @@
 
       function getPriceDifference(row, now = Date.now()) {
         const reference = priceDifferenceReference(row);
-        if (!reference) return { reason: "기준 거래소 미상장 또는 동일 자산 확인 불가" };
-        if (!freshComparisonPrice(row, now) || !freshComparisonPrice(reference, now)) return { reason: "가격 수신 대기 또는 2분 이상 갱신 지연" };
+        if (!reference) {
+          const listed = (data.boards?.[state.priceDifferenceBoard] || []).some((item) => getComparableSymbol(item) === getComparableSymbol(row));
+          return { label: listed ? "자산 미확인" : "비교 없음", reason: listed ? "같은 심볼이지만 동일 자산 확인 불가" : "선택한 기준 거래소에 비교 가능한 현물 시세 없음" };
+        }
+        if (Number(row.comparisonQuoteMissingAt) > comparisonPriceTimestamp(row)
+          || Number(reference.comparisonQuoteMissingAt) > comparisonPriceTimestamp(reference)) {
+          return { label: "가격 없음", reason: "최근 거래소 전체 시세 응답에 이 거래쌍의 가격이 없습니다." };
+        }
+        if (!freshComparisonPrice(row, now) || !freshComparisonPrice(reference, now)) {
+          const failed = priceDifferenceQuoteRequests.get(state.board === "triple" ? "bithumb" : state.board)?.error
+            || priceDifferenceQuoteRequests.get(state.priceDifferenceBoard)?.error;
+          return {
+            label: failed ? "연결 지연" : comparisonPriceTimestamp(row) && comparisonPriceTimestamp(reference) ? "갱신 지연" : "확인 중",
+            reason: failed ? "초기 시세 요청에 실패하여 자동 재시도 중입니다." : "가격 수신 대기 또는 2분 이상 갱신 지연",
+          };
+        }
         const domestic = ["upbit", "bithumb", "triple"].includes(state.board);
         const baseUsdt = state.board === "binance";
         const referenceUsdt = state.priceDifferenceBoard === "binance";
@@ -16656,11 +16810,11 @@
         const usdtRow = freshComparisonPrice(priceDifferenceUsdt, now) ? priceDifferenceUsdt
           : (data.boards?.coinbase || []).find((item) => item.symbol === "USDT" && item.pair === "USDT/USD");
         const usdtUsd = toPositiveNumber(usdtRow?.priceUsd);
-        if ((baseUsdt || referenceUsdt) && (!usdtUsd || !freshComparisonPrice(usdtRow, now))) return { reason: "USDT/USD 가격 수신 대기 또는 갱신 지연" };
+        if ((baseUsdt || referenceUsdt) && (!usdtUsd || !freshComparisonPrice(usdtRow, now))) return { label: "확인 중", reason: "USDT/USD 가격 수신 대기 또는 갱신 지연" };
         const fx = priceDifferenceFx;
         const fxDate = Date.parse(`${fx?.date}T00:00:00Z`);
         if (domestic && (!toPositiveNumber(fx?.rate) || fx?.stale || !Number.isFinite(fxDate) || now - fxDate > 7 * 86400000)) {
-          return { reason: "원/달러 기준 환율 확인 불가 또는 갱신 지연" };
+          return { label: "환율 확인", reason: "원/달러 기준 환율 확인 불가 또는 갱신 지연" };
         }
         const base = domestic ? toPositiveNumber(row.priceKrw) : toPositiveNumber(row.priceUsd);
         const foreign = toPositiveNumber(reference.priceUsd);
@@ -16676,7 +16830,7 @@
 
       function renderPriceDifference(row) {
         const result = getPriceDifference(row);
-        if (result.percent === undefined) return `<span class="price-difference-value muted" title="${escapeAttr(result.reason)}">-</span>`;
+        if (result.percent === undefined) return `<span class="price-difference-value price-difference-state" title="${escapeAttr(result.reason)}">${escapeHtml(result.label || "확인 불가")}</span>`;
         const percent = Math.abs(result.percent) < 0.0005 ? 0 : result.percent;
         const sign = percent > 0 ? "+" : "";
         const delta = `${result.difference > 0 ? "+" : result.difference < 0 ? "-" : ""}${result.currency === "KRW" ? formatNumber(Math.abs(result.difference), 2) + "원" : "$" + formatNumber(Math.abs(result.difference), 6)}`;
@@ -16690,24 +16844,37 @@
         tableBody.querySelectorAll("tr[data-live-product]").forEach((element) => {
           const row = models.get(element.dataset.liveProduct);
           const cell = element.querySelector("[data-price-difference]");
-          if (row && cell) cell.innerHTML = renderPriceDifference(row);
+          if (row && cell) {
+            cell.innerHTML = renderPriceDifference(row);
+            const price = priceDisplay(row);
+            const main = element.querySelector("[data-live-price-main]");
+            const sub = element.querySelector("[data-live-price-sub]");
+            if (main) main.textContent = price.main || TEXT.unknown;
+            if (sub) sub.textContent = price.sub || TEXT.noPrice;
+          }
         });
       }
 
       async function requestPriceDifferenceFx() {
         if (isLocalPreview() || !hasServerAuth() || !siteAuthConfirmed || isSiteLocked() || priceDifferenceFxPromise || Date.now() < priceDifferenceFxRetryAt) return;
         priceDifferenceFxRetryAt = Date.now() + 300000;
+        const generation = priceDifferenceGeneration;
         priceDifferenceFxPromise = fetchServerAuth("/api/price-difference-fx", { method: "GET", timeoutMs: 10000 })
           .then((payload) => {
+            if (generation !== priceDifferenceGeneration) return;
             if (!toPositiveNumber(payload?.rate) || !/^\d{4}-\d{2}-\d{2}$/.test(String(payload?.date || ""))) throw new Error("invalid_comparison_fx");
             priceDifferenceFx = payload;
             priceDifferenceFxRetryAt = Date.now() + (payload.stale ? 300000 : 3600000);
             priceDifferenceFxStatus.textContent = payload.stale ? "원/달러 환율 갱신 지연"
               : `원/달러 ${formatNumber(payload.rate, 2)}원 · 일일 기준 ${payload.date}`;
+            schedulePriceDifferenceCacheSave();
             refreshPriceDifferenceCells();
           })
-          .catch(() => { priceDifferenceFx = null; priceDifferenceFxStatus.textContent = "원/달러 환율 확인 불가"; refreshPriceDifferenceCells(); })
-          .finally(() => { priceDifferenceFxPromise = null; });
+          .catch(() => {
+            if (generation !== priceDifferenceGeneration) return;
+            priceDifferenceFx = null; priceDifferenceFxStatus.textContent = "원/달러 환율 확인 불가"; refreshPriceDifferenceCells();
+          })
+          .finally(() => { if (generation === priceDifferenceGeneration) priceDifferenceFxPromise = null; });
         return priceDifferenceFxPromise;
       }
 
@@ -16725,6 +16892,7 @@
       function syncPriceDifferenceStreams() {
         if (document.hidden || !navigator.onLine || isSiteLocked() || (!isLocalPreview() && !siteAuthConfirmed) || state.viewMode !== "market") { closePriceDifferenceStreams(); return; }
         requestPriceDifferenceFx();
+        requestPriceDifferenceQuotes();
         const exchange = state.board === "triple" ? "bithumb" : state.board;
         const baseModels = new Map((data.boards?.[exchange] || []).map((row) => [liveSpotProductId(row, exchange), row]));
         const visibleProducts = new Set(Array.from(tableBody.querySelectorAll("tr[data-live-product]"), (element) => element.dataset.liveProduct));
@@ -16788,6 +16956,7 @@
         if (!document.hidden && state.viewMode === "market" && !isSiteLocked()) {
           refreshPriceDifferenceCells();
           requestPriceDifferenceFx();
+          requestPriceDifferenceQuotes();
         }
       }, 5000);
 
@@ -16926,6 +17095,10 @@
           if (fx !== null) entry.row.priceKrw = numericPrice * fx;
         }
         entry.row.livePriceUpdatedAt = Date.now();
+        if (entry.kind === "spot") {
+          rememberComparisonQuote(entry.exchange, String(entry.row.symbol || "").toUpperCase(), numericPrice, entry.row.livePriceUpdatedAt);
+          schedulePriceDifferenceCacheSave();
+        }
         queueLivePriceEntry(entry);
       }
 
@@ -17853,6 +18026,7 @@
         priceDifferenceBoard.value = state.priceDifferenceBoard;
         Array.from(priceDifferenceBoard.options).forEach((option) => { option.disabled = option.value === state.board; });
         priceDifferenceReferences = new WeakMap();
+        restorePriceDifferenceCache();
         const rows = getRows();
         const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
       if (state.page > totalPages) state.page = 1;

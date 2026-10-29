@@ -526,6 +526,28 @@ async function fetchLivePricePayload(marketPayload) {
   };
 }
 
+async function fetchComparisonQuoteMap(exchange) {
+  if (exchange === "binance") return fetchBinanceLivePriceMap();
+  if (exchange === "coinbase") return fetchCoinbaseLivePriceMap();
+  const prices = {};
+  if (exchange === "upbit") {
+    const rows = await fetchJsonWithTimeout("https://api.upbit.com/v1/ticker/all?quote_currencies=KRW", 8000);
+    if (!Array.isArray(rows)) throw new Error("invalid_upbit_quotes");
+    for (const row of rows) {
+      const price = toPositiveNumber(row.trade_price);
+      if (String(row.market || "").startsWith("KRW-") && price !== null) prices[row.market.slice(4)] = price;
+    }
+  } else if (exchange === "bithumb") {
+    const source = await fetchJsonWithTimeout("https://api.bithumb.com/public/ticker/ALL_KRW", 8000);
+    if (source?.status !== "0000" || !source.data) throw new Error("invalid_bithumb_quotes");
+    for (const [symbol, row] of Object.entries(source.data)) {
+      const price = toPositiveNumber(row?.closing_price);
+      if (/^[A-Z0-9]+$/.test(symbol) && price !== null) prices[symbol] = price;
+    }
+  }
+  return prices;
+}
+
 function bytesToHex(bytes) {
   return [...new Uint8Array(bytes)]
     .map((byte) => byte.toString(16).padStart(2, "0"))
@@ -1540,6 +1562,7 @@ async function requireGithubOidc(request, env) {
 function isProtectedContentPath(url) {
   return url.pathname === "/api/market-data"
     || url.pathname === "/api/price-difference-fx"
+    || url.pathname === "/api/price-difference-quotes"
     || url.pathname === "/api/admin/refresh-history"
     || url.pathname === "/api/l2-fees"
     || url.pathname === "/api/l1-fees"
@@ -2548,6 +2571,7 @@ export class BoardStore {
     this.mediaUploadOperations = new Map();
     this.mediaUploadCleanupPromise = null;
     this.comparisonFxPromise = null;
+    this.comparisonQuotePromises = new Map();
     this.boardPostsOperation = Promise.resolve();
     this.l2FeesPromise = null;
   }
@@ -3068,6 +3092,39 @@ export class BoardStore {
       await this.state.storage.put(key, payload);
       return payload;
     }
+  }
+
+  async handleComparisonQuotesRequest(url) {
+    const exchange = url.searchParams.get("exchange");
+    if (!["upbit", "bithumb", "binance", "coinbase"].includes(exchange)) return jsonResponse({ error: "invalid_exchange" }, 400, this.env);
+    const key = `price-difference-quotes-v1:${exchange}`;
+    const now = Date.now();
+    const stored = await this.state.storage.get(key);
+    const respond = (value) => jsonResponse(value, Object.keys(value?.prices || {}).length ? 200 : 503, this.env);
+    if (stored && now - stored.checkedAt < (stored.error ? 15000 : 25000)) return respond(stored);
+    let pending = this.comparisonQuotePromises.get(exchange);
+    if (!pending) {
+      pending = (async () => {
+        let payload;
+        try {
+          const observedAt = Date.now();
+          const prices = await fetchComparisonQuoteMap(exchange);
+          if (!Object.keys(prices).length) throw new Error("empty_comparison_quotes");
+          payload = { exchange, prices, observedAt, checkedAt: Date.now(), error: "" };
+        } catch (_error) {
+          payload = { ...(stored || { exchange, prices: {}, observedAt: 0 }), checkedAt: Date.now(), error: "quote_refresh_failed" };
+        }
+        await this.state.storage.put(key, payload);
+        return payload;
+      })().finally(() => { this.comparisonQuotePromises.delete(exchange); });
+      this.comparisonQuotePromises.set(exchange, pending);
+    }
+    // Recent quotes can render immediately while the shared refresh runs separately.
+    if (stored?.observedAt && now - stored.observedAt < 120000 && typeof this.state.waitUntil === "function") {
+      this.state.waitUntil(pending);
+      return respond({ ...stored, revalidating: true });
+    }
+    return respond(await pending);
   }
 
   async handleComparisonFxRequest() {
@@ -4541,6 +4598,9 @@ export class BoardStore {
     if (request.method === "GET" && url.pathname === "/api/price-difference-fx") {
       return this.recordApiResponse(await this.handleComparisonFxRequest());
     }
+    if (request.method === "GET" && url.pathname === "/api/price-difference-quotes") {
+      return this.recordApiResponse(await this.handleComparisonQuotesRequest(url));
+    }
 
     if (request.method === "GET" && ["/api/l2-fees", "/api/l1-fees"].includes(url.pathname)) {
       return this.recordApiResponse(await this.handleL2FeesRequest(url.pathname === "/api/l1-fees" ? "l1" : "l2"));
@@ -5063,6 +5123,10 @@ export default {
       return env.BOARD_STORE.get(id).fetch(request);
     }
     if (url.pathname === "/api/price-difference-fx" && request.method === "GET") {
+      if (!env.BOARD_STORE) return jsonResponse({ error: "auth_storage_unavailable" }, 503, env);
+      return env.BOARD_STORE.get(env.BOARD_STORE.idFromName("free-board")).fetch(request);
+    }
+    if (url.pathname === "/api/price-difference-quotes" && request.method === "GET") {
       if (!env.BOARD_STORE) return jsonResponse({ error: "auth_storage_unavailable" }, 503, env);
       return env.BOARD_STORE.get(env.BOARD_STORE.idFromName("free-board")).fetch(request);
     }
