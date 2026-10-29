@@ -1,5 +1,41 @@
 # Price Difference (2026-10-29)
 
+## Current Intraday FX and Startup
+
+The user selected free operation with automatically refreshed intraday reference
+rates, not a paid tick-data subscription. The earlier daily FX sections below
+describe the previous implementation and are superseded by this section.
+
+- Source: https://currency-converter.live/api. Its published terms permit personal
+  and commercial display with caching and attribution. The visible source link
+  credits it. It is a reference feed, not an executable bank quote; its provenance
+  endpoint explicitly does not verify the original upstream vendor/quote clock.
+- Read USD/KRW from `/api/v1/convert?from=USD&to=KRW&amount=1`. Preserve the
+  original `quote.ts`/`quote.as_of`, verify the currency direction, source, range,
+  timestamp consistency and quote status. Do not substitute USDT/KRW or daily FX.
+- Check once per minute while the market is visible/online, with a shared
+  one-minute server cache and coalesced background refresh. Existing recent FX
+  renders while a refresh is in progress. A temporary failure retries after
+  30 seconds and never renews the original quote timestamp.
+- Weekday quotes older than five minutes cannot generate a percentage. On UTC
+  weekends a mark up to 72 hours old can be shown explicitly as a weekend
+  reference with its original date/time, not as a new live observation.
+- Authenticated market snapshots also carry already cached recent quotes, asset
+  metadata and FX. No upstream HTTP is awaited to build this bootstrap payload.
+  Trusted refresh/sync exports do not include this transient bootstrap.
+- Known failed Binance proxy paths are bypassed only after normal site-session
+  authentication and trusted snapshot hydration. The browser uses the official
+  public market API without site tokens/cookies. The hint expires in five minutes.
+- Bootstrap is applied before the first market render. Expired/foreign-owner
+  caches are rejected; login/logout, drafts, private history and password hashing
+  policies are unchanged. Connection prewarming removes avoidable DNS/TLS setup.
+- Tests prove a cached initial view needs no quote/FX round trips, a new FX rate
+  recalculates differences, invalid clocks/pairs/daily records are rejected, and
+  failed background refresh does not block the cached response or forge freshness.
+
+Network/provider latency cannot be guaranteed to be zero, and the free provider
+has no uptime or independently verified original-market-vendor guarantee.
+
 ## Production Failure Investigation
 
 The deployment's trusted GitHub OIDC probe reproduced failures in the actual

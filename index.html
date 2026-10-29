@@ -13,6 +13,8 @@
   <meta name="application-name" content="블록스코프" />
   <meta name="apple-mobile-web-app-title" content="블록스코프" />
   <link rel="icon" type="image/svg+xml" href="./favicon.svg?v=20261006-blue" />
+  <link rel="preconnect" href="https://coin-board-auth.dlatl20000.workers.dev" crossorigin="use-credentials" />
+  <link rel="preconnect" href="https://data-api.binance.vision" crossorigin />
   <style>
     :root {
       --bg: #ffffff;
@@ -7104,7 +7106,7 @@
             <option value="okx">OKX USDT</option>
           </select>
           <span id="priceDifferenceFxStatus" aria-live="polite">원/달러 환율 확인 중</span>
-          <a href="https://frankfurter.dev/" target="_blank" rel="noopener noreferrer">환율 출처</a>
+          <a href="https://currency-converter.live/" target="_blank" rel="noopener noreferrer">currency-converter.live 환율</a>
           <a href="https://coinpaprika.com/" target="_blank" rel="noopener noreferrer">대체 자산명 출처</a>
         </div>
       </section>
@@ -16627,7 +16629,7 @@
       const priceDifferenceMarketIndexes = new Map();
       const priceDifferenceSockets = new Map();
       const priceDifferenceUsdt = { symbol: "USDT", pair: "USDT/USD", englishName: "Tether" };
-      const PRICE_DIFFERENCE_CACHE_KEY = "price-difference-session-v2";
+      const PRICE_DIFFERENCE_CACHE_KEY = "price-difference-session-v3";
       let priceDifferenceQuoteCache = {};
       let priceDifferenceCacheOwner = "";
       let priceDifferenceSaveTimer = 0;
@@ -16672,7 +16674,7 @@
         if (!siteAuthConfirmed || isSiteLocked()) return;
         try {
           const requests = Object.fromEntries([...priceDifferenceQuoteRequests].map(([board, value]) => [board,
-            { catalogCheckedAt: value.catalogCheckedAt || 0, retryAt: value.retryAt || 0, error: Boolean(value.error), symbols: [...(value.symbols || [])].slice(0, 5000) }]));
+            { catalogCheckedAt: value.catalogCheckedAt || 0, retryAt: value.retryAt || 0, directUntil: value.directUntil || 0, error: Boolean(value.error), symbols: [...(value.symbols || [])].slice(0, 5000) }]));
           sessionStorage.setItem(PRICE_DIFFERENCE_CACHE_KEY, JSON.stringify({ owner: comparisonCacheOwner(), fx: priceDifferenceFx, quotes: priceDifferenceQuoteCache, requests }));
         } catch (_error) { /* Cache availability must not affect live prices. */ }
       }
@@ -16693,7 +16695,10 @@
         priceDifferenceFxPromise = null;
         priceDifferenceFxRetryAt = 0;
         priceDifferenceQuoteRequests.clear();
-        try { sessionStorage.removeItem(PRICE_DIFFERENCE_CACHE_KEY); } catch (_error) { /* Optional cache. */ }
+        try {
+          sessionStorage.removeItem(PRICE_DIFFERENCE_CACHE_KEY);
+          sessionStorage.removeItem("price-difference-session-v2");
+        } catch (_error) { /* Optional cache. */ }
       }
 
       function applyComparisonQuote(row, exchange, price, at) {
@@ -16748,17 +16753,17 @@
                 priceDifferenceQuoteRequests.set(board, { pending: false,
                   catalogCheckedAt: catalogCheckedAt <= Date.now() + 5000 ? catalogCheckedAt : 0,
                   retryAt: retryAt <= Date.now() + 300000 ? retryAt : 0, error: Boolean(value?.error),
+                  directUntil: Number(value?.directUntil) <= Date.now() + 300000 ? Number(value.directUntil) || 0 : 0,
                   symbols: new Set(Array.isArray(value?.symbols) ? value.symbols.slice(0, 5000).filter(symbol => /^[A-Z0-9]{1,40}$/.test(symbol)) : []) });
               }
               for (const [board, quotes] of Object.entries(cached.quotes || {})) {
                 for (const [symbol, quote] of Object.entries(quotes || {})) rememberComparisonQuote(board, symbol, quote?.price, quote?.at, quote?.identity);
               }
               const fx = cached.fx;
-              if (toPositiveNumber(fx?.rate) && !fx.stale && /^\d{4}-\d{2}-\d{2}$/.test(String(fx.date))
-                && Date.now() - Number(fx.checkedAt) < 3600000 && Number(fx.checkedAt) <= Date.now() + 5000) {
+              if (usableComparisonFx(fx) && !fx.stale && Date.now() - Number(fx.checkedAt) < 300000 && Number(fx.checkedAt) <= Date.now() + 5000) {
                 priceDifferenceFx = fx;
-                priceDifferenceFxRetryAt = Number(fx.checkedAt) + 3600000;
-                priceDifferenceFxStatus.textContent = `원/달러 ${formatNumber(fx.rate, 2)}원 · 일일 기준 ${fx.date}`;
+                priceDifferenceFxRetryAt = Number(fx.checkedAt) + 60000;
+                renderComparisonFxStatus();
               }
             }
           } catch (_error) { /* Ignore incomplete or inaccessible session caches. */ }
@@ -16839,13 +16844,16 @@
           if ((!relevant.length && !discover) || (!discover && relevant.every((row) => Date.now() - comparisonPriceTimestamp(row) < 60000))) continue;
           const owner = comparisonCacheOwner();
           const generation = priceDifferenceGeneration;
-          const pending = { pending: true, retryAt: Date.now() + 15000 };
+          const pending = { pending: true, retryAt: Date.now() + 15000, directUntil: request?.directUntil || 0 };
           priceDifferenceQuoteRequests.set(board, pending);
-          fetchServerAuth(`/api/price-difference-quotes?exchange=${board}`, { method: "GET", timeoutMs: 15000 })
+          const initialRequest = board === "binance" && pending.directUntil > Date.now() ? fetchPublicComparisonQuotes(board)
+            : fetchServerAuth(`/api/price-difference-quotes?exchange=${board}`, { method: "GET", timeoutMs: 15000 });
+          initialRequest
             .catch(async error => {
               // A public quote fallback cannot replace site authentication.
               if (!["binance", "okx"].includes(board) || error.status !== 503 || !siteAuthConfirmed || isSiteLocked()
                 || generation !== priceDifferenceGeneration || comparisonCacheOwner() !== owner) throw error;
+              if (board === "binance") pending.directUntil = Date.now() + 300000;
               return fetchPublicComparisonQuotes(board, error.payload);
             })
             .then(payload => {
@@ -16978,8 +16986,7 @@
         const usdtUsd = toPositiveNumber(usdtRow?.priceUsd);
         if ((baseUsdt || referenceUsdt) && (!usdtUsd || !freshComparisonPrice(usdtRow, now))) return { label: "확인 중", reason: "USDT/USD 가격 수신 대기 또는 갱신 지연" };
         const fx = priceDifferenceFx;
-        const fxDate = Date.parse(`${fx?.date}T00:00:00Z`);
-        if (domestic && (!toPositiveNumber(fx?.rate) || fx?.stale || !Number.isFinite(fxDate) || now - fxDate > 7 * 86400000)) {
+        if (domestic && (!usableComparisonFx(fx, now) || fx.stale)) {
           return { label: "환율 확인", reason: "원/달러 기준 환율 확인 불가 또는 갱신 지연" };
         }
         const base = domestic ? toPositiveNumber(row.priceKrw) : toPositiveNumber(row.priceUsd);
@@ -16991,7 +16998,7 @@
         const percent = difference / referencePrice * 100;
         if (!Number.isFinite(percent)) return { reason: "가격 확인 불가" };
         return { percent, difference, currency: domestic ? "KRW" : "USD", referencePrice, referenceBoard,
-          title: `${comparisonExchangeLabel(referenceBoard)} 현물 대비${referenceBoard !== state.priceDifferenceBoard ? " · 대체 출처" : ""}${PRICE_DIFFERENCE_ADDITIONAL_BOARDS.includes(referenceBoard) ? " · 자산 식별 검증" : ""} · ${domestic ? `Frankfurter 일일 USD/KRW ${fx.rate} · ${fx.date}` : "USD 기준"}${baseUsdt || referenceUsdt ? ` · Coinbase USDT/USD ${usdtUsd}` : ""} · 가격 수신 ${new Date(Math.min(comparisonPriceTimestamp(row), comparisonPriceTimestamp(reference))).toLocaleTimeString("ko-KR", { hour12: false })} · (가격/기준가 - 1) × 100 · 거래·전송 수수료 제외` };
+          title: `${comparisonExchangeLabel(referenceBoard)} 현물 대비${referenceBoard !== state.priceDifferenceBoard ? " · 대체 출처" : ""}${PRICE_DIFFERENCE_ADDITIONAL_BOARDS.includes(referenceBoard) ? " · 자산 식별 검증" : ""} · ${domestic ? `${fx.source} 장중 참고 USD/KRW ${fx.rate} · 기준 ${new Date(fx.asOf).toLocaleString("ko-KR", { hour12: false })}${fx.marketStatus === "closed" ? " · 휴장 기준" : ""}` : "USD 기준"}${baseUsdt || referenceUsdt ? ` · Coinbase USDT/USD ${usdtUsd}` : ""} · 가격 수신 ${new Date(Math.min(comparisonPriceTimestamp(row), comparisonPriceTimestamp(reference))).toLocaleTimeString("ko-KR", { hour12: false })} · (가격/기준가 - 1) × 100 · 거래·전송 수수료 제외` };
       }
 
       function renderPriceDifference(row) {
@@ -17021,24 +17028,74 @@
         });
       }
 
+      function usableComparisonFx(fx, now = Date.now()) {
+        const age = now - Number(fx?.asOf);
+        const day = new Date(now).getUTCDay();
+        return fx?.frequency === "intraday" && fx.source === "currency-converter.live" && Number.isFinite(fx.rate)
+          && fx.rate >= 100 && fx.rate <= 10000 && Number.isFinite(fx.asOf) && age >= -5000
+          && (age <= 300000 || (fx.marketStatus === "closed" && (day === 0 || day === 6) && age <= 72 * 3600000));
+      }
+
+      function renderComparisonFxStatus() {
+        const fx = priceDifferenceFx;
+        priceDifferenceFxStatus.textContent = usableComparisonFx(fx) && !fx.stale
+          ? `원/달러 ${formatNumber(fx.rate, 2)}원 · ${fx.marketStatus === "closed" ? "주말 참고" : "장중 참고"} ${new Date(fx.asOf).toLocaleString("ko-KR", { hour12: false })}${fx.refreshError ? " · 갱신 재시도 중" : ""}`
+          : "원/달러 환율 갱신 지연";
+        priceDifferenceFxStatus.title = "currency-converter.live 공개 참고환율 · 1분마다 확인 · 원본 시각 기준 · 은행 체결환율이 아니며 원 공급업체는 검증되지 않았습니다.";
+      }
+
+      function seedComparisonBootstrap(bootstrap) {
+        if (!siteAuthConfirmed || isSiteLocked() || !bootstrap) return;
+        restorePriceDifferenceCache();
+        if (usableComparisonFx(bootstrap.fx) && !bootstrap.fx.stale && (!priceDifferenceFx || bootstrap.fx.asOf >= priceDifferenceFx.asOf)) {
+          priceDifferenceFx = bootstrap.fx;
+          priceDifferenceFxRetryAt = Math.min(Number(bootstrap.fx.checkedAt) || 0, Date.now()) + 60000;
+          renderComparisonFxStatus();
+        }
+        for (const [board, quote] of Object.entries(bootstrap.quotes || {})) {
+          if (!["upbit", "bithumb", "binance", "coinbase", ...PRICE_DIFFERENCE_ADDITIONAL_BOARDS].includes(board)) continue;
+          for (const [symbol, price] of Object.entries(quote?.prices || {})) {
+            const asset = quote.assets?.[symbol];
+            rememberComparisonQuote(board, symbol, price, quote.observedAt,
+              Array.isArray(asset) ? { name: asset[0], id: asset[1], at: quote.catalogAt } : null);
+          }
+          if (PRICE_DIFFERENCE_ADDITIONAL_BOARDS.includes(board) && quote.assets) {
+            const request = priceDifferenceQuoteRequests.get(board) || { pending: false };
+            request.catalogCheckedAt = Math.min(Number(quote.catalogAt) || 0, Date.now());
+            priceDifferenceQuoteRequests.set(board, request);
+          }
+        }
+        if (bootstrap.direct?.includes("binance")) {
+          const request = priceDifferenceQuoteRequests.get("binance") || { pending: false };
+          request.directUntil = Date.now() + 300000;
+          priceDifferenceQuoteRequests.set("binance", request);
+        }
+        resetComparisonIdentityCache();
+        restorePriceDifferenceCache();
+        refreshPriceDifferenceCells();
+        schedulePriceDifferenceCacheSave();
+      }
+
       async function requestPriceDifferenceFx() {
-        if (isLocalPreview() || !hasServerAuth() || !siteAuthConfirmed || isSiteLocked() || priceDifferenceFxPromise || Date.now() < priceDifferenceFxRetryAt) return;
-        priceDifferenceFxRetryAt = Date.now() + 300000;
+        if (isLocalPreview() || !hasServerAuth() || !siteAuthConfirmed || isSiteLocked() || document.hidden || !navigator.onLine
+          || priceDifferenceFxPromise || Date.now() < priceDifferenceFxRetryAt) return;
+        priceDifferenceFxRetryAt = Date.now() + 30000;
         const generation = priceDifferenceGeneration;
         priceDifferenceFxPromise = fetchServerAuth("/api/price-difference-fx", { method: "GET", timeoutMs: 10000 })
           .then((payload) => {
             if (generation !== priceDifferenceGeneration) return;
-            if (!toPositiveNumber(payload?.rate) || !/^\d{4}-\d{2}-\d{2}$/.test(String(payload?.date || ""))) throw new Error("invalid_comparison_fx");
-            priceDifferenceFx = payload;
-            priceDifferenceFxRetryAt = Date.now() + (payload.stale ? 300000 : 3600000);
-            priceDifferenceFxStatus.textContent = payload.stale ? "원/달러 환율 갱신 지연"
-              : `원/달러 ${formatNumber(payload.rate, 2)}원 · 일일 기준 ${payload.date}`;
+            if (!usableComparisonFx(payload) || payload.stale) throw new Error("invalid_comparison_fx");
+            if (!priceDifferenceFx || payload.asOf >= priceDifferenceFx.asOf) priceDifferenceFx = payload;
+            priceDifferenceFxRetryAt = Date.now() + (payload.refreshError || payload.revalidating ? 10000 : 60000);
+            renderComparisonFxStatus();
             schedulePriceDifferenceCacheSave();
             refreshPriceDifferenceCells();
           })
           .catch(() => {
             if (generation !== priceDifferenceGeneration) return;
-            priceDifferenceFx = null; priceDifferenceFxStatus.textContent = "원/달러 환율 확인 불가"; refreshPriceDifferenceCells();
+            if (!usableComparisonFx(priceDifferenceFx)) priceDifferenceFx = null;
+            else priceDifferenceFx = { ...priceDifferenceFx, refreshError: true };
+            renderComparisonFxStatus(); refreshPriceDifferenceCells();
           })
           .finally(() => { if (generation === priceDifferenceGeneration) priceDifferenceFxPromise = null; });
         return priceDifferenceFxPromise;
@@ -17145,6 +17202,7 @@
       window.setInterval(() => {
         if (!document.hidden && state.viewMode === "market" && !isSiteLocked()) {
           refreshPriceDifferenceCells();
+          if (priceDifferenceFx) renderComparisonFxStatus();
           requestPriceDifferenceFx();
           requestPriceDifferenceQuotes();
         }
@@ -17576,6 +17634,7 @@
               if (parsed?.notModified) {
                 marketDataLoaded = true;
                 marketDataLoadedFromServer = true;
+                seedComparisonBootstrap(parsed.comparisonBootstrap);
                 return {
                   changed: false,
                   generatedAt: Math.max(0, Math.floor(Number(parsed.generatedAt) || snapshotGeneratedAt)),
@@ -17591,6 +17650,8 @@
               marketDataLoadedFromServer = true;
               normalizeKnownAssetIdentities();
               normalizeKoreanAssetNames(nextData);
+              seedComparisonBootstrap(parsed.comparisonBootstrap);
+              delete nextData.comparisonBootstrap;
               const saved = saveLastGoodData(data);
               setMarketSnapshotGeneratedAt(saved ? nextData.generatedAt : 0);
               renderSummaryStats();

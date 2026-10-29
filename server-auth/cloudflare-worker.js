@@ -533,6 +533,33 @@ const ADDITIONAL_SPOT_SOURCES = {
   okx: { url: "https://www.okx.com/api/v5/market/tickers?instType=SPOT", catalog: "okx" },
 };
 
+const COMPARISON_FX_KEY = "price-difference-fx-v2";
+const COMPARISON_FX_URL = "https://currency-converter.live/api/v1/convert?from=USD&to=KRW&amount=1";
+
+function comparisonFxUsable(value, now = Date.now()) {
+  const age = now - Number(value?.asOf);
+  if (value?.frequency !== "intraday" || value.source !== "currency-converter.live" || !Number.isFinite(value.rate) || value.rate < 100 || value.rate > 10000
+    || !Number.isFinite(value.asOf) || age < -5000) return false;
+  const day = new Date(now).getUTCDay();
+  return age <= 300000 || (value.marketStatus === "closed" && (day === 0 || day === 6) && age <= 72 * 3600000);
+}
+
+function normalizeComparisonFx(source, now = Date.now()) {
+  const row = source?.data;
+  const asOf = Number(row?.quote?.ts);
+  const sourceDate = Date.parse(row?.quote?.as_of || "");
+  const day = new Date(now).getUTCDay();
+  const weekend = day === 0 || day === 6;
+  const payload = { rate: row?.rate, asOf, date: Number.isFinite(asOf) ? new Date(asOf).toISOString().slice(0, 10) : "",
+    checkedAt: now, source: "currency-converter.live", frequency: "intraday", stale: false,
+    marketStatus: now - asOf > 300000 && weekend ? "closed" : "open" };
+  if (source?.success !== true || source.source !== "currency-converter.live" || row?.from !== "USD" || row?.to !== "KRW"
+    || row?.quote?.legacy === true || !Number.isFinite(sourceDate) || Math.abs(sourceDate - asOf) > 1000
+    || !["live", "delayed", "stale", "closed", "market_closed"].includes(row?.quote?.status)
+    || (!weekend && row?.quote?.status !== "live") || !comparisonFxUsable(payload, now)) throw new Error("invalid_comparison_fx");
+  return payload;
+}
+
 function normalizeAdditionalSpotQuotes(exchange, source) {
   let rows;
   if (exchange === "gateio" && Array.isArray(source)) rows = source;
@@ -3132,12 +3159,14 @@ export class BoardStore {
           generatedAt,
           updatedAt: Math.max(0, Math.floor(Number(meta?.updatedAt) || 0)),
           bytes: Math.max(0, Math.floor(Number(meta?.bytes) || 0)),
+          ...(!includePrivate ? { comparisonBootstrap: await this.readComparisonBootstrap() } : {}),
         }, 200, this.env);
       }
     }
     const payload = await this.readMarketData();
     if (!payload) return jsonResponse({ error: "market_data_not_ready" }, 404, this.env);
-    return jsonResponse(includePrivate ? payload : marketDataWithoutRefreshHistory(payload), 200, this.env);
+    return jsonResponse(includePrivate ? payload : { ...marketDataWithoutRefreshHistory(payload),
+      comparisonBootstrap: await this.readComparisonBootstrap() }, 200, this.env);
   }
 
   async handleRefreshHistoryRequest(request) {
@@ -3159,25 +3188,44 @@ export class BoardStore {
   }
 
   async readComparisonFx() {
-    const key = "price-difference-fx-v1";
     const now = Date.now();
-    const stored = await this.state.storage.get(key);
-    if (stored && now - stored.checkedAt < (stored.stale ? 300000 : 3600000)) return stored;
-    try {
-      const source = await fetchJsonWithTimeout("https://api.frankfurter.dev/v2/rates?base=USD&quotes=KRW", 8000);
-      const row = Array.isArray(source) ? source.find((item) => item.base === "USD" && item.quote === "KRW") : null;
-      const dateMs = Date.parse(`${row?.date}T00:00:00Z`);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(row?.date || "")) || !Number.isFinite(dateMs)
-        || dateMs > now + 86400000 || now - dateMs > 7 * 86400000
-        || !Number.isFinite(row?.rate) || row.rate < 100 || row.rate > 10000) throw new Error("invalid_comparison_fx");
-      const payload = { rate: row.rate, date: row.date, checkedAt: now, stale: false, source: "Frankfurter", frequency: "daily" };
-      await this.state.storage.put(key, payload);
-      return payload;
-    } catch (_error) {
-      const payload = { ...(stored || { rate: null, date: "", source: "Frankfurter", frequency: "daily" }), checkedAt: now, stale: true };
-      await this.state.storage.put(key, payload);
-      return payload;
+    const stored = await this.state.storage.get(COMPARISON_FX_KEY);
+    if (stored && now - stored.checkedAt < (stored.refreshError ? 30000 : 60000)) return { ...stored, stale: !comparisonFxUsable(stored, now) };
+    if (!this.comparisonFxRefreshPromise) {
+      this.comparisonFxRefreshPromise = (async () => {
+        let payload;
+        try {
+          payload = normalizeComparisonFx(await fetchJsonWithTimeout(COMPARISON_FX_URL, 6000));
+        } catch (_error) {
+          payload = { ...(stored || { rate: null, asOf: 0, date: "", source: "currency-converter.live", frequency: "intraday" }),
+            checkedAt: Date.now(), stale: !comparisonFxUsable(stored), refreshError: true };
+        }
+        await this.state.storage.put(COMPARISON_FX_KEY, payload);
+        return payload;
+      })().finally(() => { this.comparisonFxRefreshPromise = null; });
     }
+    if (comparisonFxUsable(stored, now) && typeof this.state.waitUntil === "function") {
+      this.state.waitUntil(this.comparisonFxRefreshPromise);
+      return { ...stored, stale: false, revalidating: true };
+    }
+    return this.comparisonFxRefreshPromise;
+  }
+
+  async readComparisonBootstrap() {
+    const now = Date.now();
+    const fx = await this.state.storage.get(COMPARISON_FX_KEY);
+    const quotes = {};
+    const direct = [];
+    await Promise.all(["upbit", "bithumb", "binance", "coinbase", ...Object.keys(ADDITIONAL_SPOT_SOURCES)].map(async exchange => {
+      const quote = await this.state.storage.get(`price-difference-quotes-v1:${exchange}`);
+      if (exchange === "binance" && quote?.error && now - quote.checkedAt < 300000) direct.push(exchange);
+      if (!quote?.observedAt || quote.observedAt > now + 5000 || now - quote.observedAt > 120000) return;
+      const catalog = Object.hasOwn(ADDITIONAL_SPOT_SOURCES, exchange)
+        ? await this.state.storage.get(`price-difference-catalog-v3:${exchange}`) : null;
+      quotes[exchange] = { exchange, prices: quote.prices, observedAt: quote.observedAt,
+        ...(catalog && now - catalog.fetchedAt <= 86400000 ? { assets: catalog.assets, catalogAt: catalog.fetchedAt } : {}) };
+    }));
+    return { fx: comparisonFxUsable(fx, now) ? fx : null, quotes, direct };
   }
 
   async readComparisonCatalog(exchange, prices = {}) {
@@ -3274,16 +3322,26 @@ export class BoardStore {
       this.comparisonFxPromise = this.readComparisonFx().finally(() => { this.comparisonFxPromise = null; });
     }
     const payload = await this.comparisonFxPromise;
-    return jsonResponse(payload, payload.rate ? 200 : 503, this.env);
+    return jsonResponse(payload, comparisonFxUsable(payload) ? 200 : 503, this.env);
   }
 
   async probeComparisonSource(exchange) {
     const started = Date.now();
+    if (exchange === "fx") {
+      const response = await this.handleComparisonFxRequest();
+      return jsonResponse({ implementation: 4, exchange, status: response.status, elapsedMs: Date.now() - started,
+        ...(await response.json()) }, 200, this.env);
+    }
+    if (exchange === "bootstrap") {
+      const value = await this.readComparisonBootstrap();
+      return jsonResponse({ implementation: 4, exchange, elapsedMs: Date.now() - started, fx: value.fx, direct: value.direct,
+        counts: Object.fromEntries(Object.entries(value.quotes).map(([board, quote]) => [board, Object.keys(quote.prices || {}).length])) }, 200, this.env);
+    }
     const response = await this.handleComparisonQuotesRequest(new URL(`https://board-store/api/price-difference-quotes?exchange=${encodeURIComponent(exchange)}`));
     const payload = await response.json();
     const market = await this.readMarketData();
     const symbols = ["ZBT", "FRAX", "KGEN", "MLK", "XDP"];
-    return jsonResponse({ implementation: 3, exchange, status: response.status, elapsedMs: Date.now() - started,
+    return jsonResponse({ implementation: 4, exchange, status: response.status, elapsedMs: Date.now() - started,
       quoteCount: Object.keys(payload.prices || {}).length, identityCount: Object.keys(payload.assets || {}).length,
       error: payload.error || "", errorDetail: payload.errorDetail || "", identityError: payload.identityError || "",
       identityErrorDetail: payload.identityErrorDetail || "", observedAt: payload.observedAt || 0,

@@ -38,6 +38,10 @@ async function main() {
   let bootstrapFailure = 0;
   let bootstrapFailureBoard = 'binance';
   let directCalls = 0;
+  let snapshotBootstrap = false;
+  let fxRate = 1300;
+  const fxPayload = () => ({ rate: fxRate, asOf: Date.now(), date: new Date().toISOString().slice(0, 10),
+    source: 'currency-converter.live', frequency: 'intraday', marketStatus: 'open', checkedAt: Date.now(), stale: false });
   page.on('pageerror', error => { errors.push(error.message); console.error('Browser error:', error.message); });
   await context.addInitScript(() => {
     window.testSockets = [];
@@ -72,10 +76,18 @@ async function main() {
     let result = {};
     if (url.pathname === '/api/session') result = { authenticated: true, role: 'member', subject: 'test-reader', boardReadApproved: true,
       boardWriteApproved: false, expiresAt: Date.now() + 86400000, token: 'test-session' };
-    else if (url.pathname === '/api/market-data') result = snapshot;
+    else if (url.pathname === '/api/market-data') {
+      result = { ...snapshot };
+      if (snapshotBootstrap) result.comparisonBootstrap = { fx: fxPayload(), direct: ['binance'], quotes: {
+        ...Object.fromEntries(Object.entries(snapshot.boards).map(([board, rows]) => [board, { exchange: board, observedAt: Date.now(),
+          prices: Object.fromEntries(rows.map(row => [row.symbol, ['upbit', 'bithumb'].includes(board) ? row.priceKrw : row.priceUsd])) }])),
+        ...Object.fromEntries(Object.entries(fallbackFixtures).map(([board, fixture]) => [board, { exchange: board, observedAt: Date.now(),
+          prices: { [fixture.symbol]: fixture.price }, assets: { [fixture.symbol]: [fixture.name, `${fixture.symbol.toLowerCase()}-asset`] }, catalogAt: Date.now() }])),
+      } };
+    }
     else if (url.pathname === '/api/price-difference-fx') {
       fxCalls++;
-      result = { rate: 1300, date: new Date().toISOString().slice(0, 10), source: 'Frankfurter', frequency: 'daily', checkedAt: Date.now(), stale: false };
+      result = fxPayload();
     } else if (url.pathname === '/api/price-difference-quotes') {
       const exchange = url.searchParams.get('exchange');
       bulkCalls.push(exchange);
@@ -128,14 +140,14 @@ async function main() {
     const expected = (135000 / (100 * 1.01 * 1300) - 1) * 100;
     assert.ok((await cell('BTC').innerText()).includes(`+${expected.toFixed(3)}%`));
     assert.match(await cell('BTC').innerText(), /3,700원/);
-    assert.match(await cell('BTC').locator('[title]').getAttribute('title'), /Frankfurter.*1300.*Coinbase USDT\/USD 1.01/);
+    assert.match(await cell('BTC').locator('[title]').getAttribute('title'), /currency-converter.live.*장중 참고.*1300.*Coinbase USDT\/USD 1.01/);
     assert.equal(await cell('AI').innerText(), '비교 없음');
     assert.equal(await cell('CLASH').innerText(), '자산 미확인');
     assert.equal(await cell('LOCAL').innerText(), '비교 없음');
     assert.ok(await page.evaluate(() => !!priceDifferenceReference(data.boards.upbit.find(row => row.symbol === 'NEO'))));
     assert.match(await cell('ETH').innerText(), /^-/);
     assert.equal(fxCalls, 1);
-    console.log('PASS: independent daily FX, USDT depeg conversion, positive/negative deltas, missing listings and ticker collisions');
+    console.log('PASS: timestamped intraday FX, USDT depeg conversion, positive/negative deltas, missing listings and ticker collisions');
 
     await emit('binance', { data: { s: 'BTCUSDT', c: '101' } });
     const updated = (135000 / (101 * 1.01 * 1300) - 1) * 100;
@@ -328,6 +340,39 @@ async function main() {
     assert.equal(directCalls - beforeOkx, 1);
     assert.equal(await page.evaluate(() => priceDifferenceQuoteCache.okx.OKXONLY.price), 42);
     console.log('PASS: OKX public fallback retains verified metadata and excludes perpetual contracts');
+
+    snapshotBootstrap = true;
+    bootstrapFailure = 0;
+    const bootPage = await context.newPage();
+    try {
+      const quotesBefore = bulkCalls.length;
+      const fxBefore = fxCalls;
+      await bootPage.goto('https://fnfnfn3232.github.io/coin/', { waitUntil: 'domcontentloaded' });
+      await bootPage.waitForFunction(() => siteAuthConfirmed && priceDifferenceQuoteCache.upbit?.BTC && priceDifferenceFx);
+      await bootPage.evaluate(() => { state.viewMode = 'market'; state.board = 'upbit'; state.priceDifferenceBoard = 'binance'; renderCurrentView(); });
+      assert.match(await bootPage.locator('tr[data-live-product="KRW-BTC"] [data-price-difference]').innerText(), /%/);
+      assert.equal(fxCalls, fxBefore);
+      assert.equal(bulkCalls.length, quotesBefore);
+      const previous = await bootPage.evaluate(() => getPriceDifference(data.boards.upbit.find(row => row.symbol === 'BTC')).percent);
+      fxRate = 1310;
+      await bootPage.evaluate(async () => { priceDifferenceFxRetryAt = 0; await requestPriceDifferenceFx(); });
+      assert.equal(await bootPage.evaluate(() => priceDifferenceFx.rate), 1310);
+      assert.notEqual(await bootPage.evaluate(() => getPriceDifference(data.boards.upbit.find(row => row.symbol === 'BTC')).percent), previous);
+      assert.equal(await bootPage.evaluate(() => usableComparisonFx({ ...priceDifferenceFx, asOf: Date.now() - 600000 })), false);
+      assert.equal(await bootPage.evaluate(() => usableComparisonFx({ ...priceDifferenceFx, frequency: 'daily' })), false);
+      assert.match(await bootPage.locator('#priceDifferenceFxStatus').innerText(), /장중 참고/);
+      assert.equal(await bootPage.evaluate(() => priceDifferenceFxRetryAt - Date.now() <= 60000), true);
+      const binanceBefore = bulkCalls.filter(board => board === 'binance').length;
+      const directBefore = directCalls;
+      await bootPage.evaluate(() => {
+        for (const row of data.boards.binance) { row.livePriceUpdatedAt = 0; row.comparisonPriceAt = 0; }
+        requestPriceDifferenceQuotes();
+      });
+      await bootPage.waitForFunction(() => !priceDifferenceQuoteRequests.get('binance')?.pending);
+      assert.equal(bulkCalls.filter(board => board === 'binance').length, binanceBefore);
+      assert.equal(directCalls, directBefore + 1);
+      console.log('PASS: snapshot bootstrap renders without quote/FX round trips; live FX changes recalculate deltas; source clocks expire; known blocked proxies are skipped');
+    } finally { await bootPage.close(); snapshotBootstrap = false; fxRate = 1300; }
 
     await page.evaluate(() => window.dispatchEvent(new Event('offline')));
     assert.equal(await page.evaluate(() => testSockets.filter(socket => socket.readyState === 1).length), 0);
