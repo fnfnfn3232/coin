@@ -16,6 +16,7 @@
     ORDER: ["orderly", "orderlynetwork"], USDT: ["tether", "tetherusdt"],
     TFUEL: ["tfuel", "thetafuel"], RON: ["ronin", "roninnetwork"], WAXP: ["waxp", "wax"],
     US: ["talus", "talusnetwork"], BILL: ["billions", "billionsnetwork"], SIX: ["six", "sixnetwork"],
+    HUNT: ["hunt", "hunttown"],
   };
   const chains = { ETH: "ethereum", ERC20: "ethereum", BSC: "bsc", BEP20: "bsc", ARBEVM: "arbitrum",
     ARBITRUM: "arbitrum", BASEEVM: "base", BASE: "base", SOL: "solana", SOLANA: "solana" };
@@ -83,8 +84,8 @@
       if (a !== b) return false;
       if (a !== nameKey(aSymbol)) return true;
       const domesticName = [row.koreanName, ...(row.nameKeys || [])].some(value => /[\uac00-\ud7a3]/.test(String(value || "")));
-      const sharedKorean = (row.nameKeys || []).map(nameKey).filter(value => /[\uac00-\ud7a3]/.test(value))
-        .some(value => (candidate.nameKeys || []).map(nameKey).includes(value));
+      const sharedKorean = [row.koreanName, ...(row.nameKeys || [])].map(nameKey).filter(value => /[\uac00-\ud7a3]/.test(value))
+        .some(value => [candidate.koreanName, ...(candidate.nameKeys || [])].map(nameKey).includes(value));
       return ["upbit", "bithumb"].includes(context.baseBoard) && domesticName
         && (candidate.comparisonIdentity?.officialName === true || sharedKorean);
     }

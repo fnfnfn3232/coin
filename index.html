@@ -7441,7 +7441,7 @@
   </div>
 
   <script src="./vendor/js-md5.min.js"></script>
-  <script src="./comparison-identity.js?v=137e55954bf7"></script>
+  <script src="./comparison-identity.js?v=7e10af073981"></script>
   <script>
     window.SERVER_AUTH_API_BASE = "https://coin-board-auth.dlatl20000.workers.dev";
   </script>
@@ -16830,6 +16830,10 @@
         const models = new Map((data.boards?.[exchange] || []).map((row) => [liveSpotProductId(row, exchange), row]));
         const visibleRows = prewarm && state.viewMode !== "market" ? [...models.values()]
           : Array.from(tableBody.querySelectorAll("tr[data-live-product]"), (element) => models.get(element.dataset.liveProduct)).filter(Boolean);
+        for (const row of visibleRows) {
+          const reference = priceDifferenceReference(row);
+          if (reference && ["upbit", "bithumb"].includes(reference.comparisonExchange)) boards.add(reference.comparisonExchange);
+        }
         const fallbackRows = visibleRows.filter(row => {
           const primary = priceDifferenceCandidates(row).find(candidate => candidate.comparisonExchange === state.priceDifferenceBoard);
           return !primary || primary.comparisonQuoteMissingAt > comparisonPriceTimestamp(primary)
@@ -16917,7 +16921,8 @@
         if (priceDifferenceReferences.has(row)) return priceDifferenceReferences.get(row);
         const symbol = getComparableSymbol(row);
         const baseBoard = state.board === "triple" ? "bithumb" : state.board;
-        const order = [...new Set([state.priceDifferenceBoard, "binance", "coinbase", ...PRICE_DIFFERENCE_ADDITIONAL_BOARDS])].filter(board => board !== baseBoard);
+        const domesticFallback = baseBoard === "upbit" ? "bithumb" : "upbit";
+        const order = [...new Set([state.priceDifferenceBoard, "binance", "coinbase", ...PRICE_DIFFERENCE_ADDITIONAL_BOARDS, domesticFallback])].filter(board => board !== baseBoard);
         const candidates = order.flatMap(board => {
           const matches = comparisonMarketMatches(board, symbol).filter((candidate) => {
             if (PRICE_DIFFERENCE_ADDITIONAL_BOARDS.includes(board) && Date.now() - candidate.identityAt > 86400000) return false;
@@ -16933,8 +16938,10 @@
       }
 
       function priceDifferenceReference(row) {
-        const candidates = priceDifferenceCandidates(row).filter(candidate => !PRICE_DIFFERENCE_ADDITIONAL_BOARDS.includes(candidate.comparisonExchange)
+        const allCandidates = priceDifferenceCandidates(row).filter(candidate => !PRICE_DIFFERENCE_ADDITIONAL_BOARDS.includes(candidate.comparisonExchange)
           || Date.now() - candidate.identityAt <= 86400000);
+        const foreign = allCandidates.filter(candidate => !["upbit", "bithumb"].includes(candidate.comparisonExchange));
+        const candidates = foreign.length ? foreign : allCandidates;
         const usable = candidates.filter(candidate => !(candidate.comparisonQuoteMissingAt > comparisonPriceTimestamp(candidate)));
         return usable.find(candidate => freshComparisonPrice(candidate, Date.now())) || usable[0] || candidates[0] || null;
       }
@@ -16952,11 +16959,11 @@
         if (!isDomesticComparisonBoard()) return { reason: "국내 거래소에서만 시세차이를 계산합니다." };
         const reference = priceDifferenceReference(row);
         if (!reference) {
-          const listed = [state.priceDifferenceBoard, "binance", "coinbase", ...PRICE_DIFFERENCE_ADDITIONAL_BOARDS]
+          const listed = [state.priceDifferenceBoard, "binance", "coinbase", ...PRICE_DIFFERENCE_ADDITIONAL_BOARDS, state.board === "upbit" ? "bithumb" : "upbit"]
             .some(board => comparisonMarketMatches(board, getComparableSymbol(row)).length > 0
               || priceDifferenceQuoteRequests.get(board)?.symbols?.has(getComparableSymbol(row)));
           const loading = PRICE_DIFFERENCE_ADDITIONAL_BOARDS.some(board => priceDifferenceQuoteRequests.get(board)?.pending);
-          return { label: loading ? "확인 중" : listed ? "자산 미확인" : "비교 없음", reason: loading ? "대체 해외 거래소 시세 확인 중" : listed ? "같은 심볼이지만 동일 자산 확인 불가" : "조회한 해외 거래소에 검증된 현물 비교 시세 없음" };
+          return { label: loading ? "확인 중" : listed ? "자산 미확인" : "비교 없음", reason: loading ? "비교 거래소 시세 확인 중" : listed ? "같은 심볼이지만 동일 자산 확인 불가" : "조회한 해외·국내 거래소에 검증된 현물 비교 시세 없음" };
         }
         if (Number(row.comparisonQuoteMissingAt) > comparisonPriceTimestamp(row)
           || Number(reference.comparisonQuoteMissingAt) > comparisonPriceTimestamp(reference)) {
@@ -16964,7 +16971,7 @@
         }
         if (!freshComparisonPrice(row, now) || !freshComparisonPrice(reference, now)) {
           const failed = priceDifferenceQuoteRequests.get(state.board === "triple" ? "bithumb" : state.board)?.error
-            || priceDifferenceQuoteRequests.get(state.priceDifferenceBoard)?.error;
+            || priceDifferenceQuoteRequests.get(reference.comparisonExchange || state.priceDifferenceBoard)?.error;
           return {
             label: failed ? "연결 지연" : comparisonPriceTimestamp(row) && comparisonPriceTimestamp(reference) ? "갱신 지연" : "확인 중",
             reason: failed ? "초기 시세 요청에 실패하여 자동 재시도 중입니다." : "가격 수신 대기 또는 2분 이상 갱신 지연",
@@ -16973,6 +16980,17 @@
         const domestic = ["upbit", "bithumb", "triple"].includes(state.board);
         const baseUsdt = state.board === "binance";
         const referenceBoard = reference.comparisonExchange || state.priceDifferenceBoard;
+        if (["upbit", "bithumb"].includes(referenceBoard)) {
+          if (!String(row.pair || "").endsWith("/KRW") || !String(reference.pair || "").endsWith("/KRW")) return { reason: "국내 비교 통화 확인 불가" };
+          const basePrice = toPositiveNumber(row.priceKrw);
+          const referencePrice = toPositiveNumber(reference.priceKrw);
+          if (!basePrice || !referencePrice) return { reason: "국내 비교 가격 확인 불가" };
+          const difference = basePrice - referencePrice;
+          const percent = difference / referencePrice * 100;
+          if (!Number.isFinite(percent)) return { reason: "국내 비교 가격 확인 불가" };
+          return { percent, difference, currency: "KRW", referencePrice, referenceBoard, comparisonType: "domestic",
+            title: `국내 거래소 비교 · ${comparisonExchangeLabel(referenceBoard)} 대비 · 원화 가격 직접 비교, 환율 미사용 · 해외 동일 자산 비교 대상 미확인 · 가격 수신 ${new Date(Math.min(comparisonPriceTimestamp(row), comparisonPriceTimestamp(reference))).toLocaleTimeString("ko-KR", { hour12: false })} · (기준 거래소 가격/비교 거래소 가격 - 1) × 100 · 거래·전송 수수료 제외` };
+        }
         const referenceUsdt = String(reference.pair || "").endsWith("/USDT");
         if (!String(reference.pair || "").endsWith(referenceUsdt ? "/USDT" : "/USD")
           || !String(row.pair || "").endsWith(domestic ? "/KRW" : baseUsdt ? "/USDT" : "/USD")) return { reason: "비교 통화 확인 불가" };
@@ -17002,7 +17020,8 @@
         const percent = Math.abs(result.percent) < 0.0005 ? 0 : result.percent;
         const sign = percent > 0 ? "+" : "";
         const delta = `${result.difference > 0 ? "+" : result.difference < 0 ? "-" : ""}${result.currency === "KRW" ? formatNumber(Math.abs(result.difference), 2) + "원" : "$" + formatNumber(Math.abs(result.difference), 6)}`;
-        return `<div class="price-difference-value ${percent > 0 ? "positive" : percent < 0 ? "negative" : ""}" title="${escapeAttr(result.title)}">${sign}${percent.toFixed(3)}%</div><div class="price-difference-sub">${escapeHtml(delta)}</div><div class="price-difference-source">${escapeHtml(comparisonExchangeLabel(result.referenceBoard))}</div>`;
+        const source = result.comparisonType === "domestic" ? `국내 · ${boardShortLabel(result.referenceBoard)}` : comparisonExchangeLabel(result.referenceBoard);
+        return `<div class="price-difference-value ${percent > 0 ? "positive" : percent < 0 ? "negative" : ""}" title="${escapeAttr(result.title)}">${sign}${percent.toFixed(3)}%</div><div class="price-difference-sub">${escapeHtml(delta)}</div><div class="price-difference-source">${escapeHtml(source)}</div>`;
       }
 
       function refreshPriceDifferenceCells() {
@@ -17158,9 +17177,15 @@
             try { socket = new WebSocket(livePriceSocketUrl(connection.target)); }
             catch (_error) { retry(); return; }
             connection.socket = socket;
+            socket.binaryType = "arraybuffer";
             socket.onopen = () => {
+              if (priceDifferenceSockets.get(board) !== connection || socket !== connection.socket || isSiteLocked()) return;
               connection.attempts = 0;
-              if (board === "coinbase") {
+              if (board === "upbit") {
+                socket.send(JSON.stringify([{ ticket: `coin-comparison-${Date.now()}` }, { type: "ticker", codes: connection.target.products }, { format: "DEFAULT" }]));
+              } else if (board === "bithumb") {
+                socket.send(JSON.stringify({ type: "ticker", symbols: connection.target.products, tickTypes: ["24H"] }));
+              } else if (board === "coinbase") {
                 socket.send(JSON.stringify({ type: "subscribe", channel: "ticker", product_ids: connection.target.products }));
                 socket.send(JSON.stringify({ type: "subscribe", channel: "heartbeats", product_ids: connection.target.products }));
               } else if (board === "gateio") {

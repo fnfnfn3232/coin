@@ -8,6 +8,7 @@ on:
     paths:
       - "server-auth/**"
       - "comparison-identity.js"
+      - ".github/scripts/probe-comparison.mjs"
       - ".github/workflows/deploy-worker.yml"
 
 jobs:
