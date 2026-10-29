@@ -1,5 +1,25 @@
 # Price Difference (2026-10-29)
 
+## Domestic-To-Domestic Alternative
+
+When no verified overseas candidate exists for a domestic row, use the other
+Korean exchange only if exactly one identical KRW asset is verified there:
+Upbit -> Bithumb, Bithumb -> Upbit (the intersection view uses Bithumb as base).
+An existing overseas candidate is never replaced merely because its connection,
+FX or latest quote is temporarily unavailable.
+
+Calculation is `(base KRW / reference KRW - 1) * 100`, with the signed KRW
+difference underneath. No fiat FX or USDT peg enters this calculation. The source
+is explicitly labeled `domestic` in the Korean UI, so it is not presented as an
+overseas premium. The shared quote bootstrap and one counterpart WebSocket per
+view provide updates in either direction. Existing stale-price, identity-conflict,
+single-listing and logout guards still apply. No per-coin HTTP polling is added.
+
+Tests cover both signs/directions, reference/base-only ticks, absent FX/peg,
+source labels, both native subscription formats, stale quotes, wrong assets,
+overseas priority, reload and connection cleanup. The trusted whole-list audit
+also reports the eligible domestic-only alternatives separately.
+
 ## Domestic Premium Scope and Whole-List Audit
 
 Production audit: 788 domestic exchange rows checked, 738 identity-matched. The

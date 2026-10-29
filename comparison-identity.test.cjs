@@ -36,6 +36,15 @@ test('gaming BEAM maps to exchange-specific BEAMX, never privacy BEAM', () => {
   assert.equal(identity.matches(row, { symbol: 'BEAMX', englishName: 'Another Project' }, context), false);
 });
 
+test('domestic duplicate listings accept official shared Korean names and reject different projects', () => {
+  const local = domestic('LOCAL');
+  const counterpart = domestic('LOCAL');
+  assert.equal(identity.matches(local, counterpart, { baseBoard: 'upbit', referenceBoard: 'bithumb' }), true);
+  assert.equal(identity.matches(local, counterpart, { baseBoard: 'bithumb', referenceBoard: 'upbit' }), true);
+  assert.equal(identity.matches(local, { ...counterpart, koreanName: '\ub2e4\ub978\ucf54\uc778' }, { baseBoard: 'upbit', referenceBoard: 'bithumb' }), false);
+  assert.equal(identity.matches(domestic('HUNT', 'HUNT'), domestic('HUNT', 'Hunt Town'), { baseBoard: 'upbit', referenceBoard: 'bithumb' }), true);
+});
+
 test('whole-list audit spelling differences resolve without admitting unrelated project names', () => {
   const pairs = [
     ['ADA', 'Ada', 'Cardano'], ['XLM', 'Lumen', 'Stellar Lumens'], ['SKY', 'Sky Protocol', 'Sky'],

@@ -25,6 +25,11 @@ async function main() {
     bitget: { symbol: 'BITGETONLY', name: 'Bitget Only Asset', price: 30, label: 'Bitget' },
     okx: { symbol: 'OKXONLY', name: 'Okx Only Asset', price: 40, label: 'OKX' },
   };
+  for (const [board, price] of [['upbit', 1100], ['bithumb', 1000]]) {
+    snapshot.boards[board].push(row('DUALKRW', 'Domestic Only Asset', 'KRW', price, 100));
+    snapshot.boards[board].push({ ...row('TICKKRW', 'TICKKRW', 'KRW', price, 100), koreanName: '\uc911\ubcf5\ucf54\uc778' });
+    snapshot.boards[board].push(row('MISMATCH', board === 'upbit' ? 'Project A' : 'Project B', 'KRW', price, 100));
+  }
   const reported = [
     { symbol: 'SOON', name: 'SOON', foreign: 'Soon' }, { symbol: 'BEAM', name: 'Beam', foreign: 'Beam', foreignSymbol: 'BEAMX' },
     { symbol: 'FLUID', name: 'Fluid', foreign: 'Fluid' }, { symbol: 'PIEVERSE', name: 'Pieverse', foreign: 'Pieverse' },
@@ -249,7 +254,7 @@ async function main() {
     });
     await page.waitForFunction(() => document.querySelector('tr[data-live-product="KRW-NEO"] [data-price-difference]')?.textContent.includes('%'));
     assert.ok((await cell('BTC').innerText()).includes(expected.toFixed(3)));
-    assert.ok(!bulkCalls.slice(-3).includes('bithumb'));
+    assert.ok(bulkCalls.includes('bithumb'));
     assert.equal(await page.evaluate(() => [...priceDifferenceSockets.values()].some(connection => connection.target.entries.has('NEOUSDT'))), true);
     console.log('PASS: REST bootstrap displays quiet coins without any ticker event and NEO identity is preserved');
     for (const item of reported) {
@@ -257,6 +262,47 @@ async function main() {
       assert.equal(await page.evaluate(symbol => data.boards.upbit.find(row => row.symbol === symbol).marketCapUsd, item.symbol), null);
     }
     console.log('PASS: reported SOON/BEAM/FLUID/PIEVERSE/CC/WAVES/B3 render premiums while unknown caps remain unknown');
+
+    await page.waitForFunction(() => document.querySelector('tr[data-live-product="KRW-DUALKRW"] [data-price-difference]')?.textContent.includes('+10.000%'));
+    assert.match(await cell('DUALKRW').locator('.price-difference-source').innerText(), /국내.*빗썸/);
+    assert.match(await cell('DUALKRW').locator('[title]').getAttribute('title'), /국내 거래소 비교.*환율 미사용/);
+    assert.match(await cell('TICKKRW').innerText(), /10.000%/);
+    const nativeSafety = await page.evaluate(() => {
+      const row = data.boards.upbit.find(row => row.symbol === 'DUALKRW');
+      const reference = priceDifferenceReference(row);
+      const fx = priceDifferenceFx;
+      const peg = priceDifferenceUsdt.livePriceUpdatedAt;
+      priceDifferenceFx = null;
+      priceDifferenceUsdt.livePriceUpdatedAt = 0;
+      const withoutFx = getPriceDifference(row).percent;
+      priceDifferenceFx = fx;
+      priceDifferenceUsdt.livePriceUpdatedAt = peg;
+      const at = reference.comparisonPriceAt;
+      reference.comparisonPriceAt = Date.now() - 130000;
+      const stale = getPriceDifference(row).percent;
+      reference.comparisonPriceAt = at;
+      const mismatch = getPriceDifference(data.boards.upbit.find(row => row.symbol === 'MISMATCH')).percent;
+      const btc = data.boards.upbit.find(row => row.symbol === 'BTC');
+      const foreignPreferred = !['upbit', 'bithumb'].includes(priceDifferenceReference(btc).comparisonExchange);
+      return { withoutFx, stale, mismatch, foreignPreferred };
+    });
+    assert.ok(Math.abs(nativeSafety.withoutFx - 10) < 1e-9);
+    assert.equal(nativeSafety.stale, undefined);
+    assert.equal(nativeSafety.mismatch, undefined);
+    assert.equal(nativeSafety.foreignPreferred, true);
+    await emit('bithumb', { content: { symbol: 'DUALKRW_KRW', closePrice: 1050 } });
+    await page.waitForFunction(() => document.querySelector('tr[data-live-product="KRW-DUALKRW"] [data-price-difference]')?.textContent.includes('+4.762%'));
+    await emit('upbit', { code: 'KRW-DUALKRW', trade_price: 1200 });
+    await page.waitForFunction(() => document.querySelector('tr[data-live-product="KRW-DUALKRW"] [data-price-difference]')?.textContent.includes('+14.286%'));
+    assert.ok(await page.evaluate(() => priceDifferenceSockets.get('bithumb').socket.sent.some(value => value.type === 'ticker' && value.symbols.includes('DUALKRW_KRW'))));
+    await page.locator('#baseBoardSelect').selectOption('bithumb');
+    await page.waitForFunction(() => document.querySelector('tr[data-live-product="DUALKRW_KRW"] [data-price-difference]')?.textContent.includes('-12.500%'));
+    assert.match(await page.locator('tr[data-live-product="DUALKRW_KRW"] .price-difference-source').innerText(), /국내.*업비트/);
+    await emit('upbit', { code: 'KRW-DUALKRW', trade_price: 1250 });
+    await page.waitForFunction(() => document.querySelector('tr[data-live-product="DUALKRW_KRW"] [data-price-difference]')?.textContent.includes('-16.000%'));
+    assert.ok(await page.evaluate(() => priceDifferenceSockets.get('upbit').socket.sent.some(value => Array.isArray(value) && value.some(item => item.codes?.includes('KRW-DUALKRW')))));
+    await page.locator('#baseBoardSelect').selectOption('upbit');
+    console.log('PASS: verified domestic duplicates fall back in both directions without FX; both native streams update; stale prices and identity conflicts fail closed; foreign listings keep priority');
 
     for (const [board, fixture] of Object.entries(fallbackFixtures)) {
       await page.waitForFunction(symbol => document.querySelector(`tr[data-live-product="KRW-${symbol}"] [data-price-difference]`)?.textContent.includes('%'), fixture.symbol);

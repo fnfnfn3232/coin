@@ -26,11 +26,15 @@ for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", 
         const listed = result.references.flatMap(source => source.rows.filter(candidate => identity.symbol(candidate, source.board) === identity.symbol(item.row, item.board))
           .map(candidate => ({ ...candidate, board: source.board })));
         const matches = listed.filter(candidate => identity.matches(item.row, candidate, { baseBoard: item.board, referenceBoard: candidate.board, info: item.info }));
+        const domestic = matches.length ? [] : result.local.filter(candidate => candidate.board !== item.board
+          && identity.matches(item.row, candidate.row, { baseBoard: item.board, referenceBoard: candidate.board, info: item.info, referenceInfo: candidate.info }));
         return { board: item.board, symbol: item.row.symbol, name: item.row.englishName, capVerified: item.row.marketIdentityVerified,
           matches: matches.map(row => `${row.board}:${row.symbol}`),
+          domestic: domestic.length === 1 ? domestic.map(item => `${item.board}:${item.row.symbol}`) : [],
           ...(!matches.length && listed.length ? { candidates: listed.map(row => ({ board: row.board, symbol: row.symbol, name: row.englishName })) } : {}) };
       });
       console.log(JSON.stringify({ exchange: "audit", total: rows.length, matched: rows.filter(row => row.matches.length).length,
+        domesticFallback: rows.filter(row => row.domestic.length),
         unverified: rows.filter(row => row.candidates), unavailable: rows.filter(row => !row.matches.length && !row.candidates),
         reported: rows.filter(row => ["SOON", "BEAM", "FLUID", "PIEVERSE", "CC", "WAVES", "B3"].includes(row.symbol)) }));
     } else console.log(JSON.stringify(result));
