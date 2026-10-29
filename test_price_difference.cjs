@@ -19,6 +19,13 @@ async function main() {
     bithumb: [row('BTC', 'Bitcoin', 'KRW', 136000)],
     coinbase: [row('BTC', 'Bitcoin', 'USD', 100), row('ETH', 'Ethereum', 'USD', 10, 500), row('USDT', 'Tether', 'USD', 1.01)], robinhood: [],
   }, stats: {}, futures: {}, notes: {}, coinInfo: {}, news: { items: [] } };
+  const fallbackFixtures = {
+    gateio: { symbol: 'GATEONLY', name: 'Gate Only Asset', price: 10, label: 'Gate.io' },
+    bybit: { symbol: 'BYBITONLY', name: 'Bybit Only Asset', price: 20, label: 'Bybit' },
+    bitget: { symbol: 'BITGETONLY', name: 'Bitget Only Asset', price: 30, label: 'Bitget' },
+    okx: { symbol: 'OKXONLY', name: 'Okx Only Asset', price: 40, label: 'OKX' },
+  };
+  for (const fixture of Object.values(fallbackFixtures)) snapshot.boards.upbit.push(row(fixture.symbol, fixture.name, 'KRW', fixture.price * 1350));
   const browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH
     || (process.platform === 'win32' ? 'C:/Program Files/Google/Chrome/Application/chrome.exe' : undefined) });
   const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
@@ -38,7 +45,7 @@ async function main() {
         testSockets.push(this);
         setTimeout(() => { if (this.readyState !== 3) { this.readyState = 1; this.onopen?.(); } }, 0);
       }
-      send(value) { this.sent.push(JSON.parse(value)); }
+      send(value) { this.sent.push(value === 'ping' ? value : JSON.parse(value)); }
       close() { this.readyState = 3; this.onclose?.(); }
     };
   });
@@ -62,6 +69,13 @@ async function main() {
       const exchange = url.searchParams.get('exchange');
       bulkCalls.push(exchange);
       result = { exchange, prices: bulkEnabled ? Object.fromEntries((snapshot.boards[exchange] || []).map(row => [row.symbol, ['upbit', 'bithumb'].includes(exchange) ? row.priceKrw : row.priceUsd])) : {}, observedAt: Date.now() };
+      const fixture = fallbackFixtures[exchange];
+      if (fixture && bulkEnabled) result = { exchange, prices: { [fixture.symbol]: fixture.price }, observedAt: Date.now(),
+        assets: { [fixture.symbol]: [fixture.name, `${fixture.symbol.toLowerCase()}-asset`] }, catalogAt: Date.now(), identitySource: 'CoinPaprika' };
+      if (fixture && bulkEnabled) {
+        result.prices.CLASH = 999;
+        result.assets.CLASH = ['Unrelated Project', 'clash-unrelated'];
+      }
     } else if (url.pathname === '/api/board/posts') result = { posts: [] };
     else if (url.pathname === '/api/board/categories') result = { categories: [{ value: 'free', label: 'Free' }] };
     else if (url.pathname === '/api/news') result = { items: [], total: 0, hasMore: false };
@@ -69,7 +83,8 @@ async function main() {
   });
   async function emit(board, value) {
     await page.evaluate(({ board, value }) => {
-      const host = { binance: 'stream.binance.com', upbit: 'api.upbit.com', bithumb: 'pubwss.bithumb.com', coinbase: 'advanced-trade-ws.coinbase.com' }[board];
+      const host = { binance: 'stream.binance.com', upbit: 'api.upbit.com', bithumb: 'pubwss.bithumb.com', coinbase: 'advanced-trade-ws.coinbase.com',
+        gateio: 'api.gateio.ws', bybit: 'stream.bybit.com', bitget: 'ws.bitget.com', okx: 'ws.okx.com' }[board];
       for (const socket of testSockets.filter(socket => socket.readyState === 1 && socket.url.includes(host))) {
         socket.onmessage?.({ data: JSON.stringify(value) });
       }
@@ -176,6 +191,34 @@ async function main() {
     assert.equal(await page.evaluate(() => [...priceDifferenceSockets.values()].some(connection => connection.target.entries.has('NEOUSDT'))), true);
     console.log('PASS: REST bootstrap displays quiet coins without any ticker event and NEO identity is preserved');
 
+    for (const [board, fixture] of Object.entries(fallbackFixtures)) {
+      await page.waitForFunction(symbol => document.querySelector(`tr[data-live-product="KRW-${symbol}"] [data-price-difference]`)?.textContent.includes('%'), fixture.symbol);
+      assert.equal(await cell(fixture.symbol).locator('.price-difference-source').innerText(), fixture.label);
+      assert.match(await cell(fixture.symbol).locator('[title]').getAttribute('title'), /대체 출처/);
+      assert.equal(await page.evaluate(board => priceDifferenceSockets.get(board)?.target.kind, board), 'spot');
+    }
+    await emit('gateio', { channel: 'spot.tickers', event: 'update', result: { currency_pair: 'GATEONLY_USDT', last: '11' } });
+    await emit('bybit', { topic: 'tickers.BYBITONLYUSDT', type: 'snapshot', data: { symbol: 'BYBITONLYUSDT', lastPrice: '21' } });
+    await emit('bitget', { arg: { instType: 'SPOT', channel: 'ticker', instId: 'BITGETONLYUSDT' }, data: [{ instId: 'BITGETONLYUSDT', lastPr: '31' }] });
+    await emit('okx', { arg: { channel: 'tickers' }, data: [{ instType: 'SPOT', instId: 'OKXONLY-USDT', last: '41' }] });
+    for (const [board, fixture] of Object.entries(fallbackFixtures)) {
+      await page.waitForFunction(({ board, symbol, price }) => comparisonMarketRows(board).find(row => row.symbol === symbol)?.priceUsd === price,
+        { board, symbol: fixture.symbol, price: fixture.price + 1 });
+    }
+    const beforeFutures = await cell('OKXONLY').innerText();
+    await emit('okx', { arg: { channel: 'tickers' }, data: [{ instType: 'SWAP', instId: 'OKXONLY-USDT-SWAP', last: '999' }] });
+    assert.equal(await cell('OKXONLY').innerText(), beforeFutures);
+    assert.ok(await page.evaluate(() => [...priceDifferenceSockets.values()].filter(connection => PRICE_DIFFERENCE_ADDITIONAL_BOARDS.includes(connection.target.exchange)).every(connection => connection.heartbeat > 0)));
+    console.log('PASS: four identity-verified spot fallback sources are labeled, update live, use heartbeats and reject derivatives');
+    assert.equal(await cell('CLASH').innerText(), '자산 미확인');
+    assert.equal(await page.evaluate(() => {
+      const quote = priceDifferenceQuoteCache.bybit.BYBITONLY;
+      const nextIdentity = { ...quote.identity, at: quote.identity.at + 1 };
+      rememberComparisonQuote('bybit', 'BYBITONLY', 999, quote.at - 1, nextIdentity);
+      return priceDifferenceQuoteCache.bybit.BYBITONLY.price === 21
+        && priceDifferenceQuoteCache.bybit.BYBITONLY.identity.at === nextIdentity.at;
+    }), true);
+
     await page.evaluate(() => savePriceDifferenceCache());
     const requestsBeforeReload = bulkCalls.length;
     const fxBeforeReload = fxCalls;
@@ -185,6 +228,7 @@ async function main() {
     await page.locator('#baseBoardSelect').selectOption('upbit');
     await page.locator('#priceDifferenceBoard').selectOption('binance');
     await page.waitForFunction(() => document.querySelector('tr[data-live-product="KRW-NEO"] [data-price-difference]')?.textContent.includes('%'));
+    for (const fixture of Object.values(fallbackFixtures)) assert.equal(await cell(fixture.symbol).locator('.price-difference-source').innerText(), fixture.label);
     assert.equal(bulkCalls.length, requestsBeforeReload);
     assert.equal(fxCalls, fxBeforeReload);
     console.log('PASS: reload restores fresh quotes and FX immediately without another bootstrap request');

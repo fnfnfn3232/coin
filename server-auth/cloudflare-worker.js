@@ -526,7 +526,55 @@ async function fetchLivePricePayload(marketPayload) {
   };
 }
 
+const ADDITIONAL_SPOT_SOURCES = {
+  gateio: { url: "https://api.gateio.ws/api/v4/spot/tickers", catalog: "gateio" },
+  bybit: { url: "https://api.bybit.com/v5/market/tickers?category=spot", catalog: "bybit-spot" },
+  bitget: { url: "https://api.bitget.com/api/v2/spot/market/tickers", catalog: "bitget" },
+  okx: { url: "https://www.okx.com/api/v5/market/tickers?instType=SPOT", catalog: "okx" },
+};
+
+function normalizeAdditionalSpotQuotes(exchange, source) {
+  let rows;
+  if (exchange === "gateio" && Array.isArray(source)) rows = source;
+  if (exchange === "bybit" && source?.retCode === 0 && source.result?.category === "spot") rows = source.result.list;
+  if (exchange === "bitget" && source?.code === "00000") rows = source.data;
+  if (exchange === "okx" && source?.code === "0") rows = source.data;
+  if (!Array.isArray(rows)) throw new Error("invalid_spot_quote_source");
+  const prices = {};
+  for (const row of rows) {
+    if (exchange === "okx" && row.instType !== "SPOT") continue;
+    const pair = String(row.currency_pair || row.symbol || row.instId || "").toUpperCase();
+    const pattern = exchange === "gateio" ? /^([A-Z0-9]{1,40})_USDT$/ : exchange === "okx" ? /^([A-Z0-9]{1,40})-USDT$/ : /^([A-Z0-9]{1,40})USDT$/;
+    const match = pair.match(pattern);
+    const price = toPositiveNumber(row.lastPrice ?? row.lastPr ?? row.last);
+    if (match && price !== null) prices[match[1]] = price;
+  }
+  return prices;
+}
+
+function normalizeComparisonCatalog(source) {
+  if (!Array.isArray(source)) throw new Error("invalid_spot_catalog");
+  const assets = {};
+  const ambiguous = new Set();
+  for (const row of source) {
+    if (row.category !== "Spot" || row.outlier === true || row.quote_currency_id !== "usdt-tether") continue;
+    const match = String(row.pair || "").match(/^([A-Z0-9]{1,40})\/USDT$/);
+    const name = String(row.base_currency_name || "").trim();
+    const id = String(row.base_currency_id || "");
+    if (!match || !name || name.length > 120 || !/^[a-z0-9-]{1,120}$/.test(id)) continue;
+    const symbol = match[1];
+    if (assets[symbol] && assets[symbol][1] !== id) ambiguous.add(symbol);
+    assets[symbol] = [name, id];
+  }
+  for (const symbol of ambiguous) delete assets[symbol];
+  if (!Object.keys(assets).length) throw new Error("empty_spot_catalog");
+  return assets;
+}
+
 async function fetchComparisonQuoteMap(exchange) {
+  if (Object.hasOwn(ADDITIONAL_SPOT_SOURCES, exchange)) {
+    return normalizeAdditionalSpotQuotes(exchange, await fetchJsonWithTimeout(ADDITIONAL_SPOT_SOURCES[exchange].url, 8000));
+  }
   if (exchange === "binance") return fetchBinanceLivePriceMap();
   if (exchange === "coinbase") return fetchCoinbaseLivePriceMap();
   const prices = {};
@@ -2572,6 +2620,7 @@ export class BoardStore {
     this.mediaUploadCleanupPromise = null;
     this.comparisonFxPromise = null;
     this.comparisonQuotePromises = new Map();
+    this.comparisonCatalogPromises = new Map();
     this.boardPostsOperation = Promise.resolve();
     this.l2FeesPromise = null;
   }
@@ -3094,13 +3143,44 @@ export class BoardStore {
     }
   }
 
+  async readComparisonCatalog(exchange) {
+    const key = `price-difference-catalog-v1:${exchange}`;
+    const now = Date.now();
+    const stored = await this.state.storage.get(key);
+    if (stored && now - stored.checkedAt < (stored.error ? 300000 : 6 * 3600000)) {
+      return now - stored.fetchedAt <= 86400000 ? stored : { ...stored, assets: {} };
+    }
+    if (!this.comparisonCatalogPromises.has(exchange)) {
+      const pending = (async () => {
+        let payload;
+        try {
+          const source = await fetchJsonWithTimeout(`https://api.coinpaprika.com/v1/exchanges/${ADDITIONAL_SPOT_SOURCES[exchange].catalog}/markets?quotes=USD`, 8000);
+          payload = { assets: normalizeComparisonCatalog(source), fetchedAt: now, checkedAt: now, error: "" };
+        } catch (_error) {
+          payload = { assets: now - Number(stored?.fetchedAt || 0) <= 86400000 ? stored?.assets || {} : {},
+            fetchedAt: stored?.fetchedAt || 0, checkedAt: now, error: "identity_catalog_refresh_failed" };
+        }
+        await this.state.storage.put(key, payload);
+        return payload;
+      })().finally(() => { this.comparisonCatalogPromises.delete(exchange); });
+      this.comparisonCatalogPromises.set(exchange, pending);
+    }
+    return this.comparisonCatalogPromises.get(exchange);
+  }
+
   async handleComparisonQuotesRequest(url) {
     const exchange = url.searchParams.get("exchange");
-    if (!["upbit", "bithumb", "binance", "coinbase"].includes(exchange)) return jsonResponse({ error: "invalid_exchange" }, 400, this.env);
+    const additional = Object.hasOwn(ADDITIONAL_SPOT_SOURCES, exchange);
+    if (!additional && !["upbit", "bithumb", "binance", "coinbase"].includes(exchange)) return jsonResponse({ error: "invalid_exchange" }, 400, this.env);
+    const catalogPromise = additional ? this.readComparisonCatalog(exchange) : null;
     const key = `price-difference-quotes-v1:${exchange}`;
     const now = Date.now();
     const stored = await this.state.storage.get(key);
-    const respond = (value) => jsonResponse(value, Object.keys(value?.prices || {}).length ? 200 : 503, this.env);
+    const respond = async (value) => {
+      const catalog = catalogPromise ? await catalogPromise : null;
+      return jsonResponse({ ...value, ...(catalog ? { assets: catalog.assets, catalogAt: catalog.fetchedAt,
+        identitySource: "CoinPaprika", identityError: catalog.error } : {}) }, Object.keys(value?.prices || {}).length ? 200 : 503, this.env);
+    };
     if (stored && now - stored.checkedAt < (stored.error ? 15000 : 25000)) return respond(stored);
     let pending = this.comparisonQuotePromises.get(exchange);
     if (!pending) {
