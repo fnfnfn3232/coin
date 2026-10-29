@@ -598,7 +598,7 @@ function normalizeComparisonCatalog(source) {
   return assets;
 }
 
-function normalizeGateComparisonCatalog(source, prices) {
+function normalizeGateComparisonCatalog(source, prices, contractSymbols = new Set()) {
   if (!Array.isArray(source)) throw new Error("invalid_gate_catalog");
   const assets = {};
   const ambiguous = new Set();
@@ -608,6 +608,11 @@ function normalizeGateComparisonCatalog(source, prices) {
     if (row.delisted === true || !toPositiveNumber(prices?.[symbol]) || !/^[A-Z0-9]{1,40}$/.test(symbol) || !name || name.length > 120) continue;
     if (assets[symbol] && assets[symbol][0] !== name) ambiguous.add(symbol);
     assets[symbol] = [name, `gate-${symbol.toLowerCase()}`];
+    if (symbol === "BEAMX" || contractSymbols.has(symbol)) {
+      const contracts = (row.chains || []).filter(item => item.name && item.addr)
+        .slice(0, 3).map(item => [String(item.name).slice(0, 24), String(item.addr).slice(0, 160)]);
+      if (contracts.length) assets[symbol].push(contracts);
+    }
   }
   for (const symbol of ambiguous) delete assets[symbol];
   if (!Object.keys(assets).length) throw new Error("empty_gate_catalog");
@@ -3221,7 +3226,7 @@ export class BoardStore {
       if (exchange === "binance" && quote?.error && now - quote.checkedAt < 300000) direct.push(exchange);
       if (!quote?.observedAt || quote.observedAt > now + 5000 || now - quote.observedAt > 120000) return;
       const catalog = Object.hasOwn(ADDITIONAL_SPOT_SOURCES, exchange)
-        ? await this.state.storage.get(`price-difference-catalog-v3:${exchange}`) : null;
+        ? await this.state.storage.get(`price-difference-catalog-v4:${exchange}`) : null;
       quotes[exchange] = { exchange, prices: quote.prices, observedAt: quote.observedAt,
         ...(catalog && now - catalog.fetchedAt <= 86400000 ? { assets: catalog.assets, catalogAt: catalog.fetchedAt } : {}) };
     }));
@@ -3229,7 +3234,7 @@ export class BoardStore {
   }
 
   async readComparisonCatalog(exchange, prices = {}) {
-    const key = `price-difference-catalog-v3:${exchange}`;
+    const key = `price-difference-catalog-v4:${exchange}`;
     const now = Date.now();
     const stored = await this.state.storage.get(key);
     if (stored && now - stored.checkedAt < (stored.error ? 300000 : 6 * 3600000)) {
@@ -3243,7 +3248,13 @@ export class BoardStore {
           let assets;
           let sourceName;
           if (exchange === "gateio") {
-            assets = normalizeGateComparisonCatalog(await fetchJsonWithTimeout("https://api.gateio.ws/api/v4/spot/currencies", 8000), prices);
+            const market = await this.readMarketData();
+            const locals = new Map([...(market?.boards?.upbit || []), ...(market?.boards?.bithumb || [])].map(row => [row.symbol, row.englishName]));
+            const source = await fetchJsonWithTimeout("https://api.gateio.ws/api/v4/spot/currencies", 8000);
+            const keyName = name => String(name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+            const contracts = new Set((Array.isArray(source) ? source : []).filter(row => locals.has(row.currency)
+              && keyName(locals.get(row.currency)) !== keyName(row.name)).map(row => row.currency));
+            assets = normalizeGateComparisonCatalog(source, prices, contracts);
             sourceName = "Gate official currencies";
           } else {
             try {
@@ -3327,21 +3338,42 @@ export class BoardStore {
 
   async probeComparisonSource(exchange) {
     const started = Date.now();
+    if (exchange === "audit") {
+      const market = await this.readMarketData();
+      const fields = row => ({ symbol: row.symbol, compareSymbol: row.compareSymbol, englishName: row.englishName,
+        koreanName: row.koreanName, nameKeys: row.nameKeys, coingeckoId: row.coingeckoId,
+        marketIdentityVerified: row.marketIdentityVerified });
+      const infoFor = (symbol, board) => {
+        const entry = market?.coinInfo?.[symbol]?.sources?.[board];
+        return entry ? { sources: { [board]: { englishName: entry.englishName, explorer: entry.explorer, explorerUrl: entry.explorerUrl } } } : {};
+      };
+      const local = ["upbit", "bithumb"].flatMap(board => (market?.boards?.[board] || []).map(row => ({ board, row: fields(row), info: infoFor(row.symbol, board) })));
+      const references = await Promise.all(["binance", "coinbase", ...Object.keys(ADDITIONAL_SPOT_SOURCES)].map(async board => {
+        const response = await this.handleComparisonQuotesRequest(new URL(`https://board-store/api/price-difference-quotes?exchange=${board}`));
+        const payload = await response.json();
+        const rows = Object.hasOwn(ADDITIONAL_SPOT_SOURCES, board)
+          ? Object.entries(payload.assets || {}).map(([symbol, asset]) => ({ symbol, englishName: asset[0], paprikaId: asset[1],
+            comparisonIdentity: { officialName: board === "gateio" && asset[1] === `gate-${symbol.toLowerCase()}`, contracts: asset[2] || [] } }))
+          : (market?.boards?.[board] || []).map(fields);
+        return { board, rows, pricedSymbols: Object.keys(payload.prices || {}), error: payload.error || payload.identityError || "" };
+      }));
+      return jsonResponse({ implementation: 5, exchange, elapsedMs: Date.now() - started, local, references }, 200, this.env);
+    }
     if (exchange === "fx") {
       const response = await this.handleComparisonFxRequest();
-      return jsonResponse({ implementation: 4, exchange, status: response.status, elapsedMs: Date.now() - started,
+      return jsonResponse({ implementation: 5, exchange, status: response.status, elapsedMs: Date.now() - started,
         ...(await response.json()) }, 200, this.env);
     }
     if (exchange === "bootstrap") {
       const value = await this.readComparisonBootstrap();
-      return jsonResponse({ implementation: 4, exchange, elapsedMs: Date.now() - started, fx: value.fx, direct: value.direct,
+      return jsonResponse({ implementation: 5, exchange, elapsedMs: Date.now() - started, fx: value.fx, direct: value.direct,
         counts: Object.fromEntries(Object.entries(value.quotes).map(([board, quote]) => [board, Object.keys(quote.prices || {}).length])) }, 200, this.env);
     }
     const response = await this.handleComparisonQuotesRequest(new URL(`https://board-store/api/price-difference-quotes?exchange=${encodeURIComponent(exchange)}`));
     const payload = await response.json();
     const market = await this.readMarketData();
-    const symbols = ["ZBT", "FRAX", "KGEN", "MLK", "XDP"];
-    return jsonResponse({ implementation: 4, exchange, status: response.status, elapsedMs: Date.now() - started,
+    const symbols = ["SOON", "BEAM", "BEAMX", "FLUID", "PIEVERSE", "CC", "WAVES", "B3"];
+    return jsonResponse({ implementation: 5, exchange, status: response.status, elapsedMs: Date.now() - started,
       quoteCount: Object.keys(payload.prices || {}).length, identityCount: Object.keys(payload.assets || {}).length,
       error: payload.error || "", errorDetail: payload.errorDetail || "", identityError: payload.identityError || "",
       identityErrorDetail: payload.identityErrorDetail || "", observedAt: payload.observedAt || 0,

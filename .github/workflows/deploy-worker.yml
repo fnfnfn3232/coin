@@ -7,6 +7,7 @@ on:
       - main
     paths:
       - "server-auth/**"
+      - "comparison-identity.js"
       - ".github/workflows/deploy-worker.yml"
 
 jobs:
@@ -27,7 +28,7 @@ jobs:
           node-version: "22"
 
       - name: Verify board permissions and security
-        run: node --test server-auth/board-permissions.test.mjs server-auth/security-regression.test.mjs
+        run: node --test comparison-identity.test.cjs server-auth/board-permissions.test.mjs server-auth/security-regression.test.mjs
 
       - name: Write Worker config
         working-directory: server-auth

@@ -25,6 +25,14 @@ async function main() {
     bitget: { symbol: 'BITGETONLY', name: 'Bitget Only Asset', price: 30, label: 'Bitget' },
     okx: { symbol: 'OKXONLY', name: 'Okx Only Asset', price: 40, label: 'OKX' },
   };
+  const reported = [
+    { symbol: 'SOON', name: 'SOON', foreign: 'Soon' }, { symbol: 'BEAM', name: 'Beam', foreign: 'Beam', foreignSymbol: 'BEAMX' },
+    { symbol: 'FLUID', name: 'Fluid', foreign: 'Fluid' }, { symbol: 'PIEVERSE', name: 'Pieverse', foreign: 'Pieverse' },
+    { symbol: 'CC', name: 'Canton', foreign: 'Canton Network' }, { symbol: 'WAVES', name: 'Waves', foreign: 'Waves' },
+    { symbol: 'B3', name: 'B3', foreign: 'B3 Base' },
+  ];
+  for (const item of reported) snapshot.boards.upbit.push({ ...row(item.symbol, item.name, 'KRW', 1350), koreanName: '\uad6d\ub0b4\ucf54\uc778',
+    marketIdentityVerified: false, marketCapUsd: null, marketCapKrw: null, sortCapUsd: null });
   for (const fixture of Object.values(fallbackFixtures)) snapshot.boards.upbit.push(row(fixture.symbol, fixture.name, 'KRW', fixture.price * 1350));
   const browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH
     || (process.platform === 'win32' ? 'C:/Program Files/Google/Chrome/Application/chrome.exe' : undefined) });
@@ -100,6 +108,11 @@ async function main() {
       if (fixture && bulkEnabled) {
         result.prices.CLASH = 999;
         result.assets.CLASH = ['Unrelated Project', 'clash-unrelated'];
+        if (exchange === 'gateio') for (const item of reported) {
+          const symbol = item.foreignSymbol || item.symbol;
+          result.prices[symbol] = 1;
+          result.assets[symbol] = [item.foreign, `gate-${symbol.toLowerCase()}`];
+        }
       }
     } else if (url.pathname === '/api/board/posts') result = { posts: [] };
     else if (url.pathname === '/api/board/categories') result = { categories: [{ value: 'free', label: 'Free' }] };
@@ -127,9 +140,9 @@ async function main() {
   try {
     await page.goto('https://fnfnfn3232.github.io/coin/', { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => siteAuthConfirmed && !isSiteLocked());
-    await page.waitForFunction(() => priceDifferenceQuoteRequests.size > 0 && !!priceDifferenceFx);
-    assert.ok(bulkCalls.includes('binance'));
-    console.log('PASS: authenticated home snapshot prewarms bulk quotes and FX before opening market');
+    assert.equal(fxCalls, 0);
+    assert.equal(bulkCalls.length, 0);
+    console.log('PASS: foreign default view does not request Korean premiums or FX');
     await page.locator('#marketToggleBtn').click();
     await page.locator('#baseBoardSelect').selectOption('upbit');
     await page.locator('#priceDifferenceBoard').selectOption('binance');
@@ -199,7 +212,13 @@ async function main() {
     await page.locator('#baseBoardSelect').selectOption('binance');
     await page.waitForTimeout(50);
     await prices();
-    await page.waitForFunction(() => document.querySelector('tr[data-live-product="BTCUSDT"] [data-price-difference]').textContent.includes('%'));
+    assert.equal(await page.locator('[data-price-difference]').count(), 0);
+    assert.equal(await page.locator('#thPriceDifference').isVisible(), false);
+    assert.equal(await page.locator('.price-difference-tools').isVisible(), false);
+    const foreignCalls = { quotes: bulkCalls.length, fx: fxCalls };
+    await page.evaluate(() => { requestPriceDifferenceQuotes(); requestPriceDifferenceFx(); });
+    assert.deepEqual({ quotes: bulkCalls.length, fx: fxCalls }, foreignCalls);
+    assert.equal(await page.evaluate(() => priceDifferenceSockets.size), 0);
     assert.equal(await page.locator('#priceDifferenceBoard').inputValue(), 'coinbase');
     const openBefore = await page.evaluate(() => testSockets.filter(socket => socket.readyState === 1).length);
     await page.evaluate(() => { render(); render(); render(); });
@@ -218,6 +237,11 @@ async function main() {
     assert.ok(!bulkCalls.slice(-3).includes('bithumb'));
     assert.equal(await page.evaluate(() => [...priceDifferenceSockets.values()].some(connection => connection.target.entries.has('NEOUSDT'))), true);
     console.log('PASS: REST bootstrap displays quiet coins without any ticker event and NEO identity is preserved');
+    for (const item of reported) {
+      await page.waitForFunction(symbol => document.querySelector(`tr[data-live-product="KRW-${symbol}"] [data-price-difference]`)?.textContent.includes('%'), item.symbol);
+      assert.equal(await page.evaluate(symbol => data.boards.upbit.find(row => row.symbol === symbol).marketCapUsd, item.symbol), null);
+    }
+    console.log('PASS: reported SOON/BEAM/FLUID/PIEVERSE/CC/WAVES/B3 render premiums while unknown caps remain unknown');
 
     for (const [board, fixture] of Object.entries(fallbackFixtures)) {
       await page.waitForFunction(symbol => document.querySelector(`tr[data-live-product="KRW-${symbol}"] [data-price-difference]`)?.textContent.includes('%'), fixture.symbol);
@@ -300,9 +324,10 @@ async function main() {
           ['XDP', 'Doppler Finance', 'Doppler Finance', 'okx', 'okx-doppler-finance'],
         ];
         for (const [symbol, local, foreign, exchange, id] of pairs) {
-          priceDifferenceAdditionalRows[exchange].push({ symbol, pair: `${symbol}/USDT`, englishName: foreign, paprikaId: id, identityAt: Date.now(), priceUsd: 1, comparisonPriceAt: Date.now() });
+          priceDifferenceAdditionalRows[exchange].push({ symbol, pair: `${symbol}/USDT`, englishName: foreign, paprikaId: id,
+            comparisonIdentity: { officialName: true }, identityAt: Date.now(), priceUsd: 1, comparisonPriceAt: Date.now() });
           resetComparisonIdentityCache();
-          const row = { symbol, pair: `${symbol}/KRW`, englishName: local, priceKrw: 1350, comparisonPriceAt: Date.now() };
+          const row = { symbol, pair: `${symbol}/KRW`, englishName: local, koreanName: '\uad6d\ub0b4\ucf54\uc778', priceKrw: 1350, comparisonPriceAt: Date.now() };
           results[symbol] = Number.isFinite(getPriceDifference(row).percent);
         }
         priceDifferenceAdditionalRows.gateio = [{ symbol: 'FRAX', englishName: 'Frax', paprikaId: 'frax-frax', identityAt: Date.now() }];

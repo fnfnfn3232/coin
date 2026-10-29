@@ -202,7 +202,7 @@ test("four additional exchanges cache quote data separately from shared asset ca
       }
       const cached = await storage.get(`price-difference-quotes-v1:${board}`);
       assert.equal(cached.assets, undefined);
-      assert.ok((await storage.get(`price-difference-catalog-v3:${board}`)).assets.XCN);
+      assert.ok((await storage.get(`price-difference-catalog-v4:${board}`)).assets.XCN);
     }
     assert.equal(calls.length, 8);
   } finally { globalThis.fetch = originalFetch; }
@@ -218,7 +218,7 @@ test("catalog failures preserve bounded identity age but never relabel or renew 
   try {
     for (const hours of [8, 25]) {
       const at = Date.now() - hours * 3600000;
-      await storage.put("price-difference-catalog-v3:gateio", { assets: { XCN: ["Onyxcoin", "xcn-chain"] }, fetchedAt: at, checkedAt: 0 });
+      await storage.put("price-difference-catalog-v4:gateio", { assets: { XCN: ["Onyxcoin", "xcn-chain"] }, fetchedAt: at, checkedAt: 0 });
       const value = await (await request("/api/price-difference-quotes?exchange=gateio")).json();
       assert.equal(value.prices.XCN, 0.004);
       assert.equal(value.catalogAt, at);
@@ -353,7 +353,7 @@ test("authenticated snapshots include only recent cached comparison data without
   store.readMarketData = async () => ({ boards: { upbit: [] }, generatedAt: 123, refreshHealth: {} });
   await storage.put("price-difference-fx-v2", normalizeComparisonFx(fxSource()));
   await storage.put("price-difference-quotes-v1:gateio", { exchange: "gateio", prices: { MLK: 0.04 }, observedAt: Date.now() });
-  await storage.put("price-difference-catalog-v3:gateio", { assets: { MLK: ["MiL.k", "gate-mlk"] }, fetchedAt: Date.now() });
+  await storage.put("price-difference-catalog-v4:gateio", { assets: { MLK: ["MiL.k", "gate-mlk"] }, fetchedAt: Date.now() });
   await storage.put("price-difference-quotes-v1:upbit", { prices: { MLK: 1 }, observedAt: Date.now() - 180000 });
   await storage.put("price-difference-quotes-v1:binance", { prices: {}, error: "blocked", checkedAt: Date.now(), errorDetail: "private-error-detail" });
   const originalFetch = globalThis.fetch;
