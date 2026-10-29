@@ -43,7 +43,7 @@ exchange connections.
 
 - Exact comparable symbols AND compatible explicit asset names or matching
   CoinGecko IDs are required. Unknown/conflicting identity and ambiguous matches
-  display `-`, not a guessed percentage. Missing listings/currencies also use `-`.
+  display an unavailable state, not a guessed percentage.
 - Prices must have a known receipt timestamp within two minutes. A five-second
   local expiry check hides stalled quotes without another API request. Tooltips
   include the reference, FX provenance, price receipt time and fee exclusion.
@@ -67,3 +67,33 @@ exchange connections.
 - Read-only live checks received Binance BTCUSDT, Coinbase BTC-USD / USDT-USD,
   Upbit KRW-BTC and Bithumb BTC_KRW messages. This does not guarantee continuous availability from every user's
   network or access to a tradable cross-exchange profit.
+
+## Initial-Display Follow-Up (2026-10-29)
+
+The first version waited for trade-stream events and did not hydrate comparison
+prices/FX on reload. Quiet markets could therefore remain blank even though a
+valid last trade existed. Filtering every name equal to its ticker also excluded
+NEO when the explicit shared Korean name was available.
+
+- Seed prices in parallel from authenticated bulk quote endpoints, independent
+  by exchange. Upbit uses ticker/all KRW, Bithumb ALL_KRW, and Binance/Coinbase
+  reuse the existing public quote parsers. This path does not wait for unrelated
+  exchanges, caps, news or the next trade event.
+- Server caches coalesce concurrent requests, reuse 25-second results and serve
+  still-recent results while refreshing. Failure backoff preserves the original
+  quote observation time; failure never makes an old price look new.
+- A session-scoped, owner-bound cache restores valid recent prices and daily FX
+  before rendering. WebSocket messages update it with throttled writes; pagehide
+  flushes it. Logout clears it and generation checks reject late responses.
+- Quiet/stalled visible markets can use throttled bulk refreshes after one minute
+  without price observations. No per-coin HTTP requests or periodic server job.
+- Preserve explicit Korean asset names for identity checks, fixing NEO without
+  accepting bare identical tickers. Conflicting names still cannot be compared.
+- Missing states are now distinguished: comparison unavailable, asset identity
+  unverified, loading, delayed, missing quote and FX unavailable. Tooltips retain
+  detail instead of representing every condition with the same dash.
+- Browser regressions test initial display without any WebSocket price event,
+  NEO, immediate reload restoration without another bootstrap request, expiry and
+  logout. Server tests cover cache coalescing and a blocked source not delaying
+  another source. A first-ever load still requires network responses; no fixed
+  zero-latency guarantee or fabricated prices are introduced.

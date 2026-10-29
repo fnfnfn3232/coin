@@ -12,8 +12,10 @@ async function main() {
     pair: `${symbol}/${quote}`, nativeCurrency: quote === 'KRW' ? 'KRW' : 'USD', priceUsd: quote === 'KRW' ? price / 1400 : price,
     priceKrw: quote === 'KRW' ? price : price * 1400, sortCapUsd: cap, marketCapUsd: cap, circulatingSupply: 10, totalSupply: 20 });
   const snapshot = { generatedAt: Math.floor(Date.now() / 1000), fxUsdKrw: 1400, boards: {
-    binance: [row('BTC', 'Bitcoin', 'USDT', 100), row('ETH', 'Ethereum', 'USDT', 10, 500), row('AI', 'Sleepless AI', 'USDT', 1)],
-    upbit: [row('BTC', 'Bitcoin', 'KRW', 135000), row('ETH', 'Ethereum', 'KRW', 12800, 500), row('AI', 'Gensyn', 'KRW', 100), row('LOCAL', 'Local Only', 'KRW', 100)],
+    binance: [row('BTC', 'Bitcoin', 'USDT', 100), row('ETH', 'Ethereum', 'USDT', 10, 500), row('AI', 'Sleepless AI', 'USDT', 1),
+      { ...row('NEO', 'NEO', 'USDT', 10), nameKeys: ['neo', '네오'] }, { ...row('CLASH', 'Other Asset', 'USDT', 1), nameKeys: ['겹치는이름'] }],
+    upbit: [row('BTC', 'Bitcoin', 'KRW', 135000), row('ETH', 'Ethereum', 'KRW', 12800, 500), row('AI', 'Gensyn', 'KRW', 100), row('LOCAL', 'Local Only', 'KRW', 100),
+      { ...row('NEO', 'NEO', 'KRW', 13500), nameKeys: ['neo', '네오'] }, { ...row('CLASH', 'Different Asset', 'KRW', 1300), nameKeys: ['겹치는이름'] }],
     bithumb: [row('BTC', 'Bitcoin', 'KRW', 136000)],
     coinbase: [row('BTC', 'Bitcoin', 'USD', 100), row('ETH', 'Ethereum', 'USD', 10, 500), row('USDT', 'Tether', 'USD', 1.01)], robinhood: [],
   }, stats: {}, futures: {}, notes: {}, coinInfo: {}, news: { items: [] } };
@@ -24,6 +26,8 @@ async function main() {
   page.setDefaultTimeout(10000);
   const errors = [];
   let fxCalls = 0;
+  let bulkEnabled = false;
+  const bulkCalls = [];
   page.on('pageerror', error => { errors.push(error.message); console.error('Browser error:', error.message); });
   await context.addInitScript(() => {
     window.testSockets = [];
@@ -54,6 +58,10 @@ async function main() {
     else if (url.pathname === '/api/price-difference-fx') {
       fxCalls++;
       result = { rate: 1300, date: new Date().toISOString().slice(0, 10), source: 'Frankfurter', frequency: 'daily', checkedAt: Date.now(), stale: false };
+    } else if (url.pathname === '/api/price-difference-quotes') {
+      const exchange = url.searchParams.get('exchange');
+      bulkCalls.push(exchange);
+      result = { exchange, prices: bulkEnabled ? Object.fromEntries((snapshot.boards[exchange] || []).map(row => [row.symbol, ['upbit', 'bithumb'].includes(exchange) ? row.priceKrw : row.priceUsd])) : {}, observedAt: Date.now() };
     } else if (url.pathname === '/api/board/posts') result = { posts: [] };
     else if (url.pathname === '/api/board/categories') result = { categories: [{ value: 'free', label: 'Free' }] };
     else if (url.pathname === '/api/news') result = { items: [], total: 0, hasMore: false };
@@ -83,15 +91,17 @@ async function main() {
     await page.locator('#baseBoardSelect').selectOption('upbit');
     await page.locator('#priceDifferenceBoard').selectOption('binance');
     await page.waitForFunction(() => priceDifferenceFx?.rate === 1300 && testSockets.filter(socket => socket.readyState === 1).length >= 3);
-    assert.equal(await cell('BTC').innerText(), '-');
+    assert.match(await cell('BTC').innerText(), /확인 중|연결 지연/);
     await prices();
     await page.waitForFunction(() => document.querySelector('tr[data-live-product="KRW-BTC"] [data-price-difference]').textContent.includes('%'));
     const expected = (135000 / (100 * 1.01 * 1300) - 1) * 100;
     assert.ok((await cell('BTC').innerText()).includes(`+${expected.toFixed(3)}%`));
     assert.match(await cell('BTC').innerText(), /3,700원/);
     assert.match(await cell('BTC').locator('[title]').getAttribute('title'), /Frankfurter.*1300.*Coinbase USDT\/USD 1.01/);
-    assert.equal(await cell('AI').innerText(), '-');
-    assert.equal(await cell('LOCAL').innerText(), '-');
+    assert.equal(await cell('AI').innerText(), '비교 없음');
+    assert.equal(await cell('CLASH').innerText(), '자산 미확인');
+    assert.equal(await cell('LOCAL').innerText(), '비교 없음');
+    assert.ok(await page.evaluate(() => !!priceDifferenceReference(data.boards.upbit.find(row => row.symbol === 'NEO'))));
     assert.match(await cell('ETH').innerText(), /^-/);
     assert.equal(fxCalls, 1);
     console.log('PASS: independent daily FX, USDT depeg conversion, positive/negative deltas, missing listings and ticker collisions');
@@ -137,7 +147,7 @@ async function main() {
       priceDifferenceFx.stale = false;
       return { stale, restored, badFx };
     });
-    assert.equal(freshState.stale, '-');
+    assert.match(freshState.stale, /갱신 지연|연결 지연/);
     assert.ok(Number.isFinite(freshState.restored));
     assert.equal(freshState.badFx, undefined);
     console.log('PASS: stale prices and failed FX never display a misleading live percentage');
@@ -151,12 +161,65 @@ async function main() {
     const openBefore = await page.evaluate(() => testSockets.filter(socket => socket.readyState === 1).length);
     await page.evaluate(() => { render(); render(); render(); });
     assert.equal(await page.evaluate(() => testSockets.filter(socket => socket.readyState === 1).length), openBefore);
+
+    bulkEnabled = true;
+    await page.evaluate(() => {
+      clearPriceDifferenceCache();
+      for (const rows of Object.values(data.boards)) for (const row of rows) { row.livePriceUpdatedAt = 0; row.comparisonPriceAt = 0; }
+      priceDifferenceUsdt.livePriceUpdatedAt = 0;
+      priceDifferenceUsdt.comparisonPriceAt = 0;
+      state.board = 'upbit'; state.priceDifferenceBoard = 'binance'; render();
+    });
+    await page.waitForFunction(() => document.querySelector('tr[data-live-product="KRW-NEO"] [data-price-difference]')?.textContent.includes('%'));
+    assert.ok((await cell('BTC').innerText()).includes(expected.toFixed(3)));
+    assert.ok(!bulkCalls.slice(-3).includes('bithumb'));
+    assert.equal(await page.evaluate(() => [...priceDifferenceSockets.values()].some(connection => connection.target.entries.has('NEOUSDT'))), true);
+    console.log('PASS: REST bootstrap displays quiet coins without any ticker event and NEO identity is preserved');
+
+    await page.evaluate(() => savePriceDifferenceCache());
+    const requestsBeforeReload = bulkCalls.length;
+    const fxBeforeReload = fxCalls;
+    bulkEnabled = false;
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => siteAuthConfirmed && !isSiteLocked());
+    await page.locator('#baseBoardSelect').selectOption('upbit');
+    await page.locator('#priceDifferenceBoard').selectOption('binance');
+    await page.waitForFunction(() => document.querySelector('tr[data-live-product="KRW-NEO"] [data-price-difference]')?.textContent.includes('%'));
+    assert.equal(bulkCalls.length, requestsBeforeReload);
+    assert.equal(fxCalls, fxBeforeReload);
+    console.log('PASS: reload restores fresh quotes and FX immediately without another bootstrap request');
+
+    const rejectedCaches = await page.evaluate(() => {
+      savePriceDifferenceCache();
+      const good = sessionStorage.getItem(PRICE_DIFFERENCE_CACHE_KEY);
+      const other = JSON.parse(good);
+      other.owner = 'member:different-account';
+      clearPriceDifferenceCache();
+      sessionStorage.setItem(PRICE_DIFFERENCE_CACHE_KEY, JSON.stringify(other));
+      restorePriceDifferenceCache();
+      const wrongOwner = Object.keys(priceDifferenceQuoteCache).length === 0 && !priceDifferenceFx;
+      const expired = JSON.parse(good);
+      expired.fx.checkedAt = Date.now() - 3600001;
+      for (const quotes of Object.values(expired.quotes)) for (const quote of Object.values(quotes)) quote.at = Date.now() - 130000;
+      clearPriceDifferenceCache();
+      sessionStorage.setItem(PRICE_DIFFERENCE_CACHE_KEY, JSON.stringify(expired));
+      restorePriceDifferenceCache();
+      const stale = Object.keys(priceDifferenceQuoteCache).length === 0 && !priceDifferenceFx;
+      clearPriceDifferenceCache();
+      sessionStorage.setItem(PRICE_DIFFERENCE_CACHE_KEY, good);
+      restorePriceDifferenceCache();
+      return { wrongOwner, stale };
+    });
+    assert.deepEqual(rejectedCaches, { wrongOwner: true, stale: true });
+    console.log('PASS: cache restoration rejects another account and expired quote/FX records');
+
     await page.evaluate(() => window.dispatchEvent(new Event('offline')));
     assert.equal(await page.evaluate(() => testSockets.filter(socket => socket.readyState === 1).length), 0);
     await page.evaluate(() => syncLivePriceStream());
     await page.waitForTimeout(50);
     await page.evaluate(() => clearSiteLoginState());
     assert.equal(await page.evaluate(() => testSockets.filter(socket => socket.readyState === 1).length), 0);
+    assert.equal(await page.evaluate(() => sessionStorage.getItem(PRICE_DIFFERENCE_CACHE_KEY)), null);
     assert.deepEqual(errors, []);
     console.log('PASS: foreign-base conversion, no duplicate streams on render, offline/logout teardown');
   } finally { await browser.close(); }

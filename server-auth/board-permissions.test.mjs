@@ -131,6 +131,77 @@ test("comparison FX requires authentication, shares refreshes and preserves dail
   } finally { globalThis.fetch = originalFetch; }
 });
 
+test("comparison quote bootstrap is authenticated, source-scoped, cached and coalesced", async () => {
+  const { request } = await fixture();
+  assert.equal((await request("/api/price-difference-quotes?exchange=upbit", "GET", undefined, "")).status, 401);
+  assert.equal((await request("/api/price-difference-quotes?exchange=https://example.com")).status, 400);
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+    if (String(url).includes('api.upbit.com')) return Response.json([{ market: "KRW-NEO", trade_price: 13500 }, { market: "BTC-NEO", trade_price: 0.1 }]);
+    if (String(url).includes('api.bithumb.com')) return Response.json({ status: "0000", data: { NEO: { closing_price: "13600" }, date: "1234" } });
+    throw new Error("unexpected_quote_source");
+  };
+  try {
+    for (const board of ["upbit", "bithumb"]) {
+      const responses = await Promise.all([request(`/api/price-difference-quotes?exchange=${board}`), request(`/api/price-difference-quotes?exchange=${board}`)]);
+      for (const response of responses) {
+        assert.equal(response.status, 200);
+        const value = await response.json();
+        assert.deepEqual(value.prices, { NEO: board === "upbit" ? 13500 : 13600 });
+        assert.ok(value.observedAt > 0);
+      }
+      assert.equal((await request(`/api/price-difference-quotes?exchange=${board}`)).status, 200);
+    }
+    assert.equal(calls.length, 2);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("a slow comparison source does not block another and failures preserve quote age", async () => {
+  const { request, storage, store } = await fixture();
+  const originalFetch = globalThis.fetch;
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('binance')) { await gate; throw new Error("blocked_source"); }
+    return Response.json([{ market: "KRW-BTC", trade_price: 135000 }]);
+  };
+  const oldAt = Date.now() - 40000;
+  await storage.put("price-difference-quotes-v1:binance", { exchange: "binance", prices: { BTC: 100 }, observedAt: oldAt, checkedAt: 0 });
+  const background = [];
+  store.state.waitUntil = task => background.push(task);
+  try {
+    const cached = await request("/api/price-difference-quotes?exchange=binance");
+    assert.equal((await cached.json()).observedAt, oldAt);
+    assert.equal((await request("/api/price-difference-quotes?exchange=upbit")).status, 200);
+  } finally {
+    release();
+    await Promise.all(background);
+    globalThis.fetch = originalFetch;
+  }
+  const preserved = await storage.get("price-difference-quotes-v1:binance");
+  assert.equal(preserved.observedAt, oldAt);
+  assert.equal(preserved.error, "quote_refresh_failed");
+});
+
+test("empty bulk quote feeds fail closed and use the shared retry cooldown", async () => {
+  const { request } = await fixture();
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; return Response.json([]); };
+  try {
+    for (let i = 0; i < 2; i += 1) {
+      const response = await request("/api/price-difference-quotes?exchange=binance");
+      assert.equal(response.status, 503);
+      const payload = await response.json();
+      assert.deepEqual(payload.prices, {});
+      assert.equal(payload.observedAt, 0);
+    }
+    assert.equal(calls, 1);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("invalid or failed comparison FX is never replaced with domestic USDT or fabricated zero", async () => {
   const { request, storage } = await fixture();
   const originalFetch = globalThis.fetch;
