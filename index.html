@@ -16797,7 +16797,7 @@
         const fallbackRows = visibleRows.filter(row => {
           const primary = priceDifferenceCandidates(row).find(candidate => candidate.comparisonExchange === state.priceDifferenceBoard);
           return !primary || primary.comparisonQuoteMissingAt > comparisonPriceTimestamp(primary)
-            || (comparisonPriceTimestamp(primary) && !freshComparisonPrice(primary, Date.now()));
+            || !freshComparisonPrice(primary, Date.now());
         });
         if (fallbackRows.length) for (const board of ["binance", "coinbase", ...PRICE_DIFFERENCE_ADDITIONAL_BOARDS]) {
           if (board !== exchange) boards.add(board);
