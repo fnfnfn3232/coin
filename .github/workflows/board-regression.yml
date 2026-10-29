@@ -7,12 +7,14 @@ on:
     paths:
       - "index.html"
       - "test_board_*.cjs"
+      - "test_price_difference.cjs"
       - "server-auth/**"
       - ".github/workflows/board-regression.yml"
   pull_request:
     paths:
       - "index.html"
       - "test_board_*.cjs"
+      - "test_price_difference.cjs"
       - "server-auth/**"
       - ".github/workflows/board-regression.yml"
 
@@ -44,3 +46,4 @@ jobs:
           node test_board_workflows.cjs
           node test_board_links.cjs
           node test_board_upload.cjs
+          node test_price_difference.cjs

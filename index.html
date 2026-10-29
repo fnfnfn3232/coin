@@ -4130,6 +4130,13 @@
     #marketTable .supply-main { font-size: 14px; }
 
     #marketTable .rating-cell { width: 48px; min-width: 48px; white-space: nowrap; }
+    #marketTable .price-difference-cell { min-width: 96px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .price-difference-value { font-size: 15px; font-weight: 700; }
+    .price-difference-value.positive { color: #087b67; }
+    .price-difference-value.negative { color: #bd3b46; }
+    .price-difference-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    .price-difference-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin-top: 12px; font-size: 13px; color: var(--muted); }
+    .price-difference-tools select { width: auto; max-width: 100%; padding: 7px 26px 7px 10px; font-size: 13px; }
     .coin-rating { color: var(--accent); font-size: 15px; font-weight: 700; letter-spacing: 0; text-decoration: none; }
     a.coin-rating:hover { text-decoration: underline; text-underline-offset: 3px; }
     .coin-rating.grade-b { color: #087b67; }
@@ -4140,10 +4147,12 @@
     @media (min-width: 821px) and (hover: hover) {
       #marketTable th,
       #marketTable td {
-        padding-right: 12px;
-        padding-left: 12px;
+        padding-right: 8px;
+        padding-left: 8px;
       }
       #marketTable td:nth-child(2) { min-width: 170px; }
+      #marketTable .chip { padding-right: 8px; padding-left: 8px; }
+      #marketTable .supply-main { font-size: 13px; }
     }
 
     .source {
@@ -5523,6 +5532,9 @@
         }
 
         #marketTable .rating-cell { width: auto; min-width: 0; }
+        #marketTable .price-difference-cell { min-width: 0; }
+        #marketTable .price-difference-value,
+        #marketTable .price-difference-sub { grid-column: 2; }
         #marketTable .coin-rating { grid-column: 2; width: fit-content; }
 
         #marketTable .price-main,
@@ -7078,6 +7090,15 @@
             <button class="market-source-toggle" id="marketSourceToggleBtn" type="button" aria-pressed="false">시총 출처 보기</button>
           </div>
         </div>
+        <div class="price-difference-tools">
+          <label for="priceDifferenceBoard">시세차이 기준</label>
+          <select id="priceDifferenceBoard">
+            <option value="binance">바이낸스 USDT</option>
+            <option value="coinbase">코인베이스 USD</option>
+          </select>
+          <span id="priceDifferenceFxStatus" aria-live="polite">원/달러 환율 확인 중</span>
+          <a href="https://frankfurter.dev/" target="_blank" rel="noopener noreferrer">환율 출처</a>
+        </div>
       </section>
 
       <section class="panel table-wrap market-section">
@@ -7088,6 +7109,7 @@
             <th id="thCoin"></th>
             <th id="thSymbol"></th>
             <th id="thPrice"></th>
+            <th id="thPriceDifference">시세차이</th>
             <th id="thCap"></th>
             <th class="rating-cell" title="APYWA" id="thRating">등급</th>
             <th id="thFdv"></th>
@@ -7625,6 +7647,7 @@
         query: "",
         sortKey: "cap",
         sortDirection: "desc",
+        priceDifferenceBoard: "binance",
         compareBoard: "",
         compareBoard2: "",
         compareBoard3: "",
@@ -7782,6 +7805,9 @@
       const refreshHistoryTools = document.getElementById("refreshHistoryTools");
       const refreshHistoryFooter = document.getElementById("refreshHistoryFooter");
       const thPrice = document.getElementById("thPrice");
+      const thPriceDifference = document.getElementById("thPriceDifference");
+      const priceDifferenceBoard = document.getElementById("priceDifferenceBoard");
+      const priceDifferenceFxStatus = document.getElementById("priceDifferenceFxStatus");
       const thCap = document.getElementById("thCap");
       const thRating = document.getElementById("thRating");
       const thFdv = document.getElementById("thFdv");
@@ -13692,6 +13718,8 @@
       }
 
       function clearSiteLoginState() {
+        closeLivePriceSocket();
+        closePriceDifferenceStreams();
         closeRefreshHistory(false);
         siteAuthConfirmed = false;
         siteSessionRole = "";
@@ -14451,6 +14479,12 @@
       document.getElementById("thSymbol").textContent = TEXT.thSymbol;
       thFdv.textContent = TEXT.thFdv;
       function renderCapHeader() {
+        thPriceDifference.classList.add("sortable-th");
+        thPriceDifference.innerHTML = `<span class="sort-label">시세차이${state.sortKey === "difference" ? (state.sortDirection === "asc" ? " ↑" : " ↓") : ""}</span>`;
+        thPriceDifference.title = "기준 거래소 대비 가격 차이율 · 클릭하여 정렬";
+        thPriceDifference.tabIndex = 0;
+        thPriceDifference.setAttribute("aria-sort", state.sortKey === "difference"
+          ? (state.sortDirection === "asc" ? "ascending" : "descending") : "none");
         thPrice.classList.add("sortable-th");
         thPrice.innerHTML = `<span class="sort-label">${TEXT.thPrice}${state.sortKey === "price" ? (state.sortDirection === "asc" ? " ↑" : " ↓") : ""}</span>`;
         thPrice.title =
@@ -16385,6 +16419,7 @@
           if (fx !== null) row.marketCapUsd = marketCapKrw / fx;
         }
         if (updates.priceSource) row.priceSource = updates.priceSource;
+        if (priceUsd !== null || priceKrw !== null) row.comparisonPriceAt = Number(updates.observedAt) || Date.now();
         if (updates.capSource) row.capSource = updates.capSource;
         if (updates.capSourceDetail) row.capSourceDetail = updates.capSourceDetail;
         recomputeDerivedFields(row, { preferComputedCap: Boolean(options.preferComputedCap) });
@@ -16441,6 +16476,7 @@
           changed += applyLiveServerPrice(row, {
             priceUsd,
             priceSource: "worker_live_binance_ticker",
+            observedAt: Number(payload.fetchedAt) * 1000,
           }, { preferComputedCap: true });
         }
         if (binanceRows.length) sortBoardRowsByCap(binanceRows);
@@ -16454,6 +16490,7 @@
           changed += applyLiveServerPrice(row, {
             priceKrw,
             priceSource: "worker_live_upbit_ticker",
+            observedAt: Number(payload.fetchedAt) * 1000,
           }, { preferComputedCap: true });
         }
         if (upbitRows.length) sortBoardRowsByCap(upbitRows);
@@ -16470,6 +16507,7 @@
             priceKrw,
             marketCapKrw,
             priceSource: priceKrw !== null ? "worker_live_bithumb_ticker" : row.priceSource,
+            observedAt: Number(payload.fetchedAt) * 1000,
             capSource: marketCapKrw !== null ? "worker_live_bithumb_coinmarketcap" : row.capSource,
             capSourceDetail: marketCapKrw !== null ? "bithumb_coinmarketcap_live" : row.capSourceDetail,
           }, { preferComputedCap: false });
@@ -16485,6 +16523,7 @@
           changed += applyLiveServerPrice(row, {
             priceUsd,
             priceSource: "worker_live_coinbase_products",
+            observedAt: Number(payload.fetchedAt) * 1000,
           }, { preferComputedCap: true });
         }
         if (coinbaseRows.length) sortBoardRowsByCap(coinbaseRows);
@@ -16570,6 +16609,187 @@
       let livePriceReconnectAttempts = 0;
       let livePriceFlushFrame = 0;
       const livePricePendingEntries = new Set();
+
+      const PRICE_DIFFERENCE_MAX_AGE_MS = 120000;
+      let priceDifferenceFx = null;
+      let priceDifferenceFxPromise = null;
+      let priceDifferenceFxRetryAt = 0;
+      let priceDifferenceReferences = new WeakMap();
+      const priceDifferenceSockets = new Map();
+      const priceDifferenceUsdt = { symbol: "USDT", pair: "USDT/USD", englishName: "Tether" };
+
+      function priceDifferenceReference(row) {
+        if (priceDifferenceReferences.has(row)) return priceDifferenceReferences.get(row);
+        const symbol = getComparableSymbol(row);
+        const names = (item) => [item.englishName, ...(item.nameKeys || [])]
+          .map((name) => String(name || "").toLowerCase().replace(/[^a-z0-9]/g, ""))
+          .filter((name) => name && name !== String(item.symbol || "").toLowerCase());
+        const ownNames = names(row);
+        const candidates = (data.boards?.[state.priceDifferenceBoard] || []).filter((candidate) => {
+          if (getComparableSymbol(candidate) !== symbol || row.marketIdentityVerified === false || candidate.marketIdentityVerified === false) return false;
+          if (row.coingeckoId && candidate.coingeckoId) return row.coingeckoId === candidate.coingeckoId;
+          return ownNames.length && names(candidate).some((name) => ownNames.includes(name));
+        });
+        const result = candidates.length === 1 ? candidates[0] : null;
+        priceDifferenceReferences.set(row, result);
+        return result;
+      }
+
+      function comparisonPriceTimestamp(row) {
+        return Math.max(Number(row?.livePriceUpdatedAt) || 0, Number(row?.comparisonPriceAt) || 0, Number(row?.priceUpdatedAt) * 1000 || 0);
+      }
+
+      function freshComparisonPrice(row, now) {
+        const at = comparisonPriceTimestamp(row);
+        return Number.isFinite(at) && at <= now + 5000 && now - at <= PRICE_DIFFERENCE_MAX_AGE_MS && !row?.priceStale;
+      }
+
+      function getPriceDifference(row, now = Date.now()) {
+        const reference = priceDifferenceReference(row);
+        if (!reference) return { reason: "기준 거래소 미상장 또는 동일 자산 확인 불가" };
+        if (!freshComparisonPrice(row, now) || !freshComparisonPrice(reference, now)) return { reason: "가격 수신 대기 또는 2분 이상 갱신 지연" };
+        const domestic = ["upbit", "bithumb", "triple"].includes(state.board);
+        const baseUsdt = state.board === "binance";
+        const referenceUsdt = state.priceDifferenceBoard === "binance";
+        if (!String(reference.pair || "").endsWith(referenceUsdt ? "/USDT" : "/USD")
+          || !String(row.pair || "").endsWith(domestic ? "/KRW" : baseUsdt ? "/USDT" : "/USD")) return { reason: "비교 통화 확인 불가" };
+        const usdtRow = freshComparisonPrice(priceDifferenceUsdt, now) ? priceDifferenceUsdt
+          : (data.boards?.coinbase || []).find((item) => item.symbol === "USDT" && item.pair === "USDT/USD");
+        const usdtUsd = toPositiveNumber(usdtRow?.priceUsd);
+        if ((baseUsdt || referenceUsdt) && (!usdtUsd || !freshComparisonPrice(usdtRow, now))) return { reason: "USDT/USD 가격 수신 대기 또는 갱신 지연" };
+        const fx = priceDifferenceFx;
+        const fxDate = Date.parse(`${fx?.date}T00:00:00Z`);
+        if (domestic && (!toPositiveNumber(fx?.rate) || fx?.stale || !Number.isFinite(fxDate) || now - fxDate > 7 * 86400000)) {
+          return { reason: "원/달러 기준 환율 확인 불가 또는 갱신 지연" };
+        }
+        const base = domestic ? toPositiveNumber(row.priceKrw) : toPositiveNumber(row.priceUsd);
+        const foreign = toPositiveNumber(reference.priceUsd);
+        if (!base || !foreign) return { reason: "가격 확인 불가" };
+        const basePrice = base * (baseUsdt ? usdtUsd : 1);
+        const referencePrice = foreign * (referenceUsdt ? usdtUsd : 1) * (domestic ? fx.rate : 1);
+        const difference = basePrice - referencePrice;
+        const percent = difference / referencePrice * 100;
+        if (!Number.isFinite(percent)) return { reason: "가격 확인 불가" };
+        return { percent, difference, currency: domestic ? "KRW" : "USD", referencePrice,
+          title: `${boardLabel(state.priceDifferenceBoard)} 대비 · ${domestic ? `Frankfurter 일일 USD/KRW ${fx.rate} · ${fx.date}` : "USD 기준"}${baseUsdt || referenceUsdt ? ` · Coinbase USDT/USD ${usdtUsd}` : ""} · 가격 수신 ${new Date(Math.min(comparisonPriceTimestamp(row), comparisonPriceTimestamp(reference))).toLocaleTimeString("ko-KR", { hour12: false })} · (가격/기준가 - 1) × 100 · 거래·전송 수수료 제외` };
+      }
+
+      function renderPriceDifference(row) {
+        const result = getPriceDifference(row);
+        if (result.percent === undefined) return `<span class="price-difference-value muted" title="${escapeAttr(result.reason)}">-</span>`;
+        const percent = Math.abs(result.percent) < 0.0005 ? 0 : result.percent;
+        const sign = percent > 0 ? "+" : "";
+        const delta = `${result.difference > 0 ? "+" : result.difference < 0 ? "-" : ""}${result.currency === "KRW" ? formatNumber(Math.abs(result.difference), 2) + "원" : "$" + formatNumber(Math.abs(result.difference), 6)}`;
+        return `<div class="price-difference-value ${percent > 0 ? "positive" : percent < 0 ? "negative" : ""}" title="${escapeAttr(result.title)}">${sign}${percent.toFixed(3)}%</div><div class="price-difference-sub">${escapeHtml(delta)}</div>`;
+      }
+
+      function refreshPriceDifferenceCells() {
+        if (state.viewMode !== "market" || isSiteLocked()) return;
+        const exchange = state.board === "triple" ? "bithumb" : state.board;
+        const models = new Map((data.boards?.[exchange] || []).map((row) => [liveSpotProductId(row, exchange), row]));
+        tableBody.querySelectorAll("tr[data-live-product]").forEach((element) => {
+          const row = models.get(element.dataset.liveProduct);
+          const cell = element.querySelector("[data-price-difference]");
+          if (row && cell) cell.innerHTML = renderPriceDifference(row);
+        });
+      }
+
+      async function requestPriceDifferenceFx() {
+        if (isLocalPreview() || !hasServerAuth() || !siteAuthConfirmed || isSiteLocked() || priceDifferenceFxPromise || Date.now() < priceDifferenceFxRetryAt) return;
+        priceDifferenceFxRetryAt = Date.now() + 300000;
+        priceDifferenceFxPromise = fetchServerAuth("/api/price-difference-fx", { method: "GET", timeoutMs: 10000 })
+          .then((payload) => {
+            if (!toPositiveNumber(payload?.rate) || !/^\d{4}-\d{2}-\d{2}$/.test(String(payload?.date || ""))) throw new Error("invalid_comparison_fx");
+            priceDifferenceFx = payload;
+            priceDifferenceFxRetryAt = Date.now() + (payload.stale ? 300000 : 3600000);
+            priceDifferenceFxStatus.textContent = payload.stale ? "원/달러 환율 갱신 지연"
+              : `원/달러 ${formatNumber(payload.rate, 2)}원 · 일일 기준 ${payload.date}`;
+            refreshPriceDifferenceCells();
+          })
+          .catch(() => { priceDifferenceFx = null; priceDifferenceFxStatus.textContent = "원/달러 환율 확인 불가"; refreshPriceDifferenceCells(); })
+          .finally(() => { priceDifferenceFxPromise = null; });
+        return priceDifferenceFxPromise;
+      }
+
+      function closePriceDifferenceStreams() {
+        priceDifferenceSockets.forEach((connection) => {
+          window.clearTimeout(connection.timer);
+          if (!connection.socket) return;
+          connection.socket.onclose = null;
+          connection.socket.onmessage = null;
+          try { connection.socket?.close(); } catch (_error) { /* Already closed. */ }
+        });
+        priceDifferenceSockets.clear();
+      }
+
+      function syncPriceDifferenceStreams() {
+        if (document.hidden || !navigator.onLine || isSiteLocked() || (!isLocalPreview() && !siteAuthConfirmed) || state.viewMode !== "market") { closePriceDifferenceStreams(); return; }
+        requestPriceDifferenceFx();
+        const exchange = state.board === "triple" ? "bithumb" : state.board;
+        const baseModels = new Map((data.boards?.[exchange] || []).map((row) => [liveSpotProductId(row, exchange), row]));
+        const visibleProducts = new Set(Array.from(tableBody.querySelectorAll("tr[data-live-product]"), (element) => element.dataset.liveProduct));
+        const targets = new Map();
+        const add = (board, row) => {
+          if (board === exchange && visibleProducts.has(liveSpotProductId(row, board))) return;
+          if (!targets.has(board)) targets.set(board, { kind: "spot", exchange: board, entries: new Map() });
+          targets.get(board).entries.set(liveSpotProductId(row, board), { row, exchange: board, kind: "spot", element: null });
+        };
+        tableBody.querySelectorAll("tr[data-live-product]").forEach((element) => {
+          const row = baseModels.get(element.dataset.liveProduct);
+          const reference = row && priceDifferenceReference(row);
+          if (reference) add(state.priceDifferenceBoard, reference);
+        });
+        if (targets.size && (exchange === "binance" || state.priceDifferenceBoard === "binance")) add("coinbase", priceDifferenceUsdt);
+        targets.forEach((target) => { target.products = [...target.entries.keys()].sort(); });
+        priceDifferenceSockets.forEach((connection, board) => {
+          const target = targets.get(board);
+          const signature = target && [...target.entries.keys()].sort().join(",");
+          if (signature === connection.signature) { connection.target = target; targets.delete(board); return; }
+          window.clearTimeout(connection.timer);
+          if (connection.socket) {
+            connection.socket.onclose = null;
+            connection.socket.onmessage = null;
+          }
+          try { connection.socket?.close(); } catch (_error) { /* Already closed. */ }
+          priceDifferenceSockets.delete(board);
+        });
+        targets.forEach((target, board) => {
+          target.products = [...target.entries.keys()].sort();
+          const connection = { target, signature: target.products.join(","), attempts: 0, timer: 0, socket: null };
+          priceDifferenceSockets.set(board, connection);
+          const connect = () => {
+            if (priceDifferenceSockets.get(board) !== connection || document.hidden || isSiteLocked()) return;
+            const retry = () => {
+              if (priceDifferenceSockets.get(board) !== connection) return;
+              connection.timer = window.setTimeout(connect, Math.min(1000 * (2 ** Math.min(connection.attempts++, 8)), LIVE_PRICE_RECONNECT_MAX_MS));
+            };
+            let socket;
+            try { socket = new WebSocket(livePriceSocketUrl(connection.target)); }
+            catch (_error) { retry(); return; }
+            connection.socket = socket;
+            socket.onopen = () => {
+              connection.attempts = 0;
+              if (board === "coinbase") {
+                socket.send(JSON.stringify({ type: "subscribe", channel: "ticker", product_ids: connection.target.products }));
+                socket.send(JSON.stringify({ type: "subscribe", channel: "heartbeats", product_ids: connection.target.products }));
+              }
+            };
+            socket.onmessage = (event) => {
+              if (priceDifferenceSockets.get(board) === connection) handleLivePriceMessage(connection.target, event.data);
+            };
+            socket.onerror = () => socket.close();
+            socket.onclose = retry;
+          };
+          connect();
+        });
+      }
+
+      window.setInterval(() => {
+        if (!document.hidden && state.viewMode === "market" && !isSiteLocked()) {
+          refreshPriceDifferenceCells();
+          requestPriceDifferenceFx();
+        }
+      }, 5000);
 
       function liveSpotProductId(row, exchange) {
         const pair = String(row?.pair || "").split("·", 1)[0].trim().toUpperCase();
@@ -16663,7 +16883,7 @@
       function livePriceSocketUrl(target) {
         if (target.exchange === "binance") {
           const host = target.kind === "futures" ? "wss://fstream.binance.com" : "wss://stream.binance.com:9443";
-          const streams = target.products.map((product) => `${product.toLowerCase()}@bookTicker`).join("/");
+          const streams = target.products.map((product) => `${product.toLowerCase()}@${target.kind === "spot" ? "miniTicker" : "bookTicker"}`).join("/");
           return `${host}/stream?streams=${streams}`;
         }
         if (target.exchange === "upbit") return "wss://api.upbit.com/websocket/v1";
@@ -16688,12 +16908,12 @@
             if (sub) sub.textContent = display.sub || TEXT.noPrice;
           });
           livePricePendingEntries.clear();
+          refreshPriceDifferenceCells();
         });
       }
 
-      function applyRealtimePrice(product, value) {
+      function applyRealtimePrice(product, value, target = livePriceTarget) {
         const numericPrice = toPositiveNumber(value);
-        const target = livePriceTarget;
         const entry = target?.entries.get(normalizedLiveProduct(product));
         if (numericPrice === null || !entry) return;
 
@@ -16731,25 +16951,25 @@
           const ticker = payload?.data || payload;
           const bid = toPositiveNumber(ticker?.b);
           const ask = toPositiveNumber(ticker?.a);
-          const price = bid !== null && ask !== null ? (bid + ask) / 2 : bid ?? ask;
-          applyRealtimePrice(ticker?.s, price);
+          const price = toPositiveNumber(ticker?.c) ?? (bid !== null && ask !== null ? (bid + ask) / 2 : bid ?? ask);
+          applyRealtimePrice(ticker?.s, price, target);
           return;
         }
 
         if (target.exchange === "bybit") {
           if (!["snapshot", "delta"].includes(payload?.type) || !String(payload?.topic || "").startsWith("tickers.")) return;
           const ticker = payload?.data;
-          applyRealtimePrice(ticker?.symbol || payload.topic.slice(8), ticker?.lastPrice);
+          applyRealtimePrice(ticker?.symbol || payload.topic.slice(8), ticker?.lastPrice, target);
           return;
         }
 
         if (target.exchange === "upbit") {
-          applyRealtimePrice(payload?.code, payload?.trade_price);
+          applyRealtimePrice(payload?.code, payload?.trade_price, target);
           return;
         }
 
         if (target.exchange === "bithumb") {
-          applyRealtimePrice(payload?.content?.symbol, payload?.content?.closePrice);
+          applyRealtimePrice(payload?.content?.symbol, payload?.content?.closePrice, target);
           return;
         }
 
@@ -16757,7 +16977,7 @@
           const events = Array.isArray(payload?.events) ? payload.events : [];
           events.forEach((event) => {
             const tickers = Array.isArray(event?.tickers) ? event.tickers : [];
-            tickers.forEach((ticker) => applyRealtimePrice(ticker?.product_id, ticker?.price));
+            tickers.forEach((ticker) => applyRealtimePrice(ticker?.product_id, ticker?.price, target));
           });
         }
       }
@@ -16830,7 +17050,8 @@
       }
 
       function syncLivePriceStream() {
-        if (document.hidden || !navigator.onLine) {
+        syncPriceDifferenceStreams();
+        if (document.hidden || !navigator.onLine || isSiteLocked() || (!isLocalPreview() && !siteAuthConfirmed)) {
           closeLivePriceSocket();
           return;
         }
@@ -16857,13 +17078,14 @@
       document.addEventListener("visibilitychange", () => {
         if (document.hidden) {
           closeLivePriceSocket();
+          closePriceDifferenceStreams();
         } else {
           syncLivePriceStream();
           requestBybitFutures();
         }
       });
       window.addEventListener("online", syncLivePriceStream);
-      window.addEventListener("offline", () => closeLivePriceSocket());
+      window.addEventListener("offline", () => { closeLivePriceSocket(); closePriceDifferenceStreams(); });
 
       function getDataSourceCandidates() {
         const ts = Date.now();
@@ -17469,8 +17691,10 @@
           }
 
           const aValue = state.sortKey === "rating" ? getRowRatingSortValue(a)
+            : state.sortKey === "difference" ? getPriceDifference(a).percent ?? null
             : state.sortKey === "price" ? getRowPriceSortUsd(a) : toPositiveNumber(a.sortCapUsd);
           const bValue = state.sortKey === "rating" ? getRowRatingSortValue(b)
+            : state.sortKey === "difference" ? getPriceDifference(b).percent ?? null
             : state.sortKey === "price" ? getRowPriceSortUsd(b) : toPositiveNumber(b.sortCapUsd);
           const aMissing = aValue === null;
           const bMissing = bValue === null;
@@ -17538,7 +17762,7 @@
 
       function renderTable(rows) {
       if (!rows.length) {
-        tableBody.innerHTML = `<tr><td class="empty" colspan="8" data-label="">${TEXT.empty}</td></tr>`;
+        tableBody.innerHTML = `<tr><td class="empty" colspan="9" data-label="">${TEXT.empty}</td></tr>`;
         return;
       }
 
@@ -17598,6 +17822,7 @@
                 <div class="price-main" data-live-price-main${row.exchange === "robinhood" ? ` title="${escapeAttr(`로빈후드 기준가(mark)${row.priceStale ? ' · 갱신 지연, 이전 확인 가격' : ''}${row.priceUpdatedAt ? ` · ${formatExchangeHistoryTime(row.priceUpdatedAt)}` : ''}`)}"` : ""}>${escapeHtml(price.main || TEXT.unknown)}</div>
                 <div class="price-sub" data-live-price-sub>${escapeHtml(price.sub || TEXT.noPrice)}</div>
               </td>
+              <td class="price-difference-cell" data-label="시세차이" data-price-difference>${renderPriceDifference(row)}</td>
               <td data-label="${TEXT.thCap}">
                 <div class="cap-main">${escapeHtml(cap.main || TEXT.unknown)}</div>
                 <div class="cap-sub">${escapeHtml(cap.sub || TEXT.noCap)}</div>
@@ -17624,6 +17849,10 @@
         normalizeKoreanAssetNames();
         ensureSelectedMarketBoard();
         normalizeCompareBoards();
+        if (state.board === state.priceDifferenceBoard) state.priceDifferenceBoard = state.board === "binance" ? "coinbase" : "binance";
+        priceDifferenceBoard.value = state.priceDifferenceBoard;
+        Array.from(priceDifferenceBoard.options).forEach((option) => { option.disabled = option.value === state.board; });
+        priceDifferenceReferences = new WeakMap();
         const rows = getRows();
         const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
       if (state.page > totalPages) state.page = 1;
@@ -17749,6 +17978,22 @@
         state.sortKey = "price";
         state.page = 1;
         renderCapHeader();
+        render();
+      });
+
+      thPriceDifference.addEventListener("click", () => {
+        state.sortDirection = state.sortKey === "difference" && state.sortDirection === "desc" ? "asc" : "desc";
+        state.sortKey = "difference";
+        state.page = 1;
+        renderCapHeader();
+        render();
+      });
+      thPriceDifference.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); thPriceDifference.click(); }
+      });
+      priceDifferenceBoard.addEventListener("change", () => {
+        state.priceDifferenceBoard = priceDifferenceBoard.value;
+        state.page = 1;
         render();
       });
 

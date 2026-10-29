@@ -1539,6 +1539,7 @@ async function requireGithubOidc(request, env) {
 
 function isProtectedContentPath(url) {
   return url.pathname === "/api/market-data"
+    || url.pathname === "/api/price-difference-fx"
     || url.pathname === "/api/admin/refresh-history"
     || url.pathname === "/api/l2-fees"
     || url.pathname === "/api/l1-fees"
@@ -2546,6 +2547,7 @@ export class BoardStore {
     this.env = env;
     this.mediaUploadOperations = new Map();
     this.mediaUploadCleanupPromise = null;
+    this.comparisonFxPromise = null;
     this.boardPostsOperation = Promise.resolve();
     this.l2FeesPromise = null;
   }
@@ -3044,6 +3046,36 @@ export class BoardStore {
   async handleLivePricesRequest() {
     const payload = await this.readMarketData();
     return jsonResponse(await fetchLivePricePayload(payload), 200, this.env);
+  }
+
+  async readComparisonFx() {
+    const key = "price-difference-fx-v1";
+    const now = Date.now();
+    const stored = await this.state.storage.get(key);
+    if (stored && now - stored.checkedAt < (stored.stale ? 300000 : 3600000)) return stored;
+    try {
+      const source = await fetchJsonWithTimeout("https://api.frankfurter.dev/v2/rates?base=USD&quotes=KRW", 8000);
+      const row = Array.isArray(source) ? source.find((item) => item.base === "USD" && item.quote === "KRW") : null;
+      const dateMs = Date.parse(`${row?.date}T00:00:00Z`);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(row?.date || "")) || !Number.isFinite(dateMs)
+        || dateMs > now + 86400000 || now - dateMs > 7 * 86400000
+        || !Number.isFinite(row?.rate) || row.rate < 100 || row.rate > 10000) throw new Error("invalid_comparison_fx");
+      const payload = { rate: row.rate, date: row.date, checkedAt: now, stale: false, source: "Frankfurter", frequency: "daily" };
+      await this.state.storage.put(key, payload);
+      return payload;
+    } catch (_error) {
+      const payload = { ...(stored || { rate: null, date: "", source: "Frankfurter", frequency: "daily" }), checkedAt: now, stale: true };
+      await this.state.storage.put(key, payload);
+      return payload;
+    }
+  }
+
+  async handleComparisonFxRequest() {
+    if (!this.comparisonFxPromise) {
+      this.comparisonFxPromise = this.readComparisonFx().finally(() => { this.comparisonFxPromise = null; });
+    }
+    const payload = await this.comparisonFxPromise;
+    return jsonResponse(payload, payload.rate ? 200 : 503, this.env);
   }
 
   async loadL2Fees() {
@@ -4506,6 +4538,10 @@ export class BoardStore {
       return this.recordApiResponse(await this.handleLivePricesRequest(request, url));
     }
 
+    if (request.method === "GET" && url.pathname === "/api/price-difference-fx") {
+      return this.recordApiResponse(await this.handleComparisonFxRequest());
+    }
+
     if (request.method === "GET" && ["/api/l2-fees", "/api/l1-fees"].includes(url.pathname)) {
       return this.recordApiResponse(await this.handleL2FeesRequest(url.pathname === "/api/l1-fees" ? "l1" : "l2"));
     }
@@ -5025,6 +5061,10 @@ export default {
       if (!env.BOARD_STORE) return jsonResponse(await fetchLivePricePayload(null), 200, env);
       const id = env.BOARD_STORE.idFromName("free-board");
       return env.BOARD_STORE.get(id).fetch(request);
+    }
+    if (url.pathname === "/api/price-difference-fx" && request.method === "GET") {
+      if (!env.BOARD_STORE) return jsonResponse({ error: "auth_storage_unavailable" }, 503, env);
+      return env.BOARD_STORE.get(env.BOARD_STORE.idFromName("free-board")).fetch(request);
     }
     if (["/api/l2-fees", "/api/l1-fees"].includes(url.pathname) && request.method === "GET") {
       if (!env.BOARD_STORE) return jsonResponse({ error: "l2_fees_storage_not_configured" }, 503, env);
