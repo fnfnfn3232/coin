@@ -17,9 +17,11 @@ const {
   normalizeComparisonCatalog,
   normalizeGateComparisonCatalog,
   normalizeUniqueCoinCatalog,
+  normalizeComparisonFx,
+  comparisonFxUsable,
   verifyMemberPassword,
 } = await import(
-  `data:text/javascript;base64,${Buffer.from(`${source}\nexport { createMemberPasswordCredentials, createSessionToken, deriveMemberPasswordHash, MEMBER_PASSWORD_ITERATIONS, normalizeMemberRecord, normalizeL2Fees, normalizeL1Fees, normalizeAdditionalSpotQuotes, normalizeComparisonCatalog, normalizeGateComparisonCatalog, normalizeUniqueCoinCatalog, verifyMemberPassword };\n//# sourceURL=cloudflare-worker-under-test.mjs`).toString("base64")}`
+  `data:text/javascript;base64,${Buffer.from(`${source}\nexport { createMemberPasswordCredentials, createSessionToken, deriveMemberPasswordHash, MEMBER_PASSWORD_ITERATIONS, normalizeMemberRecord, normalizeL2Fees, normalizeL1Fees, normalizeAdditionalSpotQuotes, normalizeComparisonCatalog, normalizeGateComparisonCatalog, normalizeUniqueCoinCatalog, normalizeComparisonFx, comparisonFxUsable, verifyMemberPassword };\n//# sourceURL=cloudflare-worker-under-test.mjs`).toString("base64")}`
 );
 
 class MemoryStorage {
@@ -249,15 +251,18 @@ test("new uploads do not await stale-file cleanup and concurrent starts share cl
   assert.equal(store.mediaUploadCleanupPromise, null);
 });
 
-test("comparison FX requires authentication, shares refreshes and preserves daily provenance", async () => {
+const fxSource = (rate = 1333.56, at = Date.now()) => ({ success: true, source: "currency-converter.live",
+  data: { from: "USD", to: "KRW", rate, quote: { ts: at, as_of: new Date(at).toISOString(), status: "live" } } });
+
+test("comparison FX requires authentication, shares refreshes and preserves intraday source timestamps", async () => {
   const { request } = await fixture();
   assert.equal((await request("/api/price-difference-fx", "GET", undefined, "")).status, 401);
   const originalFetch = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = async (url) => {
-    assert.equal(String(url), "https://api.frankfurter.dev/v2/rates?base=USD&quotes=KRW");
+    assert.equal(String(url), "https://currency-converter.live/api/v1/convert?from=USD&to=KRW&amount=1");
     calls += 1;
-    return Response.json([{ base: "USD", quote: "KRW", date: new Date().toISOString().slice(0, 10), rate: 1333.56 }]);
+    return Response.json(fxSource());
   };
   try {
     const responses = await Promise.all([request("/api/price-difference-fx"), request("/api/price-difference-fx")]);
@@ -265,7 +270,8 @@ test("comparison FX requires authentication, shares refreshes and preserves dail
       assert.equal(response.status, 200);
       const value = await response.json();
       assert.equal(value.rate, 1333.56);
-      assert.equal(value.frequency, "daily");
+      assert.equal(value.frequency, "intraday");
+      assert.ok(Date.now() - value.asOf < 1000);
       assert.equal(value.stale, false);
     }
     assert.equal((await request("/api/price-difference-fx")).status, 200);
@@ -297,6 +303,71 @@ test("comparison quote bootstrap is authenticated, source-scoped, cached and coa
       assert.equal((await request(`/api/price-difference-quotes?exchange=${board}`)).status, 200);
     }
     assert.equal(calls.length, 2);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("intraday FX rejects stale weekday quotes, reversed pairs and future clocks; weekend marks are explicit", () => {
+  const now = Date.parse("2026-10-29T10:00:00Z");
+  const good = normalizeComparisonFx(fxSource(1333, now - 2000), now);
+  assert.equal(good.asOf, now - 2000);
+  assert.equal(comparisonFxUsable(good, now + 600000), false);
+  for (const at of [now - 600000, now + 60000]) assert.throws(() => normalizeComparisonFx(fxSource(1333, at), now));
+  const reverse = fxSource(1333, now); reverse.data.from = "KRW";
+  assert.throws(() => normalizeComparisonFx(reverse, now));
+  assert.equal(comparisonFxUsable({ rate: 1333, frequency: "daily", asOf: now }, now), false);
+  const saturday = Date.parse("2026-10-31T12:00:00Z");
+  const friday = saturday - 24 * 3600000;
+  const closed = normalizeComparisonFx(fxSource(1333, friday), saturday);
+  assert.equal(closed.marketStatus, "closed");
+  assert.equal(closed.asOf, friday);
+  assert.equal(comparisonFxUsable(closed, saturday), true);
+});
+
+test("usable FX returns immediately during one background refresh and a failure never renews its quote clock", async () => {
+  const { request, storage, store } = await fixture();
+  const old = normalizeComparisonFx(fxSource()); old.checkedAt = 0;
+  await storage.put("price-difference-fx-v2", old);
+  const tasks = []; store.state.waitUntil = task => tasks.push(task);
+  let release; const gate = new Promise(resolve => { release = resolve; });
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; await gate; throw new Error("temporary_failure"); };
+  try {
+    for (let i = 0; i < 2; i++) {
+      const response = await request("/api/price-difference-fx");
+      const payload = await response.json();
+      assert.equal(response.status, 200);
+      assert.equal(payload.asOf, old.asOf);
+      assert.equal(payload.revalidating, true);
+    }
+    assert.equal(calls, 1);
+  } finally { release(); await Promise.all(tasks); globalThis.fetch = originalFetch; }
+  const preserved = await storage.get("price-difference-fx-v2");
+  assert.equal(preserved.asOf, old.asOf);
+  assert.equal(preserved.refreshError, true);
+  assert.equal(preserved.stale, false);
+});
+
+test("authenticated snapshots include only recent cached comparison data without waiting for upstream HTTP", async () => {
+  const { request, storage, store } = await fixture();
+  store.readMarketData = async () => ({ boards: { upbit: [] }, generatedAt: 123, refreshHealth: {} });
+  await storage.put("price-difference-fx-v2", normalizeComparisonFx(fxSource()));
+  await storage.put("price-difference-quotes-v1:gateio", { exchange: "gateio", prices: { MLK: 0.04 }, observedAt: Date.now() });
+  await storage.put("price-difference-catalog-v3:gateio", { assets: { MLK: ["MiL.k", "gate-mlk"] }, fetchedAt: Date.now() });
+  await storage.put("price-difference-quotes-v1:upbit", { prices: { MLK: 1 }, observedAt: Date.now() - 180000 });
+  await storage.put("price-difference-quotes-v1:binance", { prices: {}, error: "blocked", checkedAt: Date.now(), errorDetail: "private-error-detail" });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error("snapshot_must_not_fetch_upstream"); };
+  try {
+    assert.equal((await request("/api/market-data", "GET", undefined, "")).status, 401);
+    const response = await request("/api/market-data");
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.comparisonBootstrap.fx.frequency, "intraday");
+    assert.equal(payload.comparisonBootstrap.quotes.gateio.prices.MLK, 0.04);
+    assert.equal(payload.comparisonBootstrap.quotes.upbit, undefined);
+    assert.deepEqual(payload.comparisonBootstrap.direct, ["binance"]);
+    assert.doesNotMatch(JSON.stringify(payload), /private-error-detail/);
   } finally { globalThis.fetch = originalFetch; }
 });
 
@@ -353,7 +424,7 @@ test("invalid or failed comparison FX is never replaced with domestic USDT or fa
     assert.equal((await request("/api/price-difference-fx")).status, 503);
     assert.equal((await request("/api/price-difference-fx")).status, 503);
     assert.equal(calls, 1);
-    await storage.put("price-difference-fx-v1", { rate: 1300, date: new Date().toISOString().slice(0, 10), checkedAt: 0, source: "Frankfurter" });
+    await storage.put("price-difference-fx-v2", { rate: 1300, asOf: Date.now() - 600000, checkedAt: 0, frequency: "intraday", source: "currency-converter.live" });
     const payload = await (await request("/api/price-difference-fx")).json();
     assert.equal(payload.rate, 1300);
     assert.equal(payload.stale, true);
