@@ -13,9 +13,11 @@ const {
   normalizeMemberRecord,
   normalizeL2Fees,
   normalizeL1Fees,
+  normalizeAdditionalSpotQuotes,
+  normalizeComparisonCatalog,
   verifyMemberPassword,
 } = await import(
-  `data:text/javascript;base64,${Buffer.from(`${source}\nexport { createMemberPasswordCredentials, createSessionToken, deriveMemberPasswordHash, MEMBER_PASSWORD_ITERATIONS, normalizeMemberRecord, normalizeL2Fees, normalizeL1Fees, verifyMemberPassword };\n//# sourceURL=cloudflare-worker-under-test.mjs`).toString("base64")}`
+  `data:text/javascript;base64,${Buffer.from(`${source}\nexport { createMemberPasswordCredentials, createSessionToken, deriveMemberPasswordHash, MEMBER_PASSWORD_ITERATIONS, normalizeMemberRecord, normalizeL2Fees, normalizeL1Fees, normalizeAdditionalSpotQuotes, normalizeComparisonCatalog, verifyMemberPassword };\n//# sourceURL=cloudflare-worker-under-test.mjs`).toString("base64")}`
 );
 
 class MemoryStorage {
@@ -83,6 +85,76 @@ const feeSource = (fee = 12) => ({ protocols: [
   { slug: "base", name: "Base", category: "Chain", protocolType: "chain", total24h: fee, total7d: 80, total30d: null, change_1d: -2, logo: "https://icons.llamao.fi/chains/base.jpg" },
   { slug: "ethereum", name: "Ethereum", category: "Chain", protocolType: "chain", total24h: 200, total7d: 1400, total30d: 6000 },
 ] });
+
+test("additional comparison feeds accept only valid USDT spot products and success envelopes", () => {
+  assert.deepEqual(normalizeAdditionalSpotQuotes("gateio", [{ currency_pair: "XCN_USDT", last: "0.004" }, { currency_pair: "XCN_BTC", last: "10" }]), { XCN: 0.004 });
+  assert.deepEqual(normalizeAdditionalSpotQuotes("bybit", { retCode: 0, result: { category: "spot", list: [{ symbol: "NEOUSDT", lastPrice: "2" }, { symbol: "NEOUSDC", lastPrice: "999" }] } }), { NEO: 2 });
+  assert.throws(() => normalizeAdditionalSpotQuotes("bybit", { retCode: 0, result: { category: "linear", list: [] } }));
+  assert.deepEqual(normalizeAdditionalSpotQuotes("bitget", { code: "00000", data: [{ symbol: "XCNUSDT", lastPr: "0.004" }, { symbol: "BADUSDT", lastPr: "0" }] }), { XCN: 0.004 });
+  assert.throws(() => normalizeAdditionalSpotQuotes("bitget", { code: "40000", data: [] }));
+  assert.deepEqual(normalizeAdditionalSpotQuotes("okx", { code: "0", data: [
+    { instType: "SPOT", instId: "NEO-USDT", last: "2" }, { instType: "SWAP", instId: "NEO-USDT-SWAP", last: "999" },
+    { instType: "SPOT", instId: "NEO-USDC", last: "999" }, { instType: "SPOT", instId: "BAD-USDT", last: "NaN" },
+  ] }), { NEO: 2 });
+});
+
+test("comparison identity catalogs reject derivatives, outliers and conflicting asset IDs", () => {
+  const asset = { category: "Spot", pair: "XCN/USDT", quote_currency_id: "usdt-tether", base_currency_name: "Onyxcoin", base_currency_id: "xcn-chain" };
+  assert.deepEqual(normalizeComparisonCatalog([asset, { ...asset, category: "Futures", pair: "BAD/USDT" }, { ...asset, pair: "OUT/USDT", outlier: true }]), { XCN: ["Onyxcoin", "xcn-chain"] });
+  assert.throws(() => normalizeComparisonCatalog([asset, { ...asset, base_currency_id: "xcn-unrelated" }]));
+  assert.throws(() => normalizeComparisonCatalog([{ ...asset, quote_currency_id: "usdc-usd-coin" }]));
+});
+
+test("four additional exchanges cache quote data separately from shared asset catalogs", async () => {
+  const { request, storage } = await fixture();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    const text = String(url); calls.push(text);
+    if (text.includes("coinpaprika")) return Response.json([{ category: "Spot", pair: "XCN/USDT", quote_currency_id: "usdt-tether", base_currency_name: "Onyxcoin", base_currency_id: "xcn-chain" }]);
+    if (text.includes("gateio")) return Response.json([{ currency_pair: "XCN_USDT", last: "0.004" }]);
+    if (text.includes("bybit")) return Response.json({ retCode: 0, result: { category: "spot", list: [{ symbol: "XCNUSDT", lastPrice: "0.004" }] } });
+    if (text.includes("bitget")) return Response.json({ code: "00000", data: [{ symbol: "XCNUSDT", lastPr: "0.004" }] });
+    if (text.includes("okx")) return Response.json({ code: "0", data: [{ instType: "SPOT", instId: "XCN-USDT", last: "0.004" }] });
+    throw new Error("unexpected_source");
+  };
+  try {
+    for (const board of ["gateio", "bybit", "bitget", "okx"]) {
+      const responses = await Promise.all([request(`/api/price-difference-quotes?exchange=${board}`), request(`/api/price-difference-quotes?exchange=${board}`)]);
+      for (const response of responses) {
+        assert.equal(response.status, 200);
+        const value = await response.json();
+        assert.equal(value.prices.XCN, 0.004);
+        assert.deepEqual(value.assets.XCN, ["Onyxcoin", "xcn-chain"]);
+        assert.equal(value.identitySource, "CoinPaprika");
+      }
+      const cached = await storage.get(`price-difference-quotes-v1:${board}`);
+      assert.equal(cached.assets, undefined);
+      assert.ok((await storage.get(`price-difference-catalog-v1:${board}`)).assets.XCN);
+    }
+    assert.equal(calls.length, 8);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("catalog failures preserve bounded identity age but never relabel or renew an expired identity", async () => {
+  const { request, storage } = await fixture();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes("coinpaprika")) throw new Error("identity_provider_unavailable");
+    return Response.json([{ currency_pair: "XCN_USDT", last: "0.004" }]);
+  };
+  try {
+    for (const hours of [8, 25]) {
+      const at = Date.now() - hours * 3600000;
+      await storage.put("price-difference-catalog-v1:gateio", { assets: { XCN: ["Onyxcoin", "xcn-chain"] }, fetchedAt: at, checkedAt: 0 });
+      const value = await (await request("/api/price-difference-quotes?exchange=gateio")).json();
+      assert.equal(value.prices.XCN, 0.004);
+      assert.equal(value.catalogAt, at);
+      assert.equal(value.identityError, "identity_catalog_refresh_failed");
+      assert.deepEqual(value.assets, hours === 8 ? { XCN: ["Onyxcoin", "xcn-chain"] } : {});
+    }
+  } finally { globalThis.fetch = originalFetch; }
+});
 
 test("new uploads do not await stale-file cleanup and concurrent starts share cleanup", { timeout: 5000 }, async () => {
   const { store, request } = await fixture({ write: true });
