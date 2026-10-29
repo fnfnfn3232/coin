@@ -17,7 +17,7 @@ async function main() {
     upbit: [row('BTC', 'Bitcoin', 'KRW', 135000), row('ETH', 'Ethereum', 'KRW', 12800, 500), row('AI', 'Gensyn', 'KRW', 100), row('LOCAL', 'Local Only', 'KRW', 100),
       { ...row('NEO', 'NEO', 'KRW', 13500), nameKeys: ['neo', '네오'] }, { ...row('CLASH', 'Different Asset', 'KRW', 1300), nameKeys: ['겹치는이름'] }],
     bithumb: [row('BTC', 'Bitcoin', 'KRW', 136000)],
-    coinbase: [row('BTC', 'Bitcoin', 'USD', 100), row('ETH', 'Ethereum', 'USD', 10, 500), row('USDT', 'Tether', 'USD', 1.01)], robinhood: [],
+    coinbase: [row('BTC', 'Bitcoin', 'USD', 100), row('ETH', 'Ethereum', 'USD', 10, 500), row('USDT', 'Tether', 'USD', 1.01)], robinhood: [row('BTC', 'Bitcoin', 'USD', 100)],
   }, stats: {}, futures: {}, notes: {}, coinInfo: {}, news: { items: [] } };
   const fallbackFixtures = {
     gateio: { symbol: 'GATEONLY', name: 'Gate Only Asset', price: 10, label: 'Gate.io' },
@@ -30,9 +30,12 @@ async function main() {
     { symbol: 'FLUID', name: 'Fluid', foreign: 'Fluid' }, { symbol: 'PIEVERSE', name: 'Pieverse', foreign: 'Pieverse' },
     { symbol: 'CC', name: 'Canton', foreign: 'Canton Network' }, { symbol: 'WAVES', name: 'Waves', foreign: 'Waves' },
     { symbol: 'B3', name: 'B3', foreign: 'B3 Base' },
+    { symbol: 'CAP', name: 'Cap', foreign: 'Cap', foreignBoard: 'coinbase' },
+    { symbol: 'GRVT', name: 'Grvt', foreign: 'Grvt', foreignBoard: 'coinbase' },
   ];
   for (const item of reported) snapshot.boards.upbit.push({ ...row(item.symbol, item.name, 'KRW', 1350), koreanName: '\uad6d\ub0b4\ucf54\uc778',
     marketIdentityVerified: false, marketCapUsd: null, marketCapKrw: null, sortCapUsd: null });
+  for (const item of reported.filter(item => item.foreignBoard === 'coinbase')) snapshot.boards.coinbase.push(row(item.symbol, item.foreign, 'USD', 1));
   for (const fixture of Object.values(fallbackFixtures)) snapshot.boards.upbit.push(row(fixture.symbol, fixture.name, 'KRW', fixture.price * 1350));
   const browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH
     || (process.platform === 'win32' ? 'C:/Program Files/Google/Chrome/Application/chrome.exe' : undefined) });
@@ -102,13 +105,17 @@ async function main() {
       if (exchange === bootstrapFailureBoard && bootstrapFailure) return route.fulfill({ status: bootstrapFailure,
         json: { error: 'quote_refresh_failed', assets: exchange === 'okx' ? { OKXONLY: ['Okx Only Asset', 'okxonly-asset'] } : {}, catalogAt: Date.now() } });
       result = { exchange, prices: bulkEnabled ? Object.fromEntries((snapshot.boards[exchange] || []).map(row => [row.symbol, ['upbit', 'bithumb'].includes(exchange) ? row.priceKrw : row.priceUsd])) : {}, observedAt: Date.now() };
+      if (exchange === 'coinbase' && bulkEnabled) {
+        result.assets = Object.fromEntries(reported.filter(item => item.foreignBoard === 'coinbase').map(item => [item.symbol, [item.foreign, `coinbase-${item.symbol.toLowerCase()}`]]));
+        result.catalogAt = Date.now();
+      }
       const fixture = fallbackFixtures[exchange];
       if (fixture && bulkEnabled) result = { exchange, prices: { [fixture.symbol]: fixture.price }, observedAt: Date.now(),
         assets: { [fixture.symbol]: [fixture.name, `${fixture.symbol.toLowerCase()}-asset`] }, catalogAt: Date.now(), identitySource: 'CoinPaprika' };
       if (fixture && bulkEnabled) {
         result.prices.CLASH = 999;
         result.assets.CLASH = ['Unrelated Project', 'clash-unrelated'];
-        if (exchange === 'gateio') for (const item of reported) {
+        if (exchange === 'gateio') for (const item of reported.filter(item => !item.foreignBoard)) {
           const symbol = item.foreignSymbol || item.symbol;
           result.prices[symbol] = 1;
           result.assets[symbol] = [item.foreign, `gate-${symbol.toLowerCase()}`];
@@ -220,6 +227,14 @@ async function main() {
     assert.deepEqual({ quotes: bulkCalls.length, fx: fxCalls }, foreignCalls);
     assert.equal(await page.evaluate(() => priceDifferenceSockets.size), 0);
     assert.equal(await page.locator('#priceDifferenceBoard').inputValue(), 'coinbase');
+    for (const foreign of ['coinbase', 'robinhood']) {
+      await page.locator('#baseBoardSelect').selectOption(foreign);
+      assert.equal(await page.locator('#thPriceDifference').isVisible(), false);
+      assert.equal(await page.locator('.price-difference-tools').isVisible(), false);
+      assert.equal(await page.locator('[data-price-difference]').count(), 0);
+      assert.equal(await page.evaluate(() => priceDifferenceSockets.size), 0);
+    }
+    console.log('PASS: Binance/Coinbase/Robinhood hide premium controls and cells, stop premium sockets and do not request FX');
     const openBefore = await page.evaluate(() => testSockets.filter(socket => socket.readyState === 1).length);
     await page.evaluate(() => { render(); render(); render(); });
     assert.equal(await page.evaluate(() => testSockets.filter(socket => socket.readyState === 1).length), openBefore);

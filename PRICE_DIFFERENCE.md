@@ -16,6 +16,12 @@
   plus its independently sourced Korean name and official foreign metadata;
   two unqualified raw tickers alone remain insufficient.
 - Canton/Canton Network and B3/B3 Base spellings are reviewed project aliases.
+  The whole-list audit also reviewed Ada/Cardano, Lumen/Stellar, Render,
+  Nervos/CKB, Ontology Gas, Theta Fuel, and other exact symbol-scoped project
+  spellings. This is not global suffix stripping or ticker-only guessing.
+- Coinbase's official `/currencies` names provide independent evidence for
+  CAP/GRVT and other ticker-shaped names, cached separately from cap data.
+  Metadium/MetaDAO and Based/Based One are not merged without identity proof.
   Gaming BEAM maps to Binance/Gate BEAMX. The unrelated privacy BEAM is excluded.
   Evidence: https://www.binance.com/en/support/announcement/detail/c8705b752c7c47fc814a373a0f1856ee
 - Official explorer contracts can resolve naming differences. Addresses are

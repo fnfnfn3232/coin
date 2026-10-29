@@ -23,7 +23,28 @@ test('gaming BEAM maps to exchange-specific BEAMX, never privacy BEAM', () => {
   assert.equal(identity.symbol(gate('BEAMX', 'Beam'), 'gateio'), 'BEAM');
   assert.equal(identity.matches(row, gate('BEAMX', 'Beam'), context), true);
   assert.equal(identity.matches(row, gate('BEAM', 'Beam'), context), false);
+  assert.equal(identity.matches(row, { symbol: 'BEAMX', englishName: 'Beam' }, { ...context, referenceBoard: 'binance' }), true);
   assert.equal(identity.matches(row, { symbol: 'BEAMX', englishName: 'Another Project' }, context), false);
+});
+
+test('whole-list audit spelling differences resolve without admitting unrelated project names', () => {
+  const pairs = [
+    ['ADA', 'Ada', 'Cardano'], ['XLM', 'Lumen', 'Stellar Lumens'], ['SKY', 'Sky Protocol', 'Sky'],
+    ['MORPHO', 'Morpho', 'Morpho Labs'], ['RENDER', 'Render Token', 'Render Network'], ['1INCH', '1inch Network', '1inch'],
+    ['PROM', 'Prom', 'Prometeus'], ['ZRX', '0x Protocol', '0xProject'], ['CKB', 'Nervos Network', 'CKB'],
+    ['MOCA', 'Moca Network', 'Moca Coin'], ['ONG', 'ONG', 'OntologyGas'], ['SNT', 'Status Network Token', 'Status'],
+    ['AUCTION', 'Bounce', 'BounceAuction'], ['IQ', 'IQ.wiki', 'IQ'], ['CBK', 'Cobak Token', 'Cobak'],
+    ['FOLD', 'The Interfold', 'Interfold'], ['MIRA', 'Mira Network', 'Mira'], ['ORDER', 'Orderly', 'Orderly Network'],
+    ['USDT', 'Tether USDt', 'Tether'], ['TFUEL', 'TFUEL', 'Theta Fuel'], ['RON', 'Ronin', 'Ronin Network'],
+    ['WAXP', 'WAXP', 'WAX'], ['US', 'Talus', 'Talus Network'], ['BILL', 'Billions', 'Billions Network'], ['SIX', 'SIX', 'SIX Network'],
+  ];
+  for (const [symbol, local, foreign] of pairs) {
+    assert.equal(identity.matches(domestic(symbol, local), gate(symbol, foreign), context), true, symbol);
+    assert.equal(identity.matches(domestic(symbol, local), gate(symbol, 'Unrelated Project'), context), false, symbol);
+  }
+  for (const symbol of ['CAP', 'GRVT']) assert.equal(identity.matches(domestic(symbol), gate(symbol), { ...context, referenceBoard: 'coinbase' }), true);
+  assert.equal(identity.matches(domestic('META', 'Metadium'), gate('META', 'MetaDAO'), context), false);
+  assert.equal(identity.matches(domestic('BASED', 'Based'), gate('BASED', 'Based One'), context), false);
 });
 
 test('same-chain contracts resolve name variants but reject conflicting addresses', () => {

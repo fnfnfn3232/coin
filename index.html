@@ -16794,6 +16794,8 @@
           }
           for (const row of comparisonMarketRows(board)) {
             const quote = quotes[String(row.symbol || "").toUpperCase()];
+            if (board === "coinbase" && quote?.identity?.id === `coinbase-${String(row.symbol || "").toLowerCase()}`
+              && String(quote.identity.name || "").toLowerCase() === String(row.englishName || "").toLowerCase()) row.comparisonIdentity = { officialName: true };
             if (quote && Date.now() - quote.at < PRICE_DIFFERENCE_MAX_AGE_MS) applyComparisonQuote(row, board, quote.price, quote.at);
           }
         }
