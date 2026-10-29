@@ -16786,13 +16786,14 @@
         if (usdt && Date.now() - usdt.at < PRICE_DIFFERENCE_MAX_AGE_MS) applyComparisonQuote(priceDifferenceUsdt, "coinbase", usdt.price, usdt.at);
       }
 
-      function requestPriceDifferenceQuotes() {
-        if (isLocalPreview() || !hasServerAuth() || !siteAuthConfirmed || isSiteLocked() || document.hidden || !navigator.onLine || state.viewMode !== "market") return;
+      function requestPriceDifferenceQuotes(prewarm = false) {
+        if (isLocalPreview() || !hasServerAuth() || !siteAuthConfirmed || isSiteLocked() || document.hidden || !navigator.onLine || (!prewarm && state.viewMode !== "market")) return;
         const exchange = state.board === "triple" ? "bithumb" : state.board;
         const boards = new Set([exchange, state.priceDifferenceBoard]);
         if (boards.has("binance")) boards.add("coinbase");
         const models = new Map((data.boards?.[exchange] || []).map((row) => [liveSpotProductId(row, exchange), row]));
-        const visibleRows = Array.from(tableBody.querySelectorAll("tr[data-live-product]"), (element) => models.get(element.dataset.liveProduct)).filter(Boolean);
+        const visibleRows = prewarm && state.viewMode !== "market" ? [...models.values()]
+          : Array.from(tableBody.querySelectorAll("tr[data-live-product]"), (element) => models.get(element.dataset.liveProduct)).filter(Boolean);
         const fallbackRows = visibleRows.filter(row => {
           const primary = priceDifferenceCandidates(row).find(candidate => candidate.comparisonExchange === state.priceDifferenceBoard);
           return !primary || primary.comparisonQuoteMissingAt > comparisonPriceTimestamp(primary)
@@ -16869,6 +16870,13 @@
           .map((name) => String(name || "").toLowerCase().replace(/[^a-z0-9가-힣]/g, ""))
           .filter((name) => name && name !== String(item.symbol || "").toLowerCase());
         const ownNames = names(row);
+        // Reviewed project spellings, not general ticker-only identity matching.
+        // FRAX here is the renamed FXS governance token, not Legacy Frax Dollar.
+        const projectNames = {
+          KGEN: ["kgen"], MLK: ["milk", "milkalliance"],
+          FRAX: ["frax", "fraxfinance", "fraxprevfxs"],
+        }[symbol];
+        const reviewedName = item => projectNames?.includes(String(item.englishName || "").toLowerCase().replace(/[^a-z0-9]/g, ""));
         const baseBoard = state.board === "triple" ? "bithumb" : state.board;
         const order = [...new Set([state.priceDifferenceBoard, "binance", "coinbase", ...PRICE_DIFFERENCE_ADDITIONAL_BOARDS])].filter(board => board !== baseBoard);
         const candidates = order.flatMap(board => {
@@ -16876,6 +16884,8 @@
             if (PRICE_DIFFERENCE_ADDITIONAL_BOARDS.includes(board) && Date.now() - candidate.identityAt > 86400000) return false;
             if (getComparableSymbol(candidate) !== symbol || row.marketIdentityVerified === false || candidate.marketIdentityVerified === false) return false;
             if (row.coingeckoId && candidate.coingeckoId) return row.coingeckoId === candidate.coingeckoId;
+            if (symbol === "FRAX" && candidate.paprikaId === "frax-frax") return false;
+            if (reviewedName(row) && reviewedName(candidate)) return true;
             const candidateNames = names(candidate);
             const englishNames = ownNames.filter((name) => /^[a-z0-9]+$/.test(name));
             const candidateEnglish = candidateNames.filter((name) => /^[a-z0-9]+$/.test(name));
@@ -16951,7 +16961,7 @@
         const percent = difference / referencePrice * 100;
         if (!Number.isFinite(percent)) return { reason: "가격 확인 불가" };
         return { percent, difference, currency: domestic ? "KRW" : "USD", referencePrice, referenceBoard,
-          title: `${comparisonExchangeLabel(referenceBoard)} 현물 대비${referenceBoard !== state.priceDifferenceBoard ? " · 대체 출처" : ""}${PRICE_DIFFERENCE_ADDITIONAL_BOARDS.includes(referenceBoard) ? " · 자산명 검증 CoinPaprika" : ""} · ${domestic ? `Frankfurter 일일 USD/KRW ${fx.rate} · ${fx.date}` : "USD 기준"}${baseUsdt || referenceUsdt ? ` · Coinbase USDT/USD ${usdtUsd}` : ""} · 가격 수신 ${new Date(Math.min(comparisonPriceTimestamp(row), comparisonPriceTimestamp(reference))).toLocaleTimeString("ko-KR", { hour12: false })} · (가격/기준가 - 1) × 100 · 거래·전송 수수료 제외` };
+          title: `${comparisonExchangeLabel(referenceBoard)} 현물 대비${referenceBoard !== state.priceDifferenceBoard ? " · 대체 출처" : ""}${PRICE_DIFFERENCE_ADDITIONAL_BOARDS.includes(referenceBoard) ? " · 자산 식별 검증" : ""} · ${domestic ? `Frankfurter 일일 USD/KRW ${fx.rate} · ${fx.date}` : "USD 기준"}${baseUsdt || referenceUsdt ? ` · Coinbase USDT/USD ${usdtUsd}` : ""} · 가격 수신 ${new Date(Math.min(comparisonPriceTimestamp(row), comparisonPriceTimestamp(reference))).toLocaleTimeString("ko-KR", { hour12: false })} · (가격/기준가 - 1) × 100 · 거래·전송 수수료 제외` };
       }
 
       function renderPriceDifference(row) {
@@ -17201,7 +17211,7 @@
 
       function livePriceSocketUrl(target) {
         if (target.exchange === "binance") {
-          const host = target.kind === "futures" ? "wss://fstream.binance.com" : "wss://stream.binance.com:9443";
+          const host = target.kind === "futures" ? "wss://fstream.binance.com" : "wss://stream.binance.com:443";
           const streams = target.products.map((product) => `${product.toLowerCase()}@${target.kind === "spot" ? "miniTicker" : "bookTicker"}`).join("/");
           return `${host}/stream?streams=${streams}`;
         }
@@ -17556,6 +17566,9 @@
               renderSummaryStats();
               renderAutoStatus();
               renderCurrentView();
+              restorePriceDifferenceCache();
+              requestPriceDifferenceFx();
+              requestPriceDifferenceQuotes(true);
               return {
                 changed: Number(parsed.generatedAt || 0) !== beforeGeneratedAt,
                 generatedAt: Number(parsed.generatedAt || 0),

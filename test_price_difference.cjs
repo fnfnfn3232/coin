@@ -257,6 +257,39 @@ async function main() {
     assert.deepEqual(rejectedCaches, { wrongOwner: true, stale: true });
     console.log('PASS: cache restoration rejects another account and expired quote/FX records');
 
+    const reviewedProjects = await page.evaluate(() => {
+      const results = {};
+      const originals = { binance: data.boards.binance, additional: priceDifferenceAdditionalRows };
+      try {
+        data.boards.binance = [];
+        priceDifferenceAdditionalRows = { gateio: [], okx: [] };
+        const pairs = [
+          ['ZBT', 'ZEROBASE', 'Zerobase', 'gateio', 'gate-zbt'],
+          ['KGEN', 'KGeN', 'KGeN', 'gateio', 'gate-kgen'],
+          ['MLK', 'MiL.k', 'MiL.k Alliance', 'gateio', 'mlk-milk-alliance'],
+          ['FRAX', 'Frax', 'Frax Finance', 'gateio', 'gate-frax'],
+          ['XDP', 'Doppler Finance', 'Doppler Finance', 'okx', 'okx-doppler-finance'],
+        ];
+        for (const [symbol, local, foreign, exchange, id] of pairs) {
+          priceDifferenceAdditionalRows[exchange].push({ symbol, pair: `${symbol}/USDT`, englishName: foreign, paprikaId: id, identityAt: Date.now(), priceUsd: 1, comparisonPriceAt: Date.now() });
+          resetComparisonIdentityCache();
+          const row = { symbol, pair: `${symbol}/KRW`, englishName: local, priceKrw: 1350, comparisonPriceAt: Date.now() };
+          results[symbol] = Number.isFinite(getPriceDifference(row).percent);
+        }
+        priceDifferenceAdditionalRows.gateio = [{ symbol: 'FRAX', englishName: 'Frax', paprikaId: 'frax-frax', identityAt: Date.now() }];
+        resetComparisonIdentityCache();
+        results.rejectLegacyFrax = !priceDifferenceReference({ symbol: 'FRAX', englishName: 'Frax' });
+        results.port443 = testSockets.filter(socket => socket.url.includes('stream.binance.com')).every(socket => !socket.url.includes(':9443'));
+      } finally {
+        data.boards.binance = originals.binance;
+        priceDifferenceAdditionalRows = originals.additional;
+        resetComparisonIdentityCache();
+      }
+      return results;
+    });
+    assert.deepEqual(reviewedProjects, { ZBT: true, KGEN: true, MLK: true, FRAX: true, XDP: true, rejectLegacyFrax: true, port443: true });
+    console.log('PASS: actual ZBT/KGEN/MLK/FRAX/XDP name variants resolve; legacy FRAX is rejected and Binance uses port 443');
+
     await page.evaluate(() => window.dispatchEvent(new Event('offline')));
     assert.equal(await page.evaluate(() => testSockets.filter(socket => socket.readyState === 1).length), 0);
     await page.evaluate(() => syncLivePriceStream());
