@@ -221,6 +221,7 @@ async function main() {
       await page.waitForFunction(({ board, symbol, price }) => comparisonMarketRows(board).find(row => row.symbol === symbol)?.priceUsd === price,
         { board, symbol: fixture.symbol, price: fixture.price + 1 });
     }
+    await page.waitForFunction(() => !livePriceFlushFrame);
     const beforeFutures = await cell('OKXONLY').innerText();
     await emit('okx', { arg: { channel: 'tickers' }, data: [{ instType: 'SWAP', instId: 'OKXONLY-USDT-SWAP', last: '999' }] });
     assert.equal(await cell('OKXONLY').innerText(), beforeFutures);
