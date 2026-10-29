@@ -107,6 +107,47 @@ test("new uploads do not await stale-file cleanup and concurrent starts share cl
   assert.equal(store.mediaUploadCleanupPromise, null);
 });
 
+test("comparison FX requires authentication, shares refreshes and preserves daily provenance", async () => {
+  const { request } = await fixture();
+  assert.equal((await request("/api/price-difference-fx", "GET", undefined, "")).status, 401);
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (url) => {
+    assert.equal(String(url), "https://api.frankfurter.dev/v2/rates?base=USD&quotes=KRW");
+    calls += 1;
+    return Response.json([{ base: "USD", quote: "KRW", date: new Date().toISOString().slice(0, 10), rate: 1333.56 }]);
+  };
+  try {
+    const responses = await Promise.all([request("/api/price-difference-fx"), request("/api/price-difference-fx")]);
+    for (const response of responses) {
+      assert.equal(response.status, 200);
+      const value = await response.json();
+      assert.equal(value.rate, 1333.56);
+      assert.equal(value.frequency, "daily");
+      assert.equal(value.stale, false);
+    }
+    assert.equal((await request("/api/price-difference-fx")).status, 200);
+    assert.equal(calls, 1);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("invalid or failed comparison FX is never replaced with domestic USDT or fabricated zero", async () => {
+  const { request, storage } = await fixture();
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; return Response.json([{ base: "USD", quote: "KRW", date: "1999-01-01", rate: 0 }]); };
+  try {
+    assert.equal((await request("/api/price-difference-fx")).status, 503);
+    assert.equal((await request("/api/price-difference-fx")).status, 503);
+    assert.equal(calls, 1);
+    await storage.put("price-difference-fx-v1", { rate: 1300, date: new Date().toISOString().slice(0, 10), checkedAt: 0, source: "Frankfurter" });
+    const payload = await (await request("/api/price-difference-fx")).json();
+    assert.equal(payload.rate, 1300);
+    assert.equal(payload.stale, true);
+    assert.equal(calls, 2);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("background upload cleanup failures do not reject new sessions and can be retried", async () => {
   const { store, request } = await fixture({ write: true });
   const tasks = [];
