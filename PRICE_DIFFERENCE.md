@@ -2,6 +2,15 @@
 
 ## Domestic Premium Scope and Whole-List Audit
 
+Production audit: 788 domestic exchange rows checked, 738 identity-matched. The
+reported seven assets matched on both domestic exchanges. The remaining three
+same-ticker candidates were Metadium versus MetaDAO (two rows) and Based versus
+Based One; none were forcibly joined. Another 47 rows had no verified comparator
+in the available source coverage. These counts prove identity coverage, not that
+every upstream price is continuously fresh or that those 47 assets are unlisted
+on every exchange. The browser matcher asset uses a content hash to avoid stale
+cached implementations after deployment.
+
 - Premium controls, column, sorting and auxiliary quote/FX requests apply only
   to Upbit/Bithumb (including the four-exchange intersection's Bithumb base).
   Binance/Coinbase/Robinhood keep their normal price streams but no premium UI.
