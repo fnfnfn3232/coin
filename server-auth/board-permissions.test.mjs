@@ -208,6 +208,23 @@ test("four additional exchanges cache quote data separately from shared asset ca
   } finally { globalThis.fetch = originalFetch; }
 });
 
+test("Coinbase official currency names accompany USD quotes without promoting unverified caps", async () => {
+  const { request } = await fixture();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async url => String(url).endsWith('/currencies')
+    ? Response.json([{ id: 'CAP', name: 'Cap' }, { id: 'GRVT', name: 'Grvt' }, { id: 'OTHER', name: 'Other' }])
+    : Response.json({ 'CAP-USD': { stats_24hour: { last: '1' } }, 'GRVT-USD': { stats_24hour: { last: '2' } } });
+  try {
+    const response = await request('/api/price-difference-quotes?exchange=coinbase');
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.deepEqual(payload.assets, { CAP: ['Cap', 'coinbase-cap'], GRVT: ['Grvt', 'coinbase-grvt'] });
+    assert.equal(payload.identitySource, 'Coinbase official currencies');
+    assert.equal(payload.marketIdentityVerified, undefined);
+    assert.deepEqual(payload.prices, { CAP: 1, GRVT: 2 });
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("catalog failures preserve bounded identity age but never relabel or renew an expired identity", async () => {
   const { request, storage } = await fixture();
   const originalFetch = globalThis.fetch;

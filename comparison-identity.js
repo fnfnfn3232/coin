@@ -5,6 +5,17 @@
     MLK: ["milk", "milkalliance"],
     FRAX: ["frax", "fraxfinance", "fraxprevfxs"],
     CC: ["canton", "cantonnetwork"], B3: ["b3", "b3base"],
+    ADA: ["ada", "cardano"], XLM: ["lumen", "stellar", "stellarlumens"],
+    SKY: ["sky", "skyprotocol"], MORPHO: ["morpho", "morphotoken", "morpholabs"],
+    RENDER: ["render", "rendertoken", "rendernetwork"], "1INCH": ["1inch", "1inchnetwork"],
+    PROM: ["prom", "prometeus"], ZRX: ["0x", "0xprotocol", "0xproject"],
+    CKB: ["ckb", "nervos", "nervosnetwork"], MOCA: ["mocanetwork", "mocacoin"],
+    ONG: ["ong", "ontologygas"], SNT: ["status", "statusnetwork", "statusnetworktoken"],
+    AUCTION: ["bounce", "auction", "bouncetoken", "bounceauction"], IQ: ["iq", "iqwiki"],
+    CBK: ["cobak", "cobaktoken"], FOLD: ["theinterfold", "interfold"], MIRA: ["mira", "miranetwork"],
+    ORDER: ["orderly", "orderlynetwork"], USDT: ["tether", "tetherusdt"],
+    TFUEL: ["tfuel", "thetafuel"], RON: ["ronin", "roninnetwork"], WAXP: ["waxp", "wax"],
+    US: ["talus", "talusnetwork"], BILL: ["billions", "billionsnetwork"], SIX: ["six", "sixnetwork"],
   };
   const chains = { ETH: "ethereum", ERC20: "ethereum", BSC: "bsc", BEP20: "bsc", ARBEVM: "arbitrum",
     ARBITRUM: "arbitrum", BASEEVM: "base", BASE: "base", SOL: "solana", SOLANA: "solana" };

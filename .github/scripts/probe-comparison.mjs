@@ -1,3 +1,5 @@
+import identity from "../../comparison-identity.js";
+
 const mintUrl = new URL(process.env.ACTIONS_ID_TOKEN_REQUEST_URL);
 mintUrl.searchParams.set("audience", "coin-board-auth-market-data");
 const mint = await fetch(mintUrl, { headers: { Authorization: `Bearer ${process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` } });
@@ -14,7 +16,7 @@ for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", 
       });
       if (!response.ok) throw new Error(`probe_http_${response.status}`);
       result = await response.json();
-      if (result.implementation === 5) break;
+      if (result.implementation === 6) break;
       // Worker deployment acknowledgement precedes worldwide propagation.
       if (attempt === 12) throw new Error("new_worker_not_propagated");
       await new Promise(resolve => setTimeout(resolve, 5000));
@@ -36,5 +38,3 @@ for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", 
   } catch (error) { console.log(JSON.stringify({ exchange: board, error: error.message })); failed += 1; }
 }
 if (failed) console.log(`::warning title=Production quote source issues::${failed} sources require investigation; inspect the sanitized diagnostics above.`);
-import identity from "../../comparison-identity.js";
-

@@ -640,6 +640,19 @@ function normalizeUniqueCoinCatalog(source, prices, exchange) {
   return assets;
 }
 
+function normalizeCoinbaseComparisonCatalog(source, prices) {
+  if (!Array.isArray(source)) throw new Error("invalid_coinbase_catalog");
+  const assets = {};
+  for (const row of source) {
+    const symbol = String(row.id || "");
+    const name = String(row.name || "").trim();
+    if (!/^[A-Z0-9]{1,40}$/.test(symbol) || !name || name.length > 120 || !toPositiveNumber(prices[symbol])) continue;
+    assets[symbol] = [name, `coinbase-${symbol.toLowerCase()}`];
+  }
+  if (!Object.keys(assets).length) throw new Error("empty_coinbase_catalog");
+  return assets;
+}
+
 async function fetchComparisonQuoteMap(exchange) {
   if (Object.hasOwn(ADDITIONAL_SPOT_SOURCES, exchange)) {
     return normalizeAdditionalSpotQuotes(exchange, await fetchJsonWithTimeout(ADDITIONAL_SPOT_SOURCES[exchange].url, 8000));
@@ -3225,7 +3238,7 @@ export class BoardStore {
       const quote = await this.state.storage.get(`price-difference-quotes-v1:${exchange}`);
       if (exchange === "binance" && quote?.error && now - quote.checkedAt < 300000) direct.push(exchange);
       if (!quote?.observedAt || quote.observedAt > now + 5000 || now - quote.observedAt > 120000) return;
-      const catalog = Object.hasOwn(ADDITIONAL_SPOT_SOURCES, exchange)
+      const catalog = exchange === "coinbase" || Object.hasOwn(ADDITIONAL_SPOT_SOURCES, exchange)
         ? await this.state.storage.get(`price-difference-catalog-v4:${exchange}`) : null;
       quotes[exchange] = { exchange, prices: quote.prices, observedAt: quote.observedAt,
         ...(catalog && now - catalog.fetchedAt <= 86400000 ? { assets: catalog.assets, catalogAt: catalog.fetchedAt } : {}) };
@@ -3247,7 +3260,10 @@ export class BoardStore {
         try {
           let assets;
           let sourceName;
-          if (exchange === "gateio") {
+          if (exchange === "coinbase") {
+            assets = normalizeCoinbaseComparisonCatalog(await fetchJsonWithTimeout("https://api.exchange.coinbase.com/currencies", 8000), prices);
+            sourceName = "Coinbase official currencies";
+          } else if (exchange === "gateio") {
             const market = await this.readMarketData();
             const locals = new Map([...(market?.boards?.upbit || []), ...(market?.boards?.bithumb || [])].map(row => [row.symbol, row.englishName]));
             const source = await fetchJsonWithTimeout("https://api.gateio.ws/api/v4/spot/currencies", 8000);
@@ -3298,7 +3314,7 @@ export class BoardStore {
     const stored = await this.state.storage.get(key);
     const respond = async (value) => {
       if (this.comparisonCoinsExpiresAt && now > this.comparisonCoinsExpiresAt) this.comparisonCoinsPromise = null;
-      const catalog = additional ? await this.readComparisonCatalog(exchange, value?.prices || {}) : null;
+      const catalog = additional || exchange === "coinbase" ? await this.readComparisonCatalog(exchange, value?.prices || {}) : null;
       return jsonResponse({ ...value, ...(catalog ? { assets: catalog.assets, catalogAt: catalog.fetchedAt,
         identitySource: catalog.source || "", identityError: catalog.error, identityErrorDetail: catalog.errorDetail || "" } : {}) }, Object.keys(value?.prices || {}).length ? 200 : 503, this.env);
     };
@@ -3354,26 +3370,31 @@ export class BoardStore {
         const rows = Object.hasOwn(ADDITIONAL_SPOT_SOURCES, board)
           ? Object.entries(payload.assets || {}).map(([symbol, asset]) => ({ symbol, englishName: asset[0], paprikaId: asset[1],
             comparisonIdentity: { officialName: board === "gateio" && asset[1] === `gate-${symbol.toLowerCase()}`, contracts: asset[2] || [] } }))
-          : (market?.boards?.[board] || []).map(fields);
+          : (market?.boards?.[board] || []).map(row => {
+            const item = fields(row);
+            const asset = payload.assets?.[item.symbol];
+            if (asset && asset[0].toLowerCase() === String(item.englishName || "").toLowerCase()) item.comparisonIdentity = { officialName: true };
+            return item;
+          });
         return { board, rows, pricedSymbols: Object.keys(payload.prices || {}), error: payload.error || payload.identityError || "" };
       }));
-      return jsonResponse({ implementation: 5, exchange, elapsedMs: Date.now() - started, local, references }, 200, this.env);
+      return jsonResponse({ implementation: 6, exchange, elapsedMs: Date.now() - started, local, references }, 200, this.env);
     }
     if (exchange === "fx") {
       const response = await this.handleComparisonFxRequest();
-      return jsonResponse({ implementation: 5, exchange, status: response.status, elapsedMs: Date.now() - started,
+      return jsonResponse({ implementation: 6, exchange, status: response.status, elapsedMs: Date.now() - started,
         ...(await response.json()) }, 200, this.env);
     }
     if (exchange === "bootstrap") {
       const value = await this.readComparisonBootstrap();
-      return jsonResponse({ implementation: 5, exchange, elapsedMs: Date.now() - started, fx: value.fx, direct: value.direct,
+      return jsonResponse({ implementation: 6, exchange, elapsedMs: Date.now() - started, fx: value.fx, direct: value.direct,
         counts: Object.fromEntries(Object.entries(value.quotes).map(([board, quote]) => [board, Object.keys(quote.prices || {}).length])) }, 200, this.env);
     }
     const response = await this.handleComparisonQuotesRequest(new URL(`https://board-store/api/price-difference-quotes?exchange=${encodeURIComponent(exchange)}`));
     const payload = await response.json();
     const market = await this.readMarketData();
     const symbols = ["SOON", "BEAM", "BEAMX", "FLUID", "PIEVERSE", "CC", "WAVES", "B3"];
-    return jsonResponse({ implementation: 5, exchange, status: response.status, elapsedMs: Date.now() - started,
+    return jsonResponse({ implementation: 6, exchange, status: response.status, elapsedMs: Date.now() - started,
       quoteCount: Object.keys(payload.prices || {}).length, identityCount: Object.keys(payload.assets || {}).length,
       error: payload.error || "", errorDetail: payload.errorDetail || "", identityError: payload.identityError || "",
       identityErrorDetail: payload.identityErrorDetail || "", observedAt: payload.observedAt || 0,
