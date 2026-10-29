@@ -11,6 +11,9 @@ on:
 
 jobs:
   deploy:
+    permissions:
+      contents: read
+      id-token: write
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -162,3 +165,6 @@ jobs:
         env:
           SITE_PASSWORD_SHA256: ${{ secrets.SITE_PASSWORD_SHA256 }}
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+
+      - name: Probe actual production quote sources
+        run: node .github/scripts/probe-comparison.mjs

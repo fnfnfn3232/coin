@@ -3156,9 +3156,9 @@ export class BoardStore {
         try {
           const source = await fetchJsonWithTimeout(`https://api.coinpaprika.com/v1/exchanges/${ADDITIONAL_SPOT_SOURCES[exchange].catalog}/markets?quotes=USD`, 8000);
           payload = { assets: normalizeComparisonCatalog(source), fetchedAt: now, checkedAt: now, error: "" };
-        } catch (_error) {
+        } catch (error) {
           payload = { assets: now - Number(stored?.fetchedAt || 0) <= 86400000 ? stored?.assets || {} : {},
-            fetchedAt: stored?.fetchedAt || 0, checkedAt: now, error: "identity_catalog_refresh_failed" };
+            fetchedAt: stored?.fetchedAt || 0, checkedAt: now, error: "identity_catalog_refresh_failed", errorDetail: String(error?.message || "unknown_error").slice(0, 160) };
         }
         await this.state.storage.put(key, payload);
         return payload;
@@ -3179,7 +3179,7 @@ export class BoardStore {
     const respond = async (value) => {
       const catalog = catalogPromise ? await catalogPromise : null;
       return jsonResponse({ ...value, ...(catalog ? { assets: catalog.assets, catalogAt: catalog.fetchedAt,
-        identitySource: "CoinPaprika", identityError: catalog.error } : {}) }, Object.keys(value?.prices || {}).length ? 200 : 503, this.env);
+        identitySource: "CoinPaprika", identityError: catalog.error, identityErrorDetail: catalog.errorDetail || "" } : {}) }, Object.keys(value?.prices || {}).length ? 200 : 503, this.env);
     };
     if (stored && now - stored.checkedAt < (stored.error ? 15000 : 25000)) return respond(stored);
     let pending = this.comparisonQuotePromises.get(exchange);
@@ -3191,8 +3191,8 @@ export class BoardStore {
           const prices = await fetchComparisonQuoteMap(exchange);
           if (!Object.keys(prices).length) throw new Error("empty_comparison_quotes");
           payload = { exchange, prices, observedAt, checkedAt: Date.now(), error: "" };
-        } catch (_error) {
-          payload = { ...(stored || { exchange, prices: {}, observedAt: 0 }), checkedAt: Date.now(), error: "quote_refresh_failed" };
+        } catch (error) {
+          payload = { ...(stored || { exchange, prices: {}, observedAt: 0 }), checkedAt: Date.now(), error: "quote_refresh_failed", errorDetail: String(error?.message || "unknown_error").slice(0, 160) };
         }
         await this.state.storage.put(key, payload);
         return payload;
@@ -3213,6 +3213,22 @@ export class BoardStore {
     }
     const payload = await this.comparisonFxPromise;
     return jsonResponse(payload, payload.rate ? 200 : 503, this.env);
+  }
+
+  async probeComparisonSource(exchange) {
+    const started = Date.now();
+    const response = await this.handleComparisonQuotesRequest(new URL(`https://board-store/api/price-difference-quotes?exchange=${encodeURIComponent(exchange)}`));
+    const payload = await response.json();
+    const market = await this.readMarketData();
+    const symbols = ["ZBT", "FRAX", "KGEN", "MLK", "XDP"];
+    return jsonResponse({ exchange, status: response.status, elapsedMs: Date.now() - started,
+      quoteCount: Object.keys(payload.prices || {}).length, identityCount: Object.keys(payload.assets || {}).length,
+      error: payload.error || "", errorDetail: payload.errorDetail || "", identityError: payload.identityError || "",
+      identityErrorDetail: payload.identityErrorDetail || "", observedAt: payload.observedAt || 0,
+      targets: symbols.map(symbol => ({ symbol, price: payload.prices?.[symbol] ?? null, identity: payload.assets?.[symbol] || null,
+        localNames: ["upbit", "bithumb", "binance", "coinbase"].flatMap(board => (market?.boards?.[board] || [])
+          .filter(row => row.symbol === symbol).map(row => ({ board, englishName: row.englishName, koreanName: row.koreanName,
+            coingeckoId: row.coingeckoId || "", verified: row.marketIdentityVerified, contracts: row.contractAddresses || [] }))) })) }, 200, this.env);
   }
 
   async loadL2Fees() {
@@ -4614,6 +4630,7 @@ export class BoardStore {
       && url.pathname === "/api/market-data"
       && request.headers.get("X-Market-Data-Sync") === "1"
     ) {
+      if (url.searchParams.has("probeComparison")) return this.probeComparisonSource(url.searchParams.get("probeComparison"));
       return this.recordApiResponse(await this.handleMarketDataRequest(request, url, true));
     }
 

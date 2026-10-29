@@ -86,6 +86,14 @@ const feeSource = (fee = 12) => ({ protocols: [
   { slug: "ethereum", name: "Ethereum", category: "Chain", protocolType: "chain", total24h: 200, total7d: 1400, total30d: 6000 },
 ] });
 
+test("production comparison probes cannot be opened by forged sync headers or ordinary sessions", async () => {
+  const { rawRequest, memberToken, adminToken } = await fixture();
+  for (const token of ["", memberToken, adminToken]) {
+    const response = await rawRequest("/api/market-data?probeComparison=gateio", "GET", undefined, token, { "X-Market-Data-Sync": "1" });
+    assert.equal(response.status, 401);
+  }
+});
+
 test("additional comparison feeds accept only valid USDT spot products and success envelopes", () => {
   assert.deepEqual(normalizeAdditionalSpotQuotes("gateio", [{ currency_pair: "XCN_USDT", last: "0.004" }, { currency_pair: "XCN_BTC", last: "10" }]), { XCN: 0.004 });
   assert.deepEqual(normalizeAdditionalSpotQuotes("bybit", { retCode: 0, result: { category: "spot", list: [{ symbol: "NEOUSDT", lastPrice: "2" }, { symbol: "NEOUSDC", lastPrice: "999" }] } }), { NEO: 2 });
