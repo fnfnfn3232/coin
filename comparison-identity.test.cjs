@@ -1,10 +1,19 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const fs = require('node:fs');
+const path = require('node:path');
+const { createHash } = require('node:crypto');
 const identity = require('./comparison-identity.js');
 
 const context = { baseBoard: 'bithumb', referenceBoard: 'gateio' };
 const domestic = (symbol, englishName = symbol) => ({ symbol, englishName, koreanName: '\uad6d\ub0b4\ucf54\uc778', marketIdentityVerified: false });
 const gate = (symbol, englishName = symbol) => ({ symbol, englishName, paprikaId: `gate-${symbol.toLowerCase()}`, comparisonIdentity: { officialName: true } });
+
+test('browser identity asset URL changes whenever its implementation changes', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'comparison-identity.js'), 'utf8').replace(/\r\n/g, '\n');
+  const hash = createHash('sha256').update(source).digest('hex').slice(0, 12);
+  assert.ok(fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8').includes(`comparison-identity.js?v=${hash}`));
+});
 
 test('official ticker-shaped project names work independently of cap/supply verification', () => {
   for (const symbol of ['SOON', 'FLUID', 'PIEVERSE', 'WAVES', 'KGEN']) {
