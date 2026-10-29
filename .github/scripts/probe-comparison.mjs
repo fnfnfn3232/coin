@@ -11,9 +11,18 @@ for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", 
   try {
     let result;
     for (let attempt = 0; attempt < 13; attempt += 1) {
-      const response = await fetch(`https://coin-board-auth.dlatl20000.workers.dev/api/market-data?probeComparison=${board}`, {
-        headers: { Authorization: `Bearer ${token}`, "X-Market-Data-Sync": "1" }, signal: AbortSignal.timeout(45000),
-      });
+      let response;
+      for (let transportAttempt = 0; transportAttempt < 3; transportAttempt += 1) {
+        try {
+          response = await fetch(`https://coin-board-auth.dlatl20000.workers.dev/api/market-data?probeComparison=${board}`, {
+            headers: { Authorization: `Bearer ${token}`, "X-Market-Data-Sync": "1" }, signal: AbortSignal.timeout(45000),
+          });
+          break;
+        } catch (error) {
+          if (transportAttempt === 2) throw error;
+          await new Promise(resolve => setTimeout(resolve, 1000 * (transportAttempt + 1)));
+        }
+      }
       if (!response.ok) throw new Error(`probe_http_${response.status}`);
       result = await response.json();
       if (result.implementation === 6) break;
