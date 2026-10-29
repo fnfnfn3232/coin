@@ -5,7 +5,7 @@ if (!mint.ok) throw new Error(`oidc_mint_failed:${mint.status}`);
 const { value: token } = await mint.json();
 if (!token) throw new Error("oidc_token_missing");
 let failed = 0;
-for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", "bybit", "bitget", "okx", "fx", "bootstrap"]) {
+for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", "bybit", "bitget", "okx", "audit", "bootstrap"]) {
   try {
     let result;
     for (let attempt = 0; attempt < 13; attempt += 1) {
@@ -14,13 +14,27 @@ for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", 
       });
       if (!response.ok) throw new Error(`probe_http_${response.status}`);
       result = await response.json();
-      if (result.implementation === 4) break;
+      if (result.implementation === 5) break;
       // Worker deployment acknowledgement precedes worldwide propagation.
       if (attempt === 12) throw new Error("new_worker_not_propagated");
       await new Promise(resolve => setTimeout(resolve, 5000));
     }
-    console.log(JSON.stringify(result));
-    if (result.error || result.identityError || (board === "fx" ? !result.rate || result.stale : board !== "bootstrap" && !result.quoteCount)) failed += 1;
+    if (board === "audit") {
+      const rows = result.local.map(item => {
+        const listed = result.references.flatMap(source => source.rows.filter(candidate => identity.symbol(candidate, source.board) === identity.symbol(item.row, item.board))
+          .map(candidate => ({ ...candidate, board: source.board })));
+        const matches = listed.filter(candidate => identity.matches(item.row, candidate, { baseBoard: item.board, referenceBoard: candidate.board, info: item.info }));
+        return { board: item.board, symbol: item.row.symbol, name: item.row.englishName, capVerified: item.row.marketIdentityVerified,
+          matches: matches.map(row => `${row.board}:${row.symbol}`),
+          ...(!matches.length && listed.length ? { candidates: listed.map(row => ({ board: row.board, symbol: row.symbol, name: row.englishName })) } : {}) };
+      });
+      console.log(JSON.stringify({ exchange: "audit", total: rows.length, matched: rows.filter(row => row.matches.length).length,
+        unverified: rows.filter(row => row.candidates), unavailable: rows.filter(row => !row.matches.length && !row.candidates),
+        reported: rows.filter(row => ["SOON", "BEAM", "FLUID", "PIEVERSE", "CC", "WAVES", "B3"].includes(row.symbol)) }));
+    } else console.log(JSON.stringify(result));
+    if (result.error || result.identityError || (board === "fx" ? !result.rate || result.stale : !["audit", "bootstrap"].includes(board) && !result.quoteCount)) failed += 1;
   } catch (error) { console.log(JSON.stringify({ exchange: board, error: error.message })); failed += 1; }
 }
 if (failed) console.log(`::warning title=Production quote source issues::${failed} sources require investigation; inspect the sanitized diagnostics above.`);
+import identity from "../../comparison-identity.js";
+

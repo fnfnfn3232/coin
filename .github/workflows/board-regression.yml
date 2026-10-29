@@ -6,6 +6,8 @@ on:
     branches: [main]
     paths:
       - "index.html"
+      - "comparison-identity.js"
+      - "comparison-identity.test.cjs"
       - "test_board_*.cjs"
       - "test_price_difference.cjs"
       - "server-auth/**"
@@ -13,6 +15,8 @@ on:
   pull_request:
     paths:
       - "index.html"
+      - "comparison-identity.js"
+      - "comparison-identity.test.cjs"
       - "test_board_*.cjs"
       - "test_price_difference.cjs"
       - "server-auth/**"
@@ -35,7 +39,7 @@ jobs:
         with:
           node-version: "22"
       - name: Verify permissions, sessions and uploads
-        run: node --test server-auth/board-permissions.test.mjs server-auth/security-regression.test.mjs
+        run: node --test comparison-identity.test.cjs server-auth/board-permissions.test.mjs server-auth/security-regression.test.mjs
       - name: Install isolated browser test tools
         run: |
           npm install --no-save --package-lock=false playwright@1.62.1

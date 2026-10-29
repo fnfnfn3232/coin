@@ -4141,6 +4141,7 @@
     .price-difference-source { font-size: 12px; color: var(--accent); margin-top: 3px; }
     .price-difference-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin-top: 12px; font-size: 13px; color: var(--muted); }
     .price-difference-tools select { width: auto; max-width: 100%; padding: 7px 26px 7px 10px; font-size: 13px; }
+    .price-difference-tools[hidden], #thPriceDifference[hidden], #marketTable .price-difference-cell[hidden] { display: none !important; }
     .coin-rating { color: var(--accent); font-size: 15px; font-weight: 700; letter-spacing: 0; text-decoration: none; }
     a.coin-rating:hover { text-decoration: underline; text-underline-offset: 3px; }
     .coin-rating.grade-b { color: #087b67; }
@@ -7440,6 +7441,7 @@
   </div>
 
   <script src="./vendor/js-md5.min.js"></script>
+  <script src="./comparison-identity.js?v=20261029"></script>
   <script>
     window.SERVER_AUTH_API_BASE = "https://coin-board-auth.dlatl20000.workers.dev";
   </script>
@@ -16638,6 +16640,12 @@
       const PRICE_DIFFERENCE_ADDITIONAL_BOARDS = ["gateio", "bybit", "bitget", "okx"];
       let priceDifferenceAdditionalRows = {};
 
+      function isDomesticComparisonBoard() { return ["upbit", "bithumb", "triple"].includes(state.board); }
+
+      function comparisonIdentitySymbol(row, board) {
+        return window.BlockscopeComparisonIdentity?.symbol(row, board) || getComparableSymbol(row);
+      }
+
       function comparisonMarketRows(board) {
         return PRICE_DIFFERENCE_ADDITIONAL_BOARDS.includes(board) ? priceDifferenceAdditionalRows[board] || [] : data.boards?.[board] || [];
       }
@@ -16646,7 +16654,7 @@
         if (!priceDifferenceMarketIndexes.has(board)) {
           const index = new Map();
           for (const row of comparisonMarketRows(board)) {
-            const key = getComparableSymbol(row);
+            const key = comparisonIdentitySymbol(row, board);
             if (!index.has(key)) index.set(key, []);
             index.get(key).push(row);
           }
@@ -16778,6 +16786,8 @@
               row.englishName = quote.identity.name;
               row.paprikaId = quote.identity.id;
               row.identityAt = quote.identity.at;
+              row.comparisonIdentity = { officialName: board === "gateio" && quote.identity.id === `gate-${symbol.toLowerCase()}`,
+                contracts: quote.identity.contracts || [] };
               row.comparisonExchange = board;
               return row;
             });
@@ -16811,7 +16821,7 @@
       }
 
       function requestPriceDifferenceQuotes(prewarm = false) {
-        if (isLocalPreview() || !hasServerAuth() || !siteAuthConfirmed || isSiteLocked() || document.hidden || !navigator.onLine || (!prewarm && state.viewMode !== "market")) return;
+        if (!isDomesticComparisonBoard() || isLocalPreview() || !hasServerAuth() || !siteAuthConfirmed || isSiteLocked() || document.hidden || !navigator.onLine || (!prewarm && state.viewMode !== "market")) return;
         const exchange = state.board === "triple" ? "bithumb" : state.board;
         const boards = new Set([exchange, state.priceDifferenceBoard]);
         if (boards.has("binance")) boards.add("coinbase");
@@ -16881,7 +16891,7 @@
                 const asset = payload.assets?.[symbol];
                 if (PRICE_DIFFERENCE_ADDITIONAL_BOARDS.includes(board) && !Array.isArray(asset)) continue;
                 rememberComparisonQuote(board, symbol, price, payload.observedAt,
-                  Array.isArray(asset) ? { name: asset[0], id: asset[1], at: payload.catalogAt } : null);
+                  Array.isArray(asset) ? { name: asset[0], id: asset[1], at: payload.catalogAt, contracts: asset[2] || [] } : null);
               }
               pending.catalogCheckedAt = Date.now() - (payload.identityError ? 6 * 3600000 - 300000 : 0);
               resetComparisonIdentityCache();
@@ -16904,31 +16914,13 @@
       function priceDifferenceCandidates(row) {
         if (priceDifferenceReferences.has(row)) return priceDifferenceReferences.get(row);
         const symbol = getComparableSymbol(row);
-        const names = (item) => [item.englishName, ...(item.nameKeys || [])]
-          .map((name) => String(name || "").toLowerCase().replace(/[^a-z0-9가-힣]/g, ""))
-          .filter((name) => name && name !== String(item.symbol || "").toLowerCase());
-        const ownNames = names(row);
-        // Reviewed project spellings, not general ticker-only identity matching.
-        // FRAX here is the renamed FXS governance token, not Legacy Frax Dollar.
-        const projectNames = {
-          KGEN: ["kgen"], MLK: ["milk", "milkalliance"],
-          FRAX: ["frax", "fraxfinance", "fraxprevfxs"],
-        }[symbol];
-        const reviewedName = item => projectNames?.includes(String(item.englishName || "").toLowerCase().replace(/[^a-z0-9]/g, ""));
         const baseBoard = state.board === "triple" ? "bithumb" : state.board;
         const order = [...new Set([state.priceDifferenceBoard, "binance", "coinbase", ...PRICE_DIFFERENCE_ADDITIONAL_BOARDS])].filter(board => board !== baseBoard);
         const candidates = order.flatMap(board => {
           const matches = comparisonMarketMatches(board, symbol).filter((candidate) => {
             if (PRICE_DIFFERENCE_ADDITIONAL_BOARDS.includes(board) && Date.now() - candidate.identityAt > 86400000) return false;
-            if (getComparableSymbol(candidate) !== symbol || row.marketIdentityVerified === false || candidate.marketIdentityVerified === false) return false;
-            if (row.coingeckoId && candidate.coingeckoId) return row.coingeckoId === candidate.coingeckoId;
-            if (symbol === "FRAX" && candidate.paprikaId === "frax-frax") return false;
-            if (reviewedName(row) && reviewedName(candidate)) return true;
-            const candidateNames = names(candidate);
-            const englishNames = ownNames.filter((name) => /^[a-z0-9]+$/.test(name));
-            const candidateEnglish = candidateNames.filter((name) => /^[a-z0-9]+$/.test(name));
-            if (englishNames.length && candidateEnglish.length) return englishNames.some((name) => candidateEnglish.includes(name));
-            return ownNames.length && candidateNames.some((name) => ownNames.includes(name));
+            return window.BlockscopeComparisonIdentity?.matches(row, candidate, { baseBoard, referenceBoard: board,
+              info: data.coinInfo?.[getComparableSymbol(row)], referenceInfo: data.coinInfo?.[candidate.symbol] }) === true;
           });
           if (matches.length !== 1) return [];
           matches[0].comparisonExchange = board;
@@ -16955,6 +16947,7 @@
       }
 
       function getPriceDifference(row, now = Date.now()) {
+        if (!isDomesticComparisonBoard()) return { reason: "국내 거래소에서만 시세차이를 계산합니다." };
         const reference = priceDifferenceReference(row);
         if (!reference) {
           const listed = [state.priceDifferenceBoard, "binance", "coinbase", ...PRICE_DIFFERENCE_ADDITIONAL_BOARDS]
@@ -17057,7 +17050,7 @@
           for (const [symbol, price] of Object.entries(quote?.prices || {})) {
             const asset = quote.assets?.[symbol];
             rememberComparisonQuote(board, symbol, price, quote.observedAt,
-              Array.isArray(asset) ? { name: asset[0], id: asset[1], at: quote.catalogAt } : null);
+              Array.isArray(asset) ? { name: asset[0], id: asset[1], at: quote.catalogAt, contracts: asset[2] || [] } : null);
           }
           if (PRICE_DIFFERENCE_ADDITIONAL_BOARDS.includes(board) && quote.assets) {
             const request = priceDifferenceQuoteRequests.get(board) || { pending: false };
@@ -17077,7 +17070,7 @@
       }
 
       async function requestPriceDifferenceFx() {
-        if (isLocalPreview() || !hasServerAuth() || !siteAuthConfirmed || isSiteLocked() || document.hidden || !navigator.onLine
+        if (!isDomesticComparisonBoard() || isLocalPreview() || !hasServerAuth() || !siteAuthConfirmed || isSiteLocked() || document.hidden || !navigator.onLine
           || priceDifferenceFxPromise || Date.now() < priceDifferenceFxRetryAt) return;
         priceDifferenceFxRetryAt = Date.now() + 30000;
         const generation = priceDifferenceGeneration;
@@ -17114,7 +17107,7 @@
       }
 
       function syncPriceDifferenceStreams() {
-        if (document.hidden || !navigator.onLine || isSiteLocked() || (!isLocalPreview() && !siteAuthConfirmed) || state.viewMode !== "market") { closePriceDifferenceStreams(); return; }
+        if (!isDomesticComparisonBoard() || document.hidden || !navigator.onLine || isSiteLocked() || (!isLocalPreview() && !siteAuthConfirmed) || state.viewMode !== "market") { closePriceDifferenceStreams(); return; }
         requestPriceDifferenceFx();
         requestPriceDifferenceQuotes();
         const exchange = state.board === "triple" ? "bithumb" : state.board;
@@ -17200,7 +17193,7 @@
       }
 
       window.setInterval(() => {
-        if (!document.hidden && state.viewMode === "market" && !isSiteLocked()) {
+        if (isDomesticComparisonBoard() && !document.hidden && state.viewMode === "market" && !isSiteLocked()) {
           refreshPriceDifferenceCells();
           if (priceDifferenceFx) renderComparisonFxStatus();
           requestPriceDifferenceFx();
@@ -18270,7 +18263,7 @@
                 <div class="price-main" data-live-price-main${row.exchange === "robinhood" ? ` title="${escapeAttr(`로빈후드 기준가(mark)${row.priceStale ? ' · 갱신 지연, 이전 확인 가격' : ''}${row.priceUpdatedAt ? ` · ${formatExchangeHistoryTime(row.priceUpdatedAt)}` : ''}`)}"` : ""}>${escapeHtml(price.main || TEXT.unknown)}</div>
                 <div class="price-sub" data-live-price-sub>${escapeHtml(price.sub || TEXT.noPrice)}</div>
               </td>
-              <td class="price-difference-cell" data-label="시세차이" data-price-difference>${renderPriceDifference(row)}</td>
+              ${isDomesticComparisonBoard() ? `<td class="price-difference-cell" data-label="시세차이" data-price-difference>${renderPriceDifference(row)}</td>` : '<td class="price-difference-cell" hidden></td>'}
               <td data-label="${TEXT.thCap}">
                 <div class="cap-main">${escapeHtml(cap.main || TEXT.unknown)}</div>
                 <div class="cap-sub">${escapeHtml(cap.sub || TEXT.noCap)}</div>
@@ -18291,6 +18284,10 @@
     }
 
       function render() {
+        const domesticComparison = isDomesticComparisonBoard();
+        thPriceDifference.hidden = !domesticComparison;
+        document.querySelector(".price-difference-tools").hidden = !domesticComparison;
+        if (!domesticComparison && state.sortKey === "difference") { state.sortKey = "cap"; state.sortDirection = "desc"; }
         if (state.viewMode === "market") requestLiveNewsRefresh(false);
         renderHeroNewsPreview();
         normalizeKnownAssetIdentities();

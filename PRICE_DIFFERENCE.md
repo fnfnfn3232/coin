@@ -1,5 +1,28 @@
 # Price Difference (2026-10-29)
 
+## Domestic Premium Scope and Whole-List Audit
+
+- Premium controls, column, sorting and auxiliary quote/FX requests apply only
+  to Upbit/Bithumb (including the four-exchange intersection's Bithumb base).
+  Binance/Coinbase/Robinhood keep their normal price streams but no premium UI.
+- `comparison-identity.js` is the same matcher used by the browser and trusted
+  deployment audit. The audit checks every domestic listing, not just examples,
+  and reports matched, unverified and unavailable assets separately.
+- `marketIdentityVerified` controls external cap/supply provenance. Its false
+  value no longer disqualifies independently verified exchange trade identity.
+  This does not create, copy or change any market cap or supply quantity.
+- Official Gate project names can be identical to their ticker (SOON, FLUID,
+  PIEVERSE, WAVES, etc.). Matching requires an explicit domestic project name
+  plus its independently sourced Korean name and official foreign metadata;
+  two unqualified raw tickers alone remain insufficient.
+- Canton/Canton Network and B3/B3 Base spellings are reviewed project aliases.
+  Gaming BEAM maps to Binance/Gate BEAMX. The unrelated privacy BEAM is excluded.
+  Evidence: https://www.binance.com/en/support/announcement/detail/c8705b752c7c47fc814a373a0f1856ee
+- Official explorer contracts can resolve naming differences. Addresses are
+  chain-scoped, EVM-normalized, and conflicts reject a match. Gate contract
+  metadata is retained only for relevant naming differences/BEAMX, keeping each
+  shared catalog bounded. Legacy FRAX and AI/Gensyn collisions remain rejected.
+
 ## Current Intraday FX and Startup
 
 The user selected free operation with automatically refreshed intraday reference
