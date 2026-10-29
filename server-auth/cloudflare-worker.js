@@ -3276,7 +3276,7 @@ export class BoardStore {
     const payload = await response.json();
     const market = await this.readMarketData();
     const symbols = ["ZBT", "FRAX", "KGEN", "MLK", "XDP"];
-    return jsonResponse({ exchange, status: response.status, elapsedMs: Date.now() - started,
+    return jsonResponse({ implementation: 2, exchange, status: response.status, elapsedMs: Date.now() - started,
       quoteCount: Object.keys(payload.prices || {}).length, identityCount: Object.keys(payload.assets || {}).length,
       error: payload.error || "", errorDetail: payload.errorDetail || "", identityError: payload.identityError || "",
       identityErrorDetail: payload.identityErrorDetail || "", observedAt: payload.observedAt || 0,
