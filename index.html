@@ -3402,6 +3402,18 @@
         color: #ffffff;
       }
 
+      .free-board-detail-delete-btn {
+        border-color: rgba(225, 94, 110, 0.58);
+        background: rgba(130, 46, 58, 0.52);
+        color: #ffe8ec;
+      }
+
+      .free-board-detail-delete-btn:hover {
+        border-color: rgba(245, 113, 130, 0.9);
+        background: rgba(180, 70, 84, 0.78);
+        color: #ffffff;
+      }
+
       .free-board-detail-write-btn {
         border-color: rgba(117, 221, 255, 0.36);
         background: rgba(0, 86, 112, 0.28);
@@ -11362,7 +11374,7 @@
                 <div class="free-board-detail-actions-right">
                   ${canManageFreeBoardRecord(selectedPost) ? `
                     <button class="free-board-detail-btn free-board-detail-manage-btn" type="button" data-free-board-edit="${escapeAttr(selectedPost.id)}">수정</button>
-                    <button class="free-board-detail-btn free-board-detail-manage-btn" type="button" data-free-board-delete="${escapeAttr(selectedPost.id)}">삭제</button>
+                    <button class="free-board-detail-btn free-board-detail-delete-btn" type="button" data-free-board-delete="${escapeAttr(selectedPost.id)}">삭제</button>
                   ` : ""}
                   ${canWriteFreeBoard() ? `<button class="free-board-detail-btn free-board-detail-write-btn" type="button" data-free-board-write>글쓰기</button>` : ""}
                 </div>
