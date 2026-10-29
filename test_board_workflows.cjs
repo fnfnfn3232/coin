@@ -130,6 +130,20 @@ async function main() {
     finally { for (const key of held) release(key); await context.close(); }
   }
   try {
+    await test('post delete uses restrained red while edit keeps its existing blue', async ({ page, read }) => {
+      await read();
+      const remove = page.locator('[data-free-board-delete="workflow-post"]');
+      const edit = page.locator('[data-free-board-edit="workflow-post"]');
+      assert.equal(await remove.evaluate(node => getComputedStyle(node).backgroundColor), 'rgba(130, 46, 58, 0.52)');
+      assert.equal(await edit.evaluate(node => getComputedStyle(node).backgroundColor), 'rgba(46, 58, 130, 0.52)');
+      if (process.env.BOARD_DELETE_STYLE_SCREENSHOT) {
+        await page.locator('.free-board-detail-actions').screenshot({ path: process.env.BOARD_DELETE_STYLE_SCREENSHOT });
+      }
+      await remove.hover();
+      await page.waitForTimeout(200);
+      assert.equal(await remove.evaluate(node => getComputedStyle(node).backgroundColor), 'rgba(180, 70, 84, 0.78)');
+      assert.equal(await page.locator('#deleteAuthModal').isVisible(), false);
+    });
     await test('admin can save an edit only after verifying the password', async ({ page, read, edit, count }) => {
       await read();
       await edit();
