@@ -397,7 +397,9 @@ async function main() {
         { at: historyNow - 20, kind: 'fallback', component: 'upbit_notices' },
         { at: historyNow - 30, kind: 'maintenance', component: 'pipeline', commit: 'a'.repeat(40), title: '<img src=x onerror=window.historyXss=1>', detail: '검증된 개발 수정' },
         ...Array.from({ length: 24 }, (_, index) => ({ at: historyNow - 60 - index * 60, kind: 'recovered', component: 'binance' })),
-      ] } };
+      ] }, comparisonHealth: { checkedAt: historyNow * 1000, counts: { delayed: 1 }, activeAlerts: 1, newAlerts: 1,
+        rows: [['upbit', 'BTC', 'delayed', 'coinbase']],
+        events: [{ at: historyNow * 1000, kind: 'attention', newAlerts: 1, counts: { delayed: 1 } }] } };
     const migrated = await page.evaluate(() => {
       const old = { boards: {}, refreshHealth: { state: 'degraded', events: [{ title: 'old-admin-history' }], components: { old: {} } },
         noticeRefresh: { upbit: { providers: { secret: {} } } } };
@@ -435,7 +437,11 @@ async function main() {
     await page.waitForSelector('.refresh-history-row');
     assert.equal(await page.locator('#refreshHistoryPassword').inputValue(), '');
     assert.match(await page.locator('#refreshHistorySubtitle').textContent(), /한국시간/);
-    assert.match(await page.locator('.refresh-history-status').textContent(), /코인베이스 선물.*자동 재시도 중/);
+    const snapshotStatus = page.locator('.refresh-history-status').filter({ has: page.getByRole('heading', { name: '조회 시점 상태', exact: true }) });
+    assert.match(await snapshotStatus.textContent(), /코인베이스 선물.*자동 재시도 중/);
+    const comparisonStatus = page.locator('.refresh-history-status').filter({ hasText: '시세차이 전체 자동 점검' });
+    assert.match(await comparisonStatus.textContent(), /지속 장애 1개.*신규 알림 대상 1개/);
+    assert.match(await comparisonStatus.textContent(), /지속 장애 알림 대상 확인/);
     assert.equal(await page.locator('.refresh-history-row').count(), 28);
     assert.equal(await page.locator('#refreshHistoryBody img').count(), 0, 'development notes are escaped, not executed');
     assert.equal(await page.evaluate(() => window.historyXss || 0), 0);

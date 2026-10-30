@@ -3213,15 +3213,45 @@ export class BoardStore {
     }
     const checkedAt = Date.now();
     const counts = Object.fromEntries([...states].map(state => [state, body.rows.filter(row => row[2] === state).length]));
-    const previous = await this.state.storage.get("comparison-health-v1");
     const signature = await sha256Hex(JSON.stringify(body.rows.filter(row => !["ok", "domestic"].includes(row[2])).sort()));
-    const changed = signature !== previous?.signature;
-    const events = [...(previous?.events || [])];
-    if (changed) events.unshift({ at: checkedAt, counts, kind: counts.delayed + counts.identity + counts.fx + counts.no_market ? "attention" : "recovered" });
-    const payload = { checkedAt, counts, rows: body.rows, signature, events: events.slice(0, 100),
-      consecutive: changed ? 1 : (previous?.consecutive || 0) + 1 };
-    await this.state.storage.put("comparison-health-v1", payload);
-    return jsonResponse({ ok: true, checkedAt, counts, consecutive: payload.consecutive }, 200, this.env);
+    const reportId = typeof body.reportId === "string" && /^\d{1,20}:\d{1,6}$/.test(body.reportId) ? body.reportId : "";
+    return this.state.storage.transaction(async storage => {
+      const previous = await storage.get("comparison-health-v1");
+      const respond = value => jsonResponse({ ok: true, alertVersion: 1, checkedAt: value.checkedAt, counts: value.counts,
+        consecutive: value.consecutive, newAlerts: value.newAlerts || 0, activeAlerts: value.activeAlerts || 0,
+        recoveredAlerts: value.recoveredAlerts || 0 }, 200, this.env);
+      if (reportId && previous?.reportId === reportId) return respond(previous);
+      const saved = await storage.get("comparison-alerts-v1") || [];
+      const pending = new Map(saved.map(item => [item[0], item]));
+      const priorRows = new Map((previous?.rows || []).map(row => [`${row[0]}:${row[1]}`, row[2]]));
+      const next = [];
+      let newAlerts = 0;
+      for (const row of body.rows) {
+        const id = `${row[0]}:${row[1]}`;
+        const prior = pending.get(id);
+        const actionable = ["delayed", "identity", "fx"].includes(row[2])
+          || (row[2] === "no_market" && (prior || ["ok", "domestic"].includes(priorRows.get(id))));
+        if (!actionable) continue;
+        // Independent per-coin streaks prevent one flapping market masking another.
+        const continuous = prior && checkedAt >= prior[2] && checkedAt - Number(previous?.checkedAt || 0) <= 3600000;
+        const item = continuous ? [...prior] : [id, checkedAt, checkedAt, 1, false];
+        if (continuous && checkedAt - item[2] >= 10 * 60000) { item[2] = checkedAt; item[3]++; }
+        if (!item[4] && item[3] >= 3 && checkedAt - item[1] >= 30 * 60000) { item[4] = true; newAlerts++; }
+        next.push(item);
+      }
+      const ids = new Set(next.map(item => item[0]));
+      const recoveredAlerts = saved.filter(item => item[4] && !ids.has(item[0])).length;
+      const changed = signature !== previous?.signature;
+      const events = [...(previous?.events || [])];
+      if (changed || newAlerts || recoveredAlerts) events.unshift({ at: checkedAt, counts, newAlerts, recoveredAlerts,
+        kind: counts.delayed + counts.identity + counts.fx + counts.no_market ? "attention" : "recovered" });
+      const payload = { checkedAt, counts, rows: body.rows, signature, events: events.slice(0, 100), reportId,
+        newAlerts, recoveredAlerts, activeAlerts: next.filter(item => item[4]).length,
+        consecutive: changed ? 1 : (previous?.consecutive || 0) + 1 };
+      await storage.put("comparison-alerts-v1", next);
+      await storage.put("comparison-health-v1", payload);
+      return respond(payload);
+    });
   }
 
   async handleLivePricesRequest() {
