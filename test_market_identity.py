@@ -43,6 +43,7 @@ class MarketIdentityTests(unittest.TestCase):
         market.apply_gensyn_identity(gensyn)
         groups = [("bithumb", [gensyn]), ("binance", [sleepless]), ("coinbase", [gensyn])]
         rows = [{"exchange": exchange, "symbol": "AI", "name": "AI", "priceUsd": 0.02} for exchange in ("binance", "coinbase")]
+        rows[1].update({"underlyingIdentityVerified": True, "underlyingName": "Gensyn", "englishName": "Gensyn"})
         market.apply_futures_underlying_market_data(rows, groups)
         self.assertEqual(rows[0]["englishName"], "Sleepless AI")
         self.assertEqual(rows[0]["marketCapUsd"], 12500000)
@@ -123,6 +124,8 @@ class MarketIdentityTests(unittest.TestCase):
         self.assertTrue(row["marketIdentityVerified"])
         for exchange in ("binance", "coinbase", "bybit"):
             future = {"exchange": exchange, "symbol": "CT", "name": "CT", "priceUsd": 0.379}
+            if exchange == "coinbase":
+                future.update({"underlyingIdentityVerified": True, "underlyingName": "Concrete", "englishName": "Concrete"})
             market.apply_futures_underlying_market_data([future], [("coinbase", [row])])
             self.assertEqual(future["marketCapUsd"], correct["marketCapUsd"])
             self.assertEqual(future["englishName"], "Concrete")

@@ -56,6 +56,8 @@ async function main() {
   let directCalls = 0;
   let snapshotBootstrap = false;
   let fxRate = 1300;
+  let coinbaseFuturesCalls = 0;
+  let coinbaseFuturesFailure = false;
   const fxPayload = () => ({ rate: fxRate, asOf: Date.now(), date: new Date().toISOString().slice(0, 10),
     source: 'currency-converter.live', frequency: 'intraday', marketStatus: 'open', checkedAt: Date.now(), stale: false });
   page.on('pageerror', error => { errors.push(error.message); console.error('Browser error:', error.message); });
@@ -101,6 +103,18 @@ async function main() {
           prices: { [fixture.symbol]: fixture.price }, assets: { [fixture.symbol]: [fixture.name, `${fixture.symbol.toLowerCase()}-asset`] }, catalogAt: Date.now() }])),
       } };
     }
+    else if (url.pathname === '/api/coinbase-futures') {
+      coinbaseFuturesCalls++;
+      if (coinbaseFuturesFailure) return route.fulfill({ status: 503, json: { error: 'upstream_unavailable' } });
+      result = { observedAt: Date.now(), rows: ['BTC', 'ETH', 'AI'].map(symbol => ({ symbol, rawUnderlyingSymbol: symbol,
+        contractId: `${symbol}_USDC-PERPETUAL`, pair: `${symbol}_USDC-PERPETUAL`, exchange: 'coinbase',
+        contractType: 'PERPETUAL', contractTypeLabel: '무기한', contractMarket: 'Coinbase / Deribit', underlyingType: 'crypto',
+        quoteAsset: 'USDC', marginAsset: 'USDC', priceCurrency: 'USDC', nativeCurrency: 'USD',
+        underlyingIdentityVerified: true, underlyingName: { BTC: 'Bitcoin', ETH: 'Ethereum', AI: 'Sleepless AI' }[symbol],
+        englishName: { BTC: 'Bitcoin', ETH: 'Ethereum', AI: 'Sleepless AI' }[symbol],
+        priceUsd: symbol === 'BTC' ? 100 : symbol === 'AI' ? 1 : 10, markPrice: symbol === 'BTC' ? 99 : 9,
+        futuresQuoteAt: Date.now(), futuresPriceBasis: 'last' })) };
+    }
     else if (url.pathname === '/api/price-difference-fx') {
       fxCalls++;
       result = fxPayload();
@@ -134,7 +148,7 @@ async function main() {
   async function emit(board, value) {
     await page.evaluate(({ board, value }) => {
       const host = { binance: 'stream.binance.com', upbit: 'api.upbit.com', bithumb: 'pubwss.bithumb.com', coinbase: 'advanced-trade-ws.coinbase.com',
-        gateio: 'api.gateio.ws', bybit: 'stream.bybit.com', bitget: 'ws.bitget.com', okx: 'ws.okx.com' }[board];
+        gateio: 'api.gateio.ws', bybit: 'stream.bybit.com', bitget: 'ws.bitget.com', okx: 'ws.okx.com', coinbase_futures: 'streams.drb.coinbase.com' }[board];
       for (const socket of testSockets.filter(socket => socket.readyState === 1 && socket.url.includes(host))) {
         socket.onmessage?.({ data: JSON.stringify(value) });
       }
@@ -532,6 +546,59 @@ async function main() {
       await page.setViewportSize({ width: 1600, height: 1000 });
     }
     console.log('PASS: silent/open sockets and heartbeat-only feeds reconnect; bulk reconciliation is bounded; failures back off; late retired messages are ignored');
+
+    await page.evaluate(() => { futuresExchange = 'coinbase'; setViewMode('futures'); renderCurrentView(); });
+    await page.waitForSelector('tr[data-live-product="BTC_USDC-PERPETUAL"]');
+    await page.waitForFunction(() => testSockets.some(socket => socket.url.includes('streams.drb.coinbase.com') && socket.sent.length));
+    assert.equal(coinbaseFuturesCalls, 1);
+    const futureCell = page.locator('tr[data-live-product="BTC_USDC-PERPETUAL"] .futures-price');
+    assert.match(await futureCell.innerText(), /100(?:\.0+)? USDC/);
+    assert.match(await page.locator('th.futures-price').innerText(), /최근 체결가/);
+    const subscription = await page.evaluate(() => testSockets.find(socket => socket.url.includes('streams.drb.coinbase.com')).sent[0]);
+    assert.equal(subscription.method, 'public/subscribe');
+    assert.deepEqual(subscription.params.channels, ['ticker.AI_USDC-PERPETUAL.100ms', 'ticker.BTC_USDC-PERPETUAL.100ms', 'ticker.ETH_USDC-PERPETUAL.100ms']);
+    assert.match(await page.locator('tr[data-live-product="AI_USDC-PERPETUAL"] .futures-underlying').innerText(), /Sleepless AI/);
+    assert.doesNotMatch(await page.locator('tr[data-live-product="AI_USDC-PERPETUAL"] .futures-underlying').innerText(), /Gensyn|젠신/);
+    await emit('coinbase_futures', { jsonrpc: '2.0', method: 'subscription', params: { channel: 'ticker.BTC_USDC-PERPETUAL.100ms',
+      data: { instrument_name: 'BTC_USDC-PERPETUAL', last_price: 101, mark_price: 98, timestamp: Date.now(), state: 'open' } } });
+    await page.waitForFunction(() => document.querySelector('tr[data-live-product="BTC_USDC-PERPETUAL"] [data-live-price-main]').textContent.includes('101'));
+    assert.match(await futureCell.getAttribute('title'), /Mark 98/);
+    if (process.env.COINBASE_FUTURES_SCREENSHOT) {
+      await page.screenshot({ path: process.env.COINBASE_FUTURES_SCREENSHOT });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.screenshot({ path: process.env.COINBASE_FUTURES_SCREENSHOT.replace('.png', '-mobile.png') });
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+      await page.setViewportSize({ width: 1600, height: 1000 });
+    }
+    for (const timestamp of [Date.now() - 130000, Date.now() + 60000]) await emit('coinbase_futures', {
+      method: 'subscription', params: { channel: 'ticker.BTC_USDC-PERPETUAL.100ms', data: { instrument_name: 'BTC_USDC-PERPETUAL', last_price: 999, timestamp, state: 'open' } },
+    });
+    assert.match(await futureCell.innerText(), /101(?:\.0+)? USDC/);
+    await page.evaluate(() => { const row = getFuturesRows('coinbase').find(row => row.symbol === 'BTC'); row.futuresQuoteAt = Date.now() - 130000; refreshCoinbaseFuturesCells(); });
+    assert.match(await futureCell.innerText(), /갱신 지연/);
+    coinbaseFuturesFailure = true;
+    await page.evaluate(async () => { coinbaseFuturesClient.checkedAt = 0; await requestCoinbaseFutures(); });
+    assert.match(await page.locator('.futures-note[role="status"]').innerText(), /연결 지연/);
+    const failedCoinbaseCalls = coinbaseFuturesCalls;
+    await page.evaluate(() => { renderCurrentView(); renderCurrentView(); });
+    assert.equal(coinbaseFuturesCalls, failedCoinbaseCalls);
+    coinbaseFuturesFailure = false;
+    await page.evaluate(async () => { coinbaseFuturesClient.checkedAt = 0; await requestCoinbaseFutures(); });
+    await page.waitForFunction(() => !coinbaseFuturesClient.error);
+    assert.match(await futureCell.innerText(), /100(?:\.0+)? USDC/);
+    const coinbaseSilent = await page.evaluate(() => {
+      const socket = livePriceSocket;
+      livePriceTarget.socketStartedAt = Date.now() - 120000;
+      livePriceTarget.lastMessageAt = Date.now() - 50000;
+      livePriceTarget.lastQuoteAt = Date.now() - 120000;
+      inspectComparisonStreams();
+      return socket.readyState === 3;
+    });
+    assert.equal(coinbaseSilent, true);
+    await page.waitForFunction(() => livePriceSocket?.readyState === 1);
+    await page.evaluate(() => { state.board = 'upbit'; setViewMode('market'); renderCurrentView(); });
+    assert.equal(await page.evaluate(() => testSockets.filter(socket => socket.url.includes('streams.drb.coinbase.com') && socket.readyState === 1).length), 0);
+    console.log('PASS: Coinbase migrated contracts stream last trades (not marks), reject old clocks, expose stale states, retry quietly, reconnect and stop on navigation');
 
     await page.evaluate(() => window.dispatchEvent(new Event('offline')));
     assert.equal(await page.evaluate(() => testSockets.filter(socket => socket.readyState === 1).length), 0);

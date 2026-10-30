@@ -58,7 +58,8 @@ BINANCE_USDM_FUTURES_INFO_ENDPOINT = "https://www.binance.com/fapi/v1/exchangeIn
 BINANCE_USDM_FUTURES_PRICE_ENDPOINT = "https://www.binance.com/fapi/v1/ticker/price"
 BINANCE_COINM_FUTURES_INFO_ENDPOINT = "https://www.binance.com/dapi/v1/exchangeInfo"
 BINANCE_COINM_FUTURES_PRICE_ENDPOINT = "https://www.binance.com/dapi/v1/ticker/price"
-COINBASE_FUTURES_PRODUCTS_ENDPOINT = "https://api.international.coinbase.com/api/v1/instruments"
+COINBASE_FUTURES_PRODUCTS_ENDPOINT = "https://drb.coinbase.com/api/v2/public/get_instruments?currency=any&kind=future&expired=false"
+COINBASE_FUTURES_QUOTES_ENDPOINT = "https://drb.coinbase.com/api/v2/public/get_book_summary_by_currency?currency=USDC&kind=future"
 BYBIT_FUTURES_INFO_ENDPOINT = "https://api.bybit.com/v5/market/instruments-info"
 BYBIT_FUTURES_TICKERS_ENDPOINT = "https://api.bybit.com/v5/market/tickers?category=linear"
 COINGECKO_BINANCE_FUTURES_ENDPOINT = (
@@ -809,6 +810,8 @@ def clone_previous_futures_rows(previous_payload: dict | None, exchange_name: st
         rows = [row for row in rows if is_binance_usdt_future(row)]
     elif exchange_name == "bybit":
         rows = [row for row in rows if is_bybit_usdt_future(row)]
+    elif exchange_name == "coinbase":
+        rows = [row for row in rows if is_coinbase_usdc_future(row)]
     try:
         cloned = json.loads(json.dumps(rows, ensure_ascii=False))
         invalidate_unverified_legacy_market_data(cloned)
@@ -2484,34 +2487,45 @@ def fetch_bybit_futures(known_symbols: set[str] | None = None) -> list[dict]:
     return rows
 
 
+def is_coinbase_usdc_future(row) -> bool:
+    return isinstance(row, dict) and row.get("contractType") == "PERPETUAL" and row.get("underlyingType") == "crypto" \
+        and row.get("quoteAsset") == "USDC" and row.get("marginAsset") == "USDC" \
+        and bool(re.fullmatch(r"[A-Z0-9]{1,40}", str(row.get("rawUnderlyingSymbol") or ""))) \
+        and row.get("contractId") == f"{row.get('rawUnderlyingSymbol')}_USDC-PERPETUAL"
+
+
 def fetch_coinbase_futures(known_symbols: set[str] | None = None) -> list[dict]:
     products = fetch_json(COINBASE_FUTURES_PRODUCTS_ENDPOINT)
+    quotes = fetch_json(COINBASE_FUTURES_QUOTES_ENDPOINT)
+    try:
+        assets = fetch_json("https://api.coinbase.com/v2/currencies/crypto").get("data", [])
+        assets_by_id = {item["asset_id"]: item for item in assets if isinstance(item, dict) and item.get("type") == "crypto" and item.get("asset_id") and item.get("name")}
+    except Exception:  # noqa: BLE001
+        assets_by_id = {}
+    if not isinstance(products, dict) or products.get("error") or not isinstance(products.get("result"), list) \
+            or not isinstance(quotes, dict) or quotes.get("error") or not isinstance(quotes.get("result"), list):
+        raise RuntimeError("invalid_coinbase_deribit_response")
+    quotes_by_contract = {row.get("instrument_name"): row for row in quotes["result"] if isinstance(row, dict)}
     rows: list[dict] = []
-    for item in products if isinstance(products, list) else []:
-        if not isinstance(item, dict) or str(item.get("type") or "").upper() != "PERP":
+    for item in products["result"]:
+        if not isinstance(item, dict) or item.get("kind") != "future" or item.get("is_active") is not True \
+                or item.get("state") != "open" or item.get("underlying_type") != "crypto" \
+                or item.get("settlement_period") != "perpetual" or item.get("instrument_type") != "linear" \
+                or item.get("quote_currency") != "USDC" or item.get("settlement_currency") != "USDC":
             continue
-        if str(item.get("trading_state") or "").upper() != "TRADING":
-            continue
-        if str(item.get("underlying_type") or "").upper() != "SPOT":
-            continue
-        contract_id = str(item.get("symbol") or "").upper().strip()
-        raw_underlying = str(item.get("base_asset_name") or "").upper().strip()
+        contract_id = str(item.get("instrument_name") or "")
+        raw_underlying = str(item.get("base_currency") or "")
         underlying = normalize_futures_underlying_symbol(raw_underlying, known_symbols)
-        if not contract_id or not underlying:
+        asset = assets_by_id.get(str(item.get("base_currency_uuid") or ""))
+        underlying_name = str(asset.get("name") or "")[:120] if asset else ""
+        if not re.fullmatch(r"[A-Z0-9]{1,40}", raw_underlying) or contract_id != f"{raw_underlying}_USDC-PERPETUAL" or not underlying:
             continue
-        quote = item.get("quote") if isinstance(item.get("quote"), dict) else {}
-        price_usd = next(
-            (
-                price
-                for price in (
-                    to_float(quote.get("mark_price")),
-                    to_float(quote.get("trade_price")),
-                    to_float(quote.get("index_price")),
-                )
-                if price is not None
-            ),
-            None,
-        )
+        quote = quotes_by_contract.get(contract_id, {})
+        quote_at = to_float(quote.get("creation_timestamp")) or 0
+        valid_time = 0 < quote_at <= time.time() * 1000 + 5000 and time.time() * 1000 - quote_at <= 120000
+        price_usd = to_float(quote.get("last")) if valid_time else None
+        if price_usd is not None and price_usd <= 0:
+            price_usd = None
         rows.append(
             {
                 "exchange": "coinbase",
@@ -2519,17 +2533,21 @@ def fetch_coinbase_futures(known_symbols: set[str] | None = None) -> list[dict]:
                 "symbol": underlying,
                 "rawUnderlyingSymbol": raw_underlying,
                 "pair": contract_id,
-                "name": underlying,
-                "englishName": underlying,
+                "name": underlying_name or underlying,
+                "englishName": underlying_name or underlying,
+                "underlyingName": underlying_name, "underlyingIdentityVerified": bool(asset),
                 "koreanName": underlying,
                 "contractType": "PERPETUAL",
                 "contractTypeLabel": "\ubb34\uae30\ud55c",
-                "contractMarket": "Coinbase International",
-                "quoteAsset": str(item.get("quote_asset_name") or "USDC").upper(),
+                "contractMarket": "Coinbase / Deribit",
+                "underlyingType": "crypto",
+                "quoteAsset": "USDC", "marginAsset": "USDC", "priceCurrency": "USDC",
                 "nativeCurrency": "USD",
                 "priceUsd": price_usd,
                 "priceKrw": price_usd * FX_USD_KRW if price_usd is not None else None,
-                "priceSource": "coinbase_international_perpetual_quote",
+                "priceSource": "coinbase_deribit_last_trade",
+                "futuresPriceBasis": "last", "futuresQuoteAt": quote_at if valid_time else 0,
+                "markPrice": to_float(quote.get("mark_price")) if valid_time else None,
                 "marketCapUsd": None,
                 "marketCapKrw": None,
                 "marketCapRank": None,
@@ -2540,8 +2558,8 @@ def fetch_coinbase_futures(known_symbols: set[str] | None = None) -> list[dict]:
                 "circulatingRatio": None,
                 "expiryAt": None,
                 "onboardAt": None,
-                "contractSize": to_float(item.get("base_asset_multiplier")),
-                "openInterest": to_float(item.get("open_interest")),
+                "contractSize": to_float(item.get("contract_size")),
+                "openInterest": to_float(quote.get("open_interest")),
                 "capSource": "futures_underlying_missing",
                 "capSourceDetail": "futures_underlying_market_cap_missing",
                 "status": "missing",
@@ -2549,6 +2567,8 @@ def fetch_coinbase_futures(known_symbols: set[str] | None = None) -> list[dict]:
                 "nameKeys": list(build_name_keys(underlying, underlying, underlying)),
             }
         )
+    if not rows or len({row["contractId"] for row in rows}) != len(rows) or not any(row["priceUsd"] for row in rows):
+        raise RuntimeError("empty_coinbase_deribit_prices")
     return rows
 
 
@@ -2563,6 +2583,8 @@ def apply_futures_underlying_market_data(
     ]
     external_candidates = external_candidates or {}
     for row in futures_rows:
+        if row.get("exchange") == "coinbase" and row.get("underlyingIdentityVerified") is not True:
+            continue
         own_rows = next((rows for board, rows in reference_groups if board == row.get("exchange")), [])
         own_asset = next((asset for asset in own_rows if asset.get("symbol") == row.get("symbol")), None)
         if row.get("symbol") == "AI" and own_asset is not None and not market_identity_keys(own_asset):
@@ -2575,6 +2597,8 @@ def apply_futures_underlying_market_data(
         references: list[tuple[str, dict]] = []
         for board_name, reference_map in reference_maps:
             references.extend((board_name, candidate) for candidate in reference_map.get(symbol, []))
+        if row.get("exchange") == "coinbase":
+            references = [(board, candidate) for board, candidate in references if market_names_compatible(row, candidate) and market_prices_compatible(row, candidate)]
         identity_reference = next(
             (
                 candidate
@@ -4674,21 +4698,15 @@ def make_payload(previous_payload: dict | None = None) -> dict:
             fetched_rows = fetcher(known_symbols)
             if len(fetched_rows) < minimum_futures_rows[exchange_name]:
                 raise RuntimeError(f"too_few_futures_products:{len(fetched_rows)}")
-            if exchange_name == "coinbase" and any(
-                not str(row.get("contractId") or "").endswith("-PERP")
-                for row in fetched_rows
-            ):
+            if exchange_name == "coinbase" and not all(is_coinbase_usdc_future(row) for row in fetched_rows):
                 raise RuntimeError("unexpected_coinbase_futures_contract")
             futures_rows[exchange_name] = fetched_rows
         except Exception as error:  # noqa: BLE001
             cached_rows = clone_previous_futures_rows(previous_payload, exchange_name)
             cached_rows_are_valid = len(cached_rows) >= minimum_futures_rows[exchange_name]
             if exchange_name == "coinbase":
-                cached_rows_are_valid = cached_rows_are_valid and all(
-                    str(row.get("contractId") or "").endswith("-PERP")
-                    for row in cached_rows
-                )
-            if not cached_rows_are_valid and exchange_name != "bybit":
+                cached_rows_are_valid = cached_rows_are_valid and all(is_coinbase_usdc_future(row) for row in cached_rows)
+            if not cached_rows_are_valid and exchange_name not in {"bybit", "coinbase"}:
                 raise RuntimeError(f"{exchange_name}_futures_fetch_failed:{error}") from error
             futures_rows[exchange_name] = cached_rows
             refresh_issues[f"{exchange_name}_futures"] = f"fallback_previous_payload:{error}"

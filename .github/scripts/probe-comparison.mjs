@@ -7,7 +7,7 @@ if (!mint.ok) throw new Error(`oidc_mint_failed:${mint.status}`);
 const { value: token } = await mint.json();
 if (!token) throw new Error("oidc_token_missing");
 let failed = 0;
-for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", "bybit", "bitget", "okx", "audit", "bootstrap"]) {
+for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", "bybit", "bitget", "okx", "coinbase_futures", "audit", "bootstrap"]) {
   try {
     let result;
     for (let attempt = 0; attempt < 13; attempt += 1) {
