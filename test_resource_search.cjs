@@ -170,7 +170,7 @@ async function main() {
             ? { list: bybitInstruments.slice(45), nextPageCursor: '' }
             : { list: bybitInstruments.slice(0, 45), nextPageCursor: 'page2' }
           : { list: bybitFixture.map(row => ({ symbol: row.contractId, lastPrice: row.contractId.startsWith('1000') ? '100000' : '100' })) };
-        return route.fulfill({ json: { retCode: 0, result }, headers: { 'Access-Control-Allow-Origin': origin } });
+        return route.fulfill({ json: { retCode: 0, result, time: Date.now() }, headers: { 'Access-Control-Allow-Origin': origin } });
       }
       if (url.hostname !== 'coin-board-auth.dlatl20000.workers.dev') return route.fulfill({ body: '' });
       calls.push(url.pathname + url.search);
@@ -399,7 +399,8 @@ async function main() {
         ...Array.from({ length: 24 }, (_, index) => ({ at: historyNow - 60 - index * 60, kind: 'recovered', component: 'binance' })),
       ] }, comparisonHealth: { checkedAt: historyNow * 1000, counts: { delayed: 1 }, activeAlerts: 1, newAlerts: 1,
         rows: [['upbit', 'BTC', 'delayed', 'coinbase']],
-        events: [{ at: historyNow * 1000, kind: 'attention', newAlerts: 1, counts: { delayed: 1 } }] } };
+        sourceChecks: { binance_futures: true, coinbase_futures: false, bybit_futures: true, news: true, l1fees: false, l2fees: true, market_snapshot: true, defillama: true, apywa: true },
+        events: [{ at: historyNow * 1000, kind: 'attention', newAlerts: 1, counts: { delayed: 1 }, sourceChecks: { l1fees: false } }] } };
     const migrated = await page.evaluate(() => {
       const old = { boards: {}, refreshHealth: { state: 'degraded', events: [{ title: 'old-admin-history' }], components: { old: {} } },
         noticeRefresh: { upbit: { providers: { secret: {} } } } };
@@ -439,9 +440,13 @@ async function main() {
     assert.match(await page.locator('#refreshHistorySubtitle').textContent(), /한국시간/);
     const snapshotStatus = page.locator('.refresh-history-status').filter({ has: page.getByRole('heading', { name: '조회 시점 상태', exact: true }) });
     assert.match(await snapshotStatus.textContent(), /코인베이스 선물.*자동 재시도 중/);
-    const comparisonStatus = page.locator('.refresh-history-status').filter({ hasText: '시세차이 전체 자동 점검' });
+    const comparisonStatus = page.locator('.refresh-history-status').filter({ hasText: '시세·자료 전체 자동 점검' });
     assert.match(await comparisonStatus.textContent(), /지속 장애 1개.*신규 알림 대상 1개/);
     assert.match(await comparisonStatus.textContent(), /지속 장애 알림 대상 확인/);
+    assert.match(await comparisonStatus.textContent(), /바이낸스 선물 실시간 연결.*정상 확인/);
+    assert.match(await comparisonStatus.textContent(), /바이비트 선물 실시간 연결.*정상 확인/);
+    assert.match(await comparisonStatus.textContent(), /L1 수수료.*자동 재시도 중/);
+    assert.match(await comparisonStatus.textContent(), /L1 수수료 지연/);
     assert.equal(await page.locator('.refresh-history-row').count(), 28);
     assert.equal(await page.locator('#refreshHistoryBody img').count(), 0, 'development notes are escaped, not executed');
     assert.equal(await page.evaluate(() => window.historyXss || 0), 0);
@@ -688,17 +693,17 @@ async function main() {
     assert.equal(await bybitRows.count(), 1);
     await page.evaluate(() => {
       const socket = bybitSockets.at(-1);
-      socket.onmessage({ data: JSON.stringify({ topic: 'tickers.BTCUSDT', type: 'snapshot', data: { symbol: 'BTCUSDT', lastPrice: '432.1' } }) });
+      socket.onmessage({ data: JSON.stringify({ topic: 'tickers.BTCUSDT', type: 'snapshot', ts: Date.now(), data: { symbol: 'BTCUSDT', lastPrice: '432.1' } }) });
     });
     await page.waitForFunction(() => document.querySelector('[data-live-price-main]')?.textContent.includes('432.1'));
     const price = await bybitRows.locator('[data-live-price-main]').textContent();
     await page.evaluate(() => {
-      bybitSockets.at(-1).onmessage({ data: JSON.stringify({ topic: 'tickers.BTCUSDT', type: 'delta', data: { fundingRate: '0.001' } }) });
+      bybitSockets.at(-1).onmessage({ data: JSON.stringify({ topic: 'tickers.BTCUSDT', type: 'delta', ts: Date.now(), data: { fundingRate: '0.001' } }) });
     });
     assert.equal(await bybitRows.locator('[data-live-price-main]').textContent(), price, 'deltas without lastPrice never erase the price');
     await page.evaluate(() => {
       for (const callback of bybitIntervals.values()) callback();
-      bybitSockets.at(-1).onmessage({ data: JSON.stringify({ topic: 'tickers.BTCUSDT', type: 'delta', data: { lastPrice: '500' } }) });
+      bybitSockets.at(-1).onmessage({ data: JSON.stringify({ topic: 'tickers.BTCUSDT', type: 'delta', ts: Date.now(), data: { lastPrice: '500' } }) });
     });
     await page.waitForFunction(() => document.querySelector('[data-live-price-main]')?.textContent.includes('500'));
     assert.ok(await page.evaluate(() => bybitSockets.at(-1).sent.some(message => message.op === 'ping')));

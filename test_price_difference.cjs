@@ -600,6 +600,34 @@ async function main() {
     assert.equal(await page.evaluate(() => testSockets.filter(socket => socket.url.includes('streams.drb.coinbase.com') && socket.readyState === 1).length), 0);
     console.log('PASS: Coinbase migrated contracts stream last trades (not marks), reject old clocks, expose stale states, retry quietly, reconnect and stop on navigation');
 
+    const allFuturesRecovery = await page.evaluate(async () => {
+      const saved = { view: state.viewMode, exchange: futuresExchange, socket: livePriceSocket, target: livePriceTarget, sync: syncLivePriceStream };
+      const results = [];
+      syncLivePriceStream = () => {};
+      try {
+        for (const exchange of ['binance', 'bybit']) {
+          const row = { priceUsd: 100, exchange, symbol: 'BTC', liveSourceAt: Date.now() };
+          const target = { exchange, kind: 'futures', entries: new Map([['BTCUSDT', { row, exchange, kind: 'futures' }]]), isCurrent: () => true };
+          const message = (at, price) => exchange === 'binance' ? { data: { s: 'BTCUSDT', c: String(price), E: at } }
+            : { topic: 'tickers.BTCUSDT', type: 'snapshot', ts: at, data: { symbol: 'BTCUSDT', lastPrice: String(price) } };
+          for (const at of [Date.now() - 130000, Date.now() + 60000]) await handleLivePriceMessage(target, JSON.stringify(message(at, 999)));
+          const rejected = row.priceUsd === 100;
+          await handleLivePriceMessage(target, JSON.stringify(message(Date.now(), 101)));
+          let closed = false;
+          state.viewMode = 'futures'; futuresExchange = exchange;
+          livePriceTarget = { socketStartedAt: Date.now() - 120000, lastMessageAt: Date.now(), lastQuoteAt: Date.now() - 120000 };
+          livePriceSocket = { readyState: 1, close() { closed = true; } };
+          inspectComparisonStreams();
+          results.push({ exchange, rejected, updated: row.priceUsd === 101, closed });
+        }
+      } finally {
+        state.viewMode = saved.view; futuresExchange = saved.exchange; livePriceSocket = saved.socket; livePriceTarget = saved.target; syncLivePriceStream = saved.sync;
+      }
+      return results;
+    });
+    assert.equal(allFuturesRecovery.every(result => result.rejected && result.updated && result.closed), true);
+    console.log('PASS: Binance and Bybit futures reject stale/future ticks and reconnect heartbeat-only stalled streams');
+
     await page.evaluate(() => window.dispatchEvent(new Event('offline')));
     assert.equal(await page.evaluate(() => testSockets.filter(socket => socket.readyState === 1).length), 0);
     await page.evaluate(() => syncLivePriceStream());
