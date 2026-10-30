@@ -12,7 +12,7 @@ async function main() {
   let historyGate = null;
   const html = fs.readFileSync(process.env.SEARCH_TEST_HTML || path.join(root, 'index.html'), 'utf8');
   for (const script of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)) new Function(script[1]);
-  const snapshot = JSON.parse(fs.readFileSync(path.join(root, 'board_snapshot.json'), 'utf8'));
+  const snapshot = require('./test_market_fixture.cjs')();
   const testRating = { slug: 'bitcoin', symbol: 'BTC', name: 'Bitcoin', grade: 'A+', date: '2026-10-19', score: 95.26 };
   snapshot.apywaRatings = { evaluationDate: testRating.date, error: '' };
   for (const rows of Object.values(snapshot.boards)) {
@@ -111,7 +111,8 @@ async function main() {
     res.end(file.endsWith('data.js') ? `window.BOARD_DATA = ${JSON.stringify(snapshot)};` : file.endsWith('index.html') ? html : fs.readFileSync(file));
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true });
+  const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH
+    || (process.platform === 'win32' ? 'C:/Program Files/Google/Chrome/Application/chrome.exe' : undefined), headless: true });
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     await page.addInitScript(settings => {

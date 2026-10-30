@@ -2,13 +2,6 @@ name: Comparison Monitor
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - '.github/scripts/monitor-comparison.mjs'
-      - '.github/scripts/futures-health.mjs'
-      - 'test_futures_health.mjs'
-      - '.github/workflows/comparison-monitor.yml'
   workflow_run:
     workflows: ['Deploy Cloudflare Worker']
     types: [completed]
