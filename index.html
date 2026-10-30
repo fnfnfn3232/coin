@@ -11992,15 +11992,19 @@
 
       function refreshCoinbaseFuturesCells() {
         if (state.viewMode !== "futures" || futuresExchange !== "coinbase" || isSiteLocked()) return;
-        const models = new Map(getFuturesRows("coinbase").map(row => [row.contractId, row]));
+        const models = new Map((coinbaseFuturesClient.rows || data.futures?.coinbase || []).map(row => [row.contractId, row]));
         newsPanel.querySelectorAll('tr[data-live-exchange="coinbase"]').forEach(element => {
           const row = models.get(element.dataset.liveProduct);
           if (!row) return;
           const display = priceDisplay(row, { minimumUsdFractionDigits: 5 });
           element.querySelector("[data-live-price-main]").textContent = display.main;
           element.querySelector("[data-live-price-sub]").textContent = display.sub;
-          element.querySelector(".futures-price").title = `최근 체결가 (USDC) · Mark ${row.markPrice ?? "미확인"} · 가격 수신 ${row.futuresQuoteAt ? new Date(row.futuresQuoteAt).toLocaleTimeString("ko-KR", { hour12: false }) : "대기 중"}`;
+          element.querySelector(".futures-price").title = coinbaseFuturesPriceTitle(row);
         });
+      }
+
+      function coinbaseFuturesPriceTitle(row) {
+        return `최근 체결가 (USDC) · Mark ${row.markPrice ?? "미확인"} · 가격 수신 ${row.futuresQuoteAt ? new Date(row.futuresQuoteAt).toLocaleTimeString("ko-KR", { hour12: false }) : "대기 중"}`;
       }
 
       // The GitHub collector's US region is blocked by Bybit; public quotes are read in the browser.
@@ -17477,10 +17481,10 @@
             const sub = element.querySelector("[data-live-price-sub]");
             if (main) main.textContent = display.main || TEXT.unknown;
             if (sub) sub.textContent = display.sub || TEXT.noPrice;
+            if (kind === "futures" && row.exchange === "coinbase") element.querySelector(".futures-price").title = coinbaseFuturesPriceTitle(row);
           });
           livePricePendingEntries.clear();
           refreshPriceDifferenceCells();
-          refreshCoinbaseFuturesCells();
         });
       }
 
