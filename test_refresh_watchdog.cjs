@@ -36,6 +36,7 @@ test('watchdog dispatch is restricted to the expected workflow and main', async 
   assert.equal(args.calls.dispatched.length, 1);
   assert.equal(args.calls.dispatched[0].workflow_id, 'auto-refresh-data.yml');
   assert.equal(args.calls.dispatched[0].ref, 'main');
+  assert.equal(args.calls.dispatched[0].headers['X-GitHub-Api-Version'], '2026-03-10');
   assert.equal(args.calls.created.length, 1);
 });
 test('recent success does not close an unrelated component incident', async () => {
@@ -79,4 +80,33 @@ test('untagged human issues are never modified', async () => {
   args.open.push({ number: 7, title: '[자동 점검] 데이터 갱신 복구 필요', body: 'Human report' });
   await updateIncident({ ...args, report: { state: 'healthy', affected: [] } });
   assert.equal(args.calls.updated.length, 0);
+});
+
+test('an ambiguous dispatch response checks for accepted work without creating duplicate runs', async () => {
+  const args = fixture([run(45, { id: 1 })]);
+  let dispatches = 0;
+  args.sleep = async () => {};
+  args.github.rest.actions.createWorkflowDispatch = async () => { dispatches++; throw Object.assign(new Error('Unexpected end of JSON input'), { status: 500 }); };
+  args.github.rest.actions.listWorkflowRuns = async () => ({ data: { workflow_runs: dispatches
+    ? [run(0, { id: 2, event: 'workflow_dispatch', status: 'queued', conclusion: null })] : [run(45, { id: 1 })] } });
+  assert.equal((await watchdog(args)).dispatch, true);
+  assert.equal(dispatches, 1);
+});
+
+test('an inconclusive dispatch waits for the next watchdog tick instead of hammering or claiming success', async () => {
+  const args = fixture([run(45, { id: 1 })]);
+  let dispatches = 0;
+  args.sleep = async () => {};
+  args.github.rest.actions.createWorkflowDispatch = async () => { dispatches++; throw Object.assign(new Error('temporary outage'), { status: 503 }); };
+  const result = await watchdog(args);
+  assert.equal(result.pending, true);
+  assert.equal(result.dispatch, false);
+  assert.equal(dispatches, 1);
+  assert.match(args.calls.created[0].body, /refresh_dispatch_pending/);
+});
+
+test('dispatch permission failures are not hidden or retried', async () => {
+  const args = fixture([run(45)]);
+  args.github.rest.actions.createWorkflowDispatch = async () => { throw Object.assign(new Error('forbidden'), { status: 403 }); };
+  await assert.rejects(watchdog(args), /forbidden/);
 });
