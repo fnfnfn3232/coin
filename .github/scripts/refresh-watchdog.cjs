@@ -34,7 +34,7 @@ async function updateIncident({ github, context, report }) {
   }
 }
 
-async function watchdog({ github, context, core, now = Date.now() }) {
+async function watchdog({ github, context, core, now = Date.now(), sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
   const { owner, repo } = context.repo;
   const { data: { workflow_runs: runs } } = await github.rest.actions.listWorkflowRuns({ owner, repo, workflow_id: WORKFLOW, branch: 'main', per_page: 100 });
   const plan = recoveryPlan(runs, now);
@@ -52,7 +52,25 @@ async function watchdog({ github, context, core, now = Date.now() }) {
     return { ...plan, dispatch: false };
   }
   if (plan.dispatch) {
-    await github.rest.actions.createWorkflowDispatch({ owner, repo, workflow_id: WORKFLOW, ref: 'main' });
+    try {
+      await github.rest.actions.createWorkflowDispatch({ owner, repo, workflow_id: WORKFLOW, ref: 'main',
+        headers: { 'X-GitHub-Api-Version': '2026-03-10' } });
+    } catch (error) {
+      const transient = error.status === 429 || error.status >= 500 || /timeout|ECONN|Unexpected end of JSON/i.test(error.message || '');
+      if (!transient) throw error;
+      // A failed response may still have dispatched a run. Never blindly repeat a mutation.
+      await sleep(2000);
+      const { data: { workflow_runs: latest } } = await github.rest.actions.listWorkflowRuns({ owner, repo, workflow_id: WORKFLOW, branch: 'main', per_page: 100 });
+      const known = new Set(runs.map(run => run.id));
+      const accepted = latest.some(run => run.id && !known.has(run.id) && run.head_branch === 'main'
+        && !['pull_request', 'pull_request_target'].includes(run.event)
+        && Date.parse(run.created_at || '') >= now - 60000);
+      if (!accepted) {
+        core.warning('Recovery dispatch response was inconclusive; no duplicate dispatch sent. The next watchdog tick will recheck.');
+        await updateIncident({ github, context, report: { state: 'degraded', affected: ['refresh_dispatch_pending'] } });
+        return { ...plan, dispatch: false, pending: true };
+      }
+    }
     core.warning('Stale refresh detected; requested one recovery run.');
   }
   await updateIncident({ github, context, report: { state: 'degraded', affected: ['refresh_workflow_stale'] } });
