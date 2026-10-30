@@ -7107,6 +7107,7 @@
             <option value="okx">OKX USDT</option>
           </select>
           <span id="priceDifferenceFxStatus" aria-live="polite">원/달러 환율 확인 중</span>
+          <span id="priceDifferenceHealth" role="status"></span>
           <a href="https://currency-converter.live/" target="_blank" rel="noopener noreferrer">currency-converter.live 환율</a>
           <a href="https://coinpaprika.com/" target="_blank" rel="noopener noreferrer">대체 자산명 출처</a>
         </div>
@@ -15703,7 +15704,19 @@
             <div class="refresh-history-detail">${event.kind === "maintenance" ? `<strong>${escapeHtml(event.title || "개발 수정")}</strong>` : ""}<p>${escapeHtml(event.kind === "maintenance" ? event.detail || "" : details[event.kind] || "")}</p>${changeLink}</div></li>`;
         }).join("");
         const scrollTop = refreshHistoryBody.scrollTop;
-        refreshHistoryBody.innerHTML = `<div class="refresh-history-status"><h3>조회 시점 상태</h3>${statusHtml}</div><ol class="refresh-history-list">${rows || '<li class="refresh-history-empty">기록된 변경 내역이 없습니다.</li>'}</ol>`;
+        const comparison = refreshHistoryData.comparisonHealth;
+        const comparisonLabels = { ok: "해외 비교 정상", domestic: "국내 비교 정상", delayed: "가격 수신 지연", identity: "자산 식별 점검 필요", no_market: "검증된 비교 대상 없음", fx: "환율 지연" };
+        let comparisonHtml = "";
+        if (comparison) {
+          const overdue = Date.now() - Number(comparison.checkedAt) > 30 * 60000;
+          const summary = Object.entries(comparison.counts || {}).filter(([key]) => comparisonLabels[key])
+            .map(([key, count]) => `${comparisonLabels[key]} ${Number(count) || 0}개`).join(" · ");
+          const unresolved = (comparison.rows || []).filter(row => !["ok", "domestic"].includes(row[2])).map(row =>
+            `<li>${escapeHtml(boardShortLabel(row[0]))} · ${escapeHtml(row[1])} · ${escapeHtml(comparisonLabels[row[2]] || "점검 필요")}${row[3] ? ` · ${escapeHtml(comparisonExchangeLabel(row[3]))}` : ""}</li>`).join("");
+          const comparisonEvents = (comparison.events || []).slice(0, 20).map(event => `<li>${escapeHtml(formatRefreshHistoryTime(event.at / 1000))} · ${event.kind === "recovered" ? "비교 상태 복구 확인" : "비교 상태 변경·점검 대상 감지"} · 지연 ${Number(event.counts?.delayed) || 0}개 · 식별 ${Number(event.counts?.identity) || 0}개 · 환율 ${Number(event.counts?.fx) || 0}개</li>`).join("");
+          comparisonHtml = `<div class="refresh-history-status"><h3>시세차이 전체 자동 점검${overdue ? " · 정기 점검 지연" : ""}</h3><p>마지막 확인 ${escapeHtml(formatRefreshHistoryTime(comparison.checkedAt / 1000))}</p><p>${escapeHtml(summary)}</p><ul>${unresolved || "<li>현재 점검 대상 없음</li>"}</ul><h3>시세차이 상태 변경 기록</h3><ul>${comparisonEvents}</ul></div>`;
+        } else comparisonHtml = '<div class="refresh-history-status"><h3>시세차이 전체 자동 점검</h3><p>아직 전체 자동 점검 기록이 없습니다.</p></div>';
+        refreshHistoryBody.innerHTML = `<div class="refresh-history-status"><h3>조회 시점 상태</h3>${statusHtml}</div>${comparisonHtml}<ol class="refresh-history-list">${rows || '<li class="refresh-history-empty">기록된 변경 내역이 없습니다.</li>'}</ol>`;
         refreshHistoryBody.scrollTop = scrollTop;
       }
 
@@ -16682,7 +16695,7 @@
         if (!siteAuthConfirmed || isSiteLocked()) return;
         try {
           const requests = Object.fromEntries([...priceDifferenceQuoteRequests].map(([board, value]) => [board,
-            { catalogCheckedAt: value.catalogCheckedAt || 0, retryAt: value.retryAt || 0, directUntil: value.directUntil || 0, error: Boolean(value.error), symbols: [...(value.symbols || [])].slice(0, 5000) }]));
+            { checkedAt: value.checkedAt || 0, catalogCheckedAt: value.catalogCheckedAt || 0, retryAt: value.retryAt || 0, directUntil: value.directUntil || 0, error: Boolean(value.error), symbols: [...(value.symbols || [])].slice(0, 5000) }]));
           sessionStorage.setItem(PRICE_DIFFERENCE_CACHE_KEY, JSON.stringify({ owner: comparisonCacheOwner(), fx: priceDifferenceFx, quotes: priceDifferenceQuoteCache, requests }));
         } catch (_error) { /* Cache availability must not affect live prices. */ }
       }
@@ -16758,7 +16771,7 @@
                 if (!["upbit", "bithumb", "binance", "coinbase", ...PRICE_DIFFERENCE_ADDITIONAL_BOARDS].includes(board) || priceDifferenceQuoteRequests.has(board)) continue;
                 const catalogCheckedAt = Number(value?.catalogCheckedAt) || 0;
                 const retryAt = Number(value?.retryAt) || 0;
-                priceDifferenceQuoteRequests.set(board, { pending: false,
+                priceDifferenceQuoteRequests.set(board, { pending: false, checkedAt: Math.min(Number(value?.checkedAt) || 0, Date.now()),
                   catalogCheckedAt: catalogCheckedAt <= Date.now() + 5000 ? catalogCheckedAt : 0,
                   retryAt: retryAt <= Date.now() + 300000 ? retryAt : 0, error: Boolean(value?.error),
                   directUntil: Number(value?.directUntil) <= Date.now() + 300000 ? Number(value.directUntil) || 0 : 0,
@@ -16857,10 +16870,11 @@
           }
           if (board === "coinbase" && [...boards].some(value => value === "binance" || PRICE_DIFFERENCE_ADDITIONAL_BOARDS.includes(value))) relevant = [...relevant, priceDifferenceUsdt];
           const discover = PRICE_DIFFERENCE_ADDITIONAL_BOARDS.includes(board) && Date.now() - (request?.catalogCheckedAt || 0) >= 6 * 3600000;
-          if ((!relevant.length && !discover) || (!discover && relevant.every((row) => Date.now() - comparisonPriceTimestamp(row) < 60000))) continue;
+          const crossCheck = Date.now() - (request?.checkedAt || 0) >= 60000;
+          if ((!relevant.length && !discover) || (!discover && !crossCheck && relevant.every((row) => Date.now() - comparisonPriceTimestamp(row) < 30000))) continue;
           const owner = comparisonCacheOwner();
           const generation = priceDifferenceGeneration;
-          const pending = { pending: true, retryAt: Date.now() + 15000, directUntil: request?.directUntil || 0 };
+          const pending = { ...request, pending: true, checkedAt: Date.now(), retryAt: Date.now() + 15000, directUntil: request?.directUntil || 0 };
           priceDifferenceQuoteRequests.set(board, pending);
           const initialRequest = board === "binance" && pending.directUntil > Date.now() ? fetchPublicComparisonQuotes(board)
             : fetchServerAuth(`/api/price-difference-quotes?exchange=${board}`, { method: "GET", timeoutMs: 15000 });
@@ -16883,6 +16897,8 @@
                 || Date.now() - payload.observedAt > PRICE_DIFFERENCE_MAX_AGE_MS || !payload.prices || typeof payload.prices !== "object") throw new Error("invalid_comparison_quotes");
               if (!Object.keys(payload.prices).length) throw new Error("empty_comparison_quotes");
               pending.symbols = new Set(Object.keys(payload.prices));
+              pending.failures = payload.error ? (request?.failures || 0) + 1 : 0;
+              pending.error = Boolean(payload.error || payload.identityError);
               if (PRICE_DIFFERENCE_ADDITIONAL_BOARDS.includes(board) && !payload.identityError) {
                 for (const symbol of Object.keys(priceDifferenceQuoteCache[board] || {})) {
                   if (!Array.isArray(payload.assets?.[symbol])) delete priceDifferenceQuoteCache[board][symbol];
@@ -16899,7 +16915,7 @@
                 rememberComparisonQuote(board, symbol, price, payload.observedAt,
                   Array.isArray(asset) ? { name: asset[0], id: asset[1], at: payload.catalogAt, contracts: asset[2] || [] } : null);
               }
-              pending.catalogCheckedAt = Date.now() - (payload.identityError ? 6 * 3600000 - 300000 : 0);
+              if (PRICE_DIFFERENCE_ADDITIONAL_BOARDS.includes(board)) pending.catalogCheckedAt = Number(payload.catalogAt) || request?.catalogCheckedAt || 0;
               resetComparisonIdentityCache();
               restorePriceDifferenceCache();
               refreshPriceDifferenceCells();
@@ -16908,7 +16924,9 @@
               pending.retryAt = Date.now() + (payload.revalidating || payload.error ? 5000 : 30000);
             })
             .catch(() => {
-              pending.error = true; pending.retryAt = Date.now() + (PRICE_DIFFERENCE_ADDITIONAL_BOARDS.includes(board) ? 300000 : 15000);
+              pending.error = true;
+              pending.failures = (request?.failures || 0) + 1;
+              pending.retryAt = Date.now() + Math.min(15000 * 2 ** Math.min(pending.failures - 1, 5), 300000);
               if (generation === priceDifferenceGeneration) schedulePriceDifferenceCacheSave();
             })
             .finally(() => { pending.pending = false; if (generation === priceDifferenceGeneration) refreshPriceDifferenceCells(); });
@@ -17040,6 +17058,41 @@
             if (sub) sub.textContent = price.sub || TEXT.noPrice;
           }
         });
+        renderPriceDifferenceHealth();
+      }
+
+      function renderPriceDifferenceHealth() {
+        const status = document.getElementById("priceDifferenceHealth");
+        if (!status) return;
+        status.hidden = !isDomesticComparisonBoard();
+        if (status.hidden) return;
+        const exchange = state.board === "triple" ? "bithumb" : state.board;
+        const models = new Map((data.boards?.[exchange] || []).map(row => [liveSpotProductId(row, exchange), row]));
+        let ready = 0, missing = 0, delayed = 0, oldest = 0;
+        tableBody.querySelectorAll("tr[data-live-product]").forEach(element => {
+          const row = models.get(element.dataset.liveProduct);
+          if (!row) return;
+          const result = getPriceDifference(row);
+          if (result.percent === undefined) { missing++; return; }
+          ready++;
+          const age = Math.max(0, Date.now() - Math.min(comparisonPriceTimestamp(row), comparisonPriceTimestamp(priceDifferenceReference(row))));
+          oldest = Math.max(oldest, age);
+          if (age > 30000) delayed++;
+        });
+        status.textContent = `시세 비교 ${ready}개${missing ? ` · 확인 중 ${missing}개` : ""}${delayed ? ` · 수신 지연 ${delayed}개` : ""}${ready ? ` · 최장 ${Math.floor(oldest / 1000)}초 전 수신` : ""}`;
+      }
+
+      function inspectComparisonStreams(now = Date.now()) {
+        if (!isDomesticComparisonBoard() || state.viewMode !== "market" || document.hidden || !navigator.onLine || isSiteLocked()) return;
+        const inspect = (socket, target, startedAt) => {
+          if (!socket || socket.readyState > 1) return;
+          const stalled = socket.readyState === 0 ? now - startedAt > 20000
+            : now - (target.lastMessageAt || startedAt) > 45000 || now - (target.lastQuoteAt || startedAt) > 90000;
+          if (stalled) { try { socket.close(); } catch (_error) { /* Retry on the next inspection. */ } }
+        };
+        inspect(livePriceSocket, livePriceTarget || {}, livePriceTarget?.socketStartedAt || now);
+        priceDifferenceSockets.forEach(connection => inspect(connection.socket, connection.target, connection.startedAt || now));
+        syncLivePriceStream();
       }
 
       function usableComparisonFx(fx, now = Date.now()) {
@@ -17068,6 +17121,11 @@
         }
         for (const [board, quote] of Object.entries(bootstrap.quotes || {})) {
           if (!["upbit", "bithumb", "binance", "coinbase", ...PRICE_DIFFERENCE_ADDITIONAL_BOARDS].includes(board)) continue;
+          if (Number.isFinite(quote.observedAt) && quote.observedAt <= Date.now() + 5000 && Date.now() - quote.observedAt <= PRICE_DIFFERENCE_MAX_AGE_MS) {
+            const request = priceDifferenceQuoteRequests.get(board) || { pending: false };
+            request.checkedAt = Math.min(quote.observedAt, Date.now());
+            priceDifferenceQuoteRequests.set(board, request);
+          }
           for (const [symbol, price] of Object.entries(quote?.prices || {})) {
             const asset = quote.assets?.[symbol];
             rememberComparisonQuote(board, symbol, price, quote.observedAt,
@@ -17152,7 +17210,7 @@
         priceDifferenceSockets.forEach((connection, board) => {
           const target = targets.get(board);
           const signature = target && [...target.entries.keys()].sort().join(",");
-          if (signature === connection.signature) { connection.target = target; targets.delete(board); return; }
+          if (signature === connection.signature) { Object.assign(connection.target, target); targets.delete(board); return; }
           window.clearTimeout(connection.timer);
           window.clearInterval(connection.heartbeat);
           if (connection.socket) {
@@ -17167,7 +17225,7 @@
           const connection = { target, signature: target.products.join(","), attempts: 0, timer: 0, heartbeat: 0, socket: null };
           priceDifferenceSockets.set(board, connection);
           const connect = () => {
-            if (priceDifferenceSockets.get(board) !== connection || document.hidden || isSiteLocked()) return;
+            if (priceDifferenceSockets.get(board) !== connection || document.hidden || !navigator.onLine || isSiteLocked() || state.viewMode !== "market") return;
             const retry = () => {
               window.clearInterval(connection.heartbeat);
               if (priceDifferenceSockets.get(board) !== connection) return;
@@ -17177,10 +17235,13 @@
             try { socket = new WebSocket(livePriceSocketUrl(connection.target)); }
             catch (_error) { retry(); return; }
             connection.socket = socket;
+            connection.startedAt = Date.now();
+            connection.target.lastMessageAt = 0;
+            connection.target.lastQuoteAt = 0;
+            connection.target.isCurrent = () => priceDifferenceSockets.get(board) === connection && connection.socket === socket && socket.readyState === WebSocket.OPEN;
             socket.binaryType = "arraybuffer";
             socket.onopen = () => {
               if (priceDifferenceSockets.get(board) !== connection || socket !== connection.socket || isSiteLocked()) return;
-              connection.attempts = 0;
               if (board === "upbit") {
                 socket.send(JSON.stringify([{ ticket: `coin-comparison-${Date.now()}` }, { type: "ticker", codes: connection.target.products }, { format: "DEFAULT" }]));
               } else if (board === "bithumb") {
@@ -17210,7 +17271,10 @@
               }
             };
             socket.onmessage = (event) => {
-              if (priceDifferenceSockets.get(board) === connection) handleLivePriceMessage(connection.target, event.data);
+              if (priceDifferenceSockets.get(board) === connection && connection.socket === socket) {
+                const target = connection.target;
+                handleLivePriceMessage(target, event.data).then(() => { if (target.lastQuoteAt >= connection.startedAt) connection.attempts = 0; });
+              }
             };
             socket.onerror = () => socket.close();
             socket.onclose = retry;
@@ -17225,6 +17289,7 @@
           if (priceDifferenceFx) renderComparisonFxStatus();
           requestPriceDifferenceFx();
           requestPriceDifferenceQuotes();
+          inspectComparisonStreams();
         }
       }, 5000);
 
@@ -17366,6 +17431,7 @@
           if (fx !== null) entry.row.priceKrw = numericPrice * fx;
         }
         entry.row.livePriceUpdatedAt = Date.now();
+        target.lastQuoteAt = entry.row.livePriceUpdatedAt;
         if (entry.kind === "spot") {
           rememberComparisonQuote(entry.exchange, String(entry.row.symbol || "").toUpperCase(), numericPrice, entry.row.livePriceUpdatedAt);
           schedulePriceDifferenceCacheSave();
@@ -17383,8 +17449,11 @@
 
       async function handleLivePriceMessage(target, messageData) {
         let payload;
+        const isCurrent = target.isCurrent;
         try {
           const text = await decodeLivePriceMessage(messageData);
+          if (isCurrent && !isCurrent()) return;
+          target.lastMessageAt = Date.now();
           if (!text) return;
           payload = JSON.parse(text);
         } catch (_error) {
@@ -17466,10 +17535,14 @@
           return;
         }
         livePriceSocket = socket;
+        livePriceTarget = target;
+        target.socketStartedAt = Date.now();
+        target.lastMessageAt = 0;
+        target.lastQuoteAt = 0;
+        target.isCurrent = () => generation === livePriceGeneration && socket === livePriceSocket && socket.readyState === WebSocket.OPEN;
         socket.binaryType = "arraybuffer";
         socket.onopen = () => {
-          if (generation !== livePriceGeneration) return;
-          livePriceReconnectAttempts = 0;
+          if (generation !== livePriceGeneration || socket !== livePriceSocket) return;
           if (target.exchange === "upbit") {
             socket.send(JSON.stringify([
               { ticket: `coin-live-${Date.now()}` },
@@ -17491,8 +17564,8 @@
           }
         };
         socket.onmessage = (event) => {
-          if (generation !== livePriceGeneration) return;
-          handleLivePriceMessage(target, event.data);
+          if (generation !== livePriceGeneration || socket !== livePriceSocket) return;
+          handleLivePriceMessage(target, event.data).then(() => { if (target.lastQuoteAt >= target.socketStartedAt) livePriceReconnectAttempts = 0; });
         };
         socket.onerror = () => {
           try {
@@ -17523,7 +17596,7 @@
           return;
         }
         if (nextTarget.signature === livePriceSignature) {
-          livePriceTarget = nextTarget;
+          Object.assign(livePriceTarget, nextTarget);
           if (!livePriceSocket && !livePriceReconnectTimer) {
             connectLivePriceTarget(nextTarget, livePriceGeneration);
           }

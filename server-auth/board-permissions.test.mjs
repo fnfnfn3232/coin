@@ -95,6 +95,34 @@ test("production comparison probes cannot be opened by forged sync headers or or
   for (const token of ["", memberToken, adminToken]) {
     const response = await rawRequest("/api/market-data?probeComparison=gateio", "GET", undefined, token, { "X-Market-Data-Sync": "1" });
     assert.equal(response.status, 401);
+    const health = await rawRequest("/api/market-data?comparisonHealth=1", "POST", JSON.stringify({ rows: [["upbit", "BTC", "ok", "coinbase"]] }), token, { "X-Market-Data-Sync": "1" });
+    assert.equal(health.status, 401);
+  }
+});
+
+test("comparison health is bounded, records real transitions and requires a fresh admin password to read", async () => {
+  const f = await fixture();
+  await f.store.writeMarketData(new Request("https://worker.example/api/market-data", { method: "POST", body: JSON.stringify({ generatedAt: 123, boards: {} }) }));
+  const write = rows => f.store.writeComparisonHealth(new Request('https://board-store/api/market-data?comparisonHealth=1', { method: 'POST', body: JSON.stringify({ rows }) }));
+  const bad = await write([["upbit", "<script>", "ok", "coinbase"]]);
+  assert.equal(bad.status, 400);
+  assert.equal((await write(Array.from({ length: 1201 }, () => ["upbit", "BTC", "ok", "coinbase"]))).status, 400);
+  assert.equal((await write([["upbit", "BTC", "ok", "coinbase"], ["upbit", "BTC", "ok", "coinbase"]])).status, 400);
+  await write([["upbit", "BTC", "delayed", "coinbase"]]);
+  await write([["upbit", "BTC", "delayed", "coinbase"]]);
+  let record = await f.storage.get('comparison-health-v1');
+  assert.equal(record.events.length, 1);
+  assert.equal(record.consecutive, 2);
+  await write([["upbit", "BTC", "ok", "coinbase"]]);
+  record = await f.storage.get('comparison-health-v1');
+  assert.equal(record.events.length, 2);
+  assert.equal(record.events[0].kind, 'recovered');
+  for (const token of [f.memberToken, f.adminToken]) {
+    assert.doesNotMatch(await (await f.request('/api/market-data', 'GET', undefined, token)).text(), /comparisonHealth|consecutive/);
+    assert.equal((await f.request('/api/admin/refresh-history', 'POST', {}, token)).status, 401);
+    const history = await (await f.request('/api/admin/refresh-history', 'POST', { adminPassword: f.adminPassword }, token)).json();
+    assert.equal(history.comparisonHealth.counts.ok, 1);
+    assert.equal(history.comparisonHealth.events.length, 2);
   }
 });
 

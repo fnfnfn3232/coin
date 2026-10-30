@@ -460,6 +460,68 @@ async function main() {
       console.log('PASS: snapshot bootstrap renders without quote/FX round trips; live FX changes recalculate deltas; source clocks expire; known blocked proxies are skipped');
     } finally { await bootPage.close(); snapshotBootstrap = false; fxRate = 1300; }
 
+    bootstrapFailure = 0;
+    await page.evaluate(() => { state.viewMode = 'market'; state.board = 'upbit'; renderCurrentView(); });
+    await page.waitForTimeout(50);
+    const silent = await page.evaluate(() => {
+      const previous = livePriceSocket;
+      livePriceTarget.socketStartedAt = Date.now() - 120000;
+      livePriceTarget.lastMessageAt = Date.now() - 50000;
+      livePriceTarget.lastQuoteAt = Date.now() - 120000;
+      const extras = [...priceDifferenceSockets.values()];
+      for (const connection of extras) {
+        connection.startedAt = Date.now() - 120000;
+        connection.target.lastMessageAt = Date.now(); // Heartbeats alone do not prove ticker delivery.
+        connection.target.lastQuoteAt = Date.now() - 100000;
+      }
+      inspectComparisonStreams();
+      return { mainClosed: previous.readyState === 3, extraClosed: extras.every(connection => connection.socket.readyState === 3) };
+    });
+    assert.deepEqual(silent, { mainClosed: true, extraClosed: true });
+    await page.waitForFunction(() => livePriceSocket?.readyState === 1 && [...priceDifferenceSockets.values()].every(connection => connection.socket?.readyState === 1));
+    const countBefore = bulkCalls.filter(board => board === 'upbit').length;
+    await page.evaluate(() => {
+      const request = priceDifferenceQuoteRequests.get('upbit');
+      request.checkedAt = Date.now() - 65000; request.retryAt = 0;
+      for (const row of data.boards.upbit) row.livePriceUpdatedAt = Date.now();
+      requestPriceDifferenceQuotes(); requestPriceDifferenceQuotes();
+    });
+    await page.waitForFunction(() => !priceDifferenceQuoteRequests.get('upbit')?.pending);
+    assert.equal(bulkCalls.filter(board => board === 'upbit').length, countBefore + 1, 'healthy-looking WS data still gets one coalesced independent bulk refresh');
+    bootstrapFailureBoard = 'gateio'; bootstrapFailure = 503;
+    await page.evaluate(() => {
+      priceDifferenceQuoteRequests.set('gateio', { checkedAt: 0, retryAt: 0, catalogCheckedAt: Date.now() - 86400000 });
+      requestPriceDifferenceQuotes();
+    });
+    await page.waitForFunction(() => priceDifferenceQuoteRequests.get('gateio')?.pending === false);
+    const firstBackoff = await page.evaluate(() => priceDifferenceQuoteRequests.get('gateio').retryAt - Date.now());
+    assert(firstBackoff > 0 && firstBackoff <= 15000);
+    await page.evaluate(() => { priceDifferenceQuoteRequests.get('gateio').retryAt = 0; requestPriceDifferenceQuotes(); });
+    await page.waitForFunction(() => priceDifferenceQuoteRequests.get('gateio')?.pending === false);
+    const secondBackoff = await page.evaluate(() => priceDifferenceQuoteRequests.get('gateio').retryAt - Date.now());
+    assert(secondBackoff > 15000 && secondBackoff <= 30000);
+    bootstrapFailure = 0;
+    const late = await page.evaluate(async () => {
+      const row = data.boards.upbit.find(row => row.symbol === 'BTC');
+      const before = row.priceKrw;
+      let active = true;
+      const target = { exchange: 'upbit', kind: 'spot', entries: new Map([['KRW-BTC', { row, exchange: 'upbit', kind: 'spot' }]]), isCurrent: () => active };
+      const pending = handleLivePriceMessage(target, JSON.stringify({ code: 'KRW-BTC', trade_price: 999999 }));
+      active = false;
+      await pending;
+      return row.priceKrw === before;
+    });
+    assert.equal(late, true, 'a late decoded message from a retired socket cannot update a price');
+    assert.match(await page.locator('#priceDifferenceHealth').innerText(), /시세 비교/);
+    if (process.env.COMPARISON_SCREENSHOT) {
+      await page.screenshot({ path: process.env.COMPARISON_SCREENSHOT });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.screenshot({ path: process.env.COMPARISON_SCREENSHOT.replace('.png', '-mobile.png') });
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
+      await page.setViewportSize({ width: 1600, height: 1000 });
+    }
+    console.log('PASS: silent/open sockets and heartbeat-only feeds reconnect; bulk reconciliation is bounded; failures back off; late retired messages are ignored');
+
     await page.evaluate(() => window.dispatchEvent(new Event('offline')));
     assert.equal(await page.evaluate(() => testSockets.filter(socket => socket.readyState === 1).length), 0);
     await page.evaluate(() => syncLivePriceStream());

@@ -1,0 +1,33 @@
+name: Comparison Monitor
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ['Deploy Cloudflare Worker']
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: '3,18,33,48 * * * *'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: comparison-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify comparison monitoring policy
+        run: node --test test_comparison_health.cjs comparison-identity.test.cjs
+      - name: Refresh bulk sources and audit every domestic listing
+        run: node .github/scripts/monitor-comparison.mjs
