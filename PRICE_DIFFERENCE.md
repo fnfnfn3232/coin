@@ -34,9 +34,19 @@
   promotion, automatic permission bypass, or authentication policy change.
   GitHub schedules can be delayed. Metadata with inadequate official evidence
   remains unavailable rather than being force-matched. Blocking/protocol changes
-  still need a verified code fix. A separately configured Codex follow-up checks
-  persistent problems, tests scoped repairs and verifies deployment; local
-  follow-ups require the computer/app and project permissions to be available.
+  still need a verified code fix.
+- The optional six-hour Codex follow-up is now PAUSED to avoid recurring AI
+  consumption. Runtime recovery and the server monitor remain enabled without
+  an AI model, API key or local PC. The server tracks incidents per coin, waits
+  for at least three checks spanning 30 minutes, and emits one failure-notification
+  event per continuous incident. Changing unrelated coins cannot reset a streak;
+  repeated POST delivery cannot consume an alert. A pre-existing unverified
+  market without evidence of a regression stays informational, not a false alarm.
+  Recovery clears the incident; a subsequent persistent recurrence can alert again.
+  GitHub delivery depends on the account's Actions notification settings. A green
+  subsequent monitor run means no NEW alert, not that every incident is repaired.
+  Detailed affected assets and history stay administrator-password-protected.
+  This does not automatically launch an AI developer when an incident is raised.
 
 Verification: `test_comparison_health.cjs`, the Worker permission/security suite,
 `test_price_difference.cjs` (silent sockets, heartbeat-only feeds, bounded bulk

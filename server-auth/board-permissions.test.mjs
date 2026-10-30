@@ -126,6 +126,54 @@ test("comparison health is bounded, records real transitions and requires a fres
   }
 });
 
+test("persistent alerts are per coin, delayed and deduplicated; recovery rearms only a new incident", async () => {
+  const f = await fixture();
+  const now = Date.now();
+  const originalNow = Date.now;
+  const write = async (minute, btc, eth = "ok", reportId = "") => {
+    Date.now = () => now + minute * 60000;
+    return (await f.store.writeComparisonHealth(new Request('https://board-store/api/market-data?comparisonHealth=1', {
+      method: 'POST', body: JSON.stringify({ reportId, rows: [["upbit", "BTC", btc, "coinbase"], ["upbit", "ETH", eth, "coinbase"], ["bithumb", "UNKNOWN", "no_market", ""]] }),
+    }))).json();
+  };
+  try {
+    assert.equal((await write(0, 'delayed')).newAlerts, 0);
+    assert.equal((await write(0.1, 'delayed')).newAlerts, 0, 'repeated delivery cannot increment the independent checks');
+    assert.equal((await write(15, 'delayed', 'identity')).newAlerts, 0);
+    const alert = await write(30, 'delayed', 'ok', '12345:1');
+    assert.equal(alert.newAlerts, 1, 'another asset changing cannot hide persistent BTC failure');
+    assert.equal(alert.activeAlerts, 1);
+    assert.equal((await write(30, 'delayed', 'ok', '12345:1')).newAlerts, 1, 'a lost response retries the same alert response');
+    assert.equal((await write(31, 'delayed')).newAlerts, 0);
+    assert.equal((await write(45, 'delayed')).newAlerts, 0, 'the same incident does not notify every run');
+    assert.equal((await write(46, 'ok')).recoveredAlerts, 1);
+    assert.equal((await write(60, 'delayed')).newAlerts, 0);
+    assert.equal((await write(75, 'delayed')).newAlerts, 0);
+    assert.equal((await write(90, 'delayed')).newAlerts, 1, 'only a new persistent incident rearms the alert');
+    assert.equal((await write(180, 'delayed')).newAlerts, 0, 'a long observation gap cannot masquerade as consecutive checks');
+    assert.equal((await write(181, 'ok')).activeAlerts, 0);
+  } finally { Date.now = originalNow; }
+});
+
+test("unknown baseline markets stay informational, but losing a previously verified comparison alerts", async () => {
+  const f = await fixture();
+  const now = Date.now();
+  const originalNow = Date.now;
+  const write = async (minute, state) => {
+    Date.now = () => now + minute * 60000;
+    return (await f.store.writeComparisonHealth(new Request('https://board-store/api/market-data?comparisonHealth=1', {
+      method: 'POST', body: JSON.stringify({ rows: [["bithumb", "LOCAL", state, ""]] }),
+    }))).json();
+  };
+  try {
+    for (const minute of [0, 15, 30, 45]) assert.equal((await write(minute, 'no_market')).activeAlerts, 0);
+    await write(46, 'domestic');
+    assert.equal((await write(60, 'no_market')).newAlerts, 0);
+    assert.equal((await write(75, 'no_market')).newAlerts, 0);
+    assert.equal((await write(90, 'no_market')).newAlerts, 1);
+  } finally { Date.now = originalNow; }
+});
+
 test("additional comparison feeds accept only valid USDT spot products and success envelopes", () => {
   assert.deepEqual(normalizeAdditionalSpotQuotes("gateio", [{ currency_pair: "XCN_USDT", last: "0.004" }, { currency_pair: "XCN_BTC", last: "10" }]), { XCN: 0.004 });
   assert.deepEqual(normalizeAdditionalSpotQuotes("bybit", { retCode: 0, result: { category: "spot", list: [{ symbol: "NEOUSDT", lastPrice: "2" }, { symbol: "NEOUSDC", lastPrice: "999" }] } }), { NEO: 2 });

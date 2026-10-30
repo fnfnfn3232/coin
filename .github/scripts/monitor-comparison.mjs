@@ -22,9 +22,13 @@ async function request(suffix, options = {}) {
 }
 const audit = await request('?probeComparison=audit');
 const report = assessComparisonHealth(audit);
+if (process.env.GITHUB_RUN_ID && process.env.GITHUB_RUN_ATTEMPT) report.reportId = `${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`;
 const result = await request('?comparisonHealth=1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(report) });
+if (result.alertVersion !== 1) throw new Error('comparison_alert_policy_not_deployed');
 // Detailed history stays behind a fresh administrator password, not public CI logs.
-console.log(JSON.stringify({ checkedAt: result.checkedAt, total: report.rows.length, counts: result.counts, consecutive: result.consecutive }));
-if (result.counts.delayed + result.counts.identity + result.counts.fx) {
-  console.log('::warning title=Comparison monitor::Unresolved comparisons detected after automatic bulk refresh. Details are in the administrator refresh history.');
+console.log(JSON.stringify({ alertVersion: result.alertVersion, checkedAt: result.checkedAt, total: report.rows.length, counts: result.counts,
+  activeAlerts: result.activeAlerts || 0, newAlerts: result.newAlerts || 0, recoveredAlerts: result.recoveredAlerts || 0 }));
+if (result.newAlerts > 0) {
+  console.log('::error title=Persistent comparison incident::A new unresolved incident persisted across at least three checks and 30 minutes. Details require a fresh administrator password. No AI job was started.');
+  process.exitCode = 1;
 }
