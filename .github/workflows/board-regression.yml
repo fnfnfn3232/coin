@@ -10,6 +10,8 @@ on:
       - "comparison-identity.test.cjs"
       - "test_board_*.cjs"
       - "test_price_difference.cjs"
+      - "test_comparison_health.cjs"
+      - ".github/scripts/comparison-health.cjs"
       - "server-auth/**"
       - ".github/workflows/board-regression.yml"
   pull_request:
@@ -19,6 +21,8 @@ on:
       - "comparison-identity.test.cjs"
       - "test_board_*.cjs"
       - "test_price_difference.cjs"
+      - "test_comparison_health.cjs"
+      - ".github/scripts/comparison-health.cjs"
       - "server-auth/**"
       - ".github/workflows/board-regression.yml"
 
@@ -39,7 +43,7 @@ jobs:
         with:
           node-version: "22"
       - name: Verify permissions, sessions and uploads
-        run: node --test comparison-identity.test.cjs server-auth/board-permissions.test.mjs server-auth/security-regression.test.mjs
+        run: node --test test_comparison_health.cjs comparison-identity.test.cjs server-auth/board-permissions.test.mjs server-auth/security-regression.test.mjs
       - name: Install isolated browser test tools
         run: |
           npm install --no-save --package-lock=false playwright@1.62.1

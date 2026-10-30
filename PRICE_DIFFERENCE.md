@@ -1,5 +1,44 @@
 # Price Difference (2026-10-29)
 
+## Automatic Detection And Maintenance (2026-10-30)
+
+- The visible domestic market inspects streams locally every five seconds. A
+  connection stuck opening for 20 seconds, no messages for 45 seconds, or only
+  heartbeats/no valid ticker for 90 seconds closes and reconnects with backoff.
+  Both native and auxiliary sockets are covered. Late decoded messages from a
+  retired connection cannot refresh a price.
+- Stale individual prices trigger shared bulk refresh after 30 seconds. Even
+  apparently healthy ticker streams receive an independent bulk refresh at
+  most once per minute/source. Fresh bootstrap/session observations suppress
+  redundant first-load requests. Failures back off from 15 seconds to five minutes;
+  existing metadata ages are preserved rather than restarted on failed fetches.
+- The market toolbar displays the current visible comparison counts and oldest
+  price receipt age. These are receipt timestamps, not a guarantee of trade-time
+  latency, profitable execution, or independently licensed real-time forex.
+- GitHub `Comparison Monitor` runs after successful Worker deployments and on
+  a 15-minute schedule. It requests exchange-wide quote/catalog refreshes and
+  audits every Upbit/Bithumb listing with the SAME identity module as the UI.
+  Stale preferred feeds can use a fresh verified overseas alternative; domestic
+  fallback is permitted only without a verified overseas candidate. USDT/USD,
+  fiat FX, metadata expiry and ambiguous matches are included in assessment.
+- The scheduled request uses existing repository/main-bound GitHub OIDC. It
+  stores bounded counts, per-coin outcomes and up to 100 state changes in a
+  separate Durable Object record. Only the existing refresh-history POST with
+  a fresh administrator password returns that record. CI prints counts only;
+  ordinary snapshots, member/admin sessions and forged sync headers cannot read
+  or write it. A missing monitor run is visibly overdue after 30 minutes.
+- No per-coin HTTP polling, purchased feed, guessed price, ticker-only identity
+  promotion, automatic permission bypass, or authentication policy change.
+  GitHub schedules can be delayed. Metadata with inadequate official evidence
+  remains unavailable rather than being force-matched. Blocking/protocol changes
+  still need a verified code fix. A separately configured Codex follow-up checks
+  persistent problems, tests scoped repairs and verifies deployment; local
+  follow-ups require the computer/app and project permissions to be available.
+
+Verification: `test_comparison_health.cjs`, the Worker permission/security suite,
+`test_price_difference.cjs` (silent sockets, heartbeat-only feeds, bounded bulk
+refresh, backoff and retired events), and `test_resource_search.cjs`.
+
 ## Domestic-To-Domestic Alternative
 
 When no verified overseas candidate exists for a domestic row, use the other

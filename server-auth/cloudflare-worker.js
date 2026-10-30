@@ -3197,7 +3197,31 @@ export class BoardStore {
     if (denied) return denied;
     const payload = await this.readMarketData();
     if (!payload) return jsonResponse({ error: "market_data_not_ready" }, 404, this.env);
-    return jsonResponse({ generatedAt: payload.generatedAt, refreshHealth: payload.refreshHealth || {} }, 200, this.env);
+    return jsonResponse({ generatedAt: payload.generatedAt, refreshHealth: payload.refreshHealth || {},
+      comparisonHealth: await this.state.storage.get("comparison-health-v1") || null }, 200, this.env);
+  }
+
+  async writeComparisonHealth(request) {
+    const body = await parseJsonBody(request);
+    const states = new Set(["ok", "domestic", "delayed", "identity", "no_market", "fx"]);
+    const boards = new Set(["upbit", "bithumb", "binance", "coinbase", ...Object.keys(ADDITIONAL_SPOT_SOURCES)]);
+    if (!Array.isArray(body?.rows) || !body.rows.length || body.rows.length > 1200
+      || !body.rows.every(row => Array.isArray(row) && row.length === 4 && ["upbit", "bithumb"].includes(row[0])
+        && /^[A-Z0-9]{1,40}$/.test(row[1]) && states.has(row[2]) && (row[3] === "" || boards.has(row[3])))
+      || new Set(body.rows.map(row => `${row[0]}:${row[1]}`)).size !== body.rows.length) {
+      return jsonResponse({ error: "invalid_comparison_health" }, 400, this.env);
+    }
+    const checkedAt = Date.now();
+    const counts = Object.fromEntries([...states].map(state => [state, body.rows.filter(row => row[2] === state).length]));
+    const previous = await this.state.storage.get("comparison-health-v1");
+    const signature = await sha256Hex(JSON.stringify(body.rows.filter(row => !["ok", "domestic"].includes(row[2])).sort()));
+    const changed = signature !== previous?.signature;
+    const events = [...(previous?.events || [])];
+    if (changed) events.unshift({ at: checkedAt, counts, kind: counts.delayed + counts.identity + counts.fx + counts.no_market ? "attention" : "recovered" });
+    const payload = { checkedAt, counts, rows: body.rows, signature, events: events.slice(0, 100),
+      consecutive: changed ? 1 : (previous?.consecutive || 0) + 1 };
+    await this.state.storage.put("comparison-health-v1", payload);
+    return jsonResponse({ ok: true, checkedAt, counts, consecutive: payload.consecutive }, 200, this.env);
   }
 
   async handleLivePricesRequest() {
@@ -3358,15 +3382,27 @@ export class BoardStore {
       const market = await this.readMarketData();
       const fields = row => ({ symbol: row.symbol, compareSymbol: row.compareSymbol, englishName: row.englishName,
         koreanName: row.koreanName, nameKeys: row.nameKeys, coingeckoId: row.coingeckoId,
-        marketIdentityVerified: row.marketIdentityVerified });
+        marketIdentityVerified: row.marketIdentityVerified, assetIdentityConflict: row.assetIdentityConflict });
       const infoFor = (symbol, board) => {
         const entry = market?.coinInfo?.[symbol]?.sources?.[board];
         return entry ? { sources: { [board]: { englishName: entry.englishName, explorer: entry.explorer, explorerUrl: entry.explorerUrl } } } : {};
       };
-      const local = ["upbit", "bithumb"].flatMap(board => (market?.boards?.[board] || []).map(row => ({ board, row: fields(row), info: infoFor(row.symbol, board) })));
+      const quotes = new Map();
+      await Promise.all(["upbit", "bithumb"].map(async board => {
+        const response = await this.handleComparisonQuotesRequest(new URL(`https://board-store/api/price-difference-quotes?exchange=${board}`));
+        if (this.comparisonQuotePromises.has(board)) await this.comparisonQuotePromises.get(board);
+        quotes.set(board, await this.state.storage.get(`price-difference-quotes-v1:${board}`) || await response.json());
+      }));
+      const local = ["upbit", "bithumb"].flatMap(board => (market?.boards?.[board] || []).map(row => ({ board, row: fields(row), info: infoFor(row.symbol, board),
+        priceAvailable: toPositiveNumber(quotes.get(board)?.prices?.[row.symbol]) !== null,
+        observedAt: quotes.get(board)?.observedAt || 0 })));
       const references = await Promise.all(["binance", "coinbase", ...Object.keys(ADDITIONAL_SPOT_SOURCES)].map(async board => {
         const response = await this.handleComparisonQuotesRequest(new URL(`https://board-store/api/price-difference-quotes?exchange=${board}`));
-        const payload = await response.json();
+        let payload = await response.json();
+        if (this.comparisonQuotePromises.has(board)) {
+          await this.comparisonQuotePromises.get(board);
+          payload = await (await this.handleComparisonQuotesRequest(new URL(`https://board-store/api/price-difference-quotes?exchange=${board}`))).json();
+        }
         const rows = Object.hasOwn(ADDITIONAL_SPOT_SOURCES, board)
           ? Object.entries(payload.assets || {}).map(([symbol, asset]) => ({ symbol, englishName: asset[0], paprikaId: asset[1],
             comparisonIdentity: { officialName: board === "gateio" && asset[1] === `gate-${symbol.toLowerCase()}`, contracts: asset[2] || [] } }))
@@ -3376,9 +3412,12 @@ export class BoardStore {
             if (asset && asset[0].toLowerCase() === String(item.englishName || "").toLowerCase()) item.comparisonIdentity = { officialName: true };
             return item;
           });
-        return { board, rows, pricedSymbols: Object.keys(payload.prices || {}), error: payload.error || payload.identityError || "" };
+        return { board, rows, pricedSymbols: Object.keys(payload.prices || {}), observedAt: payload.observedAt || 0,
+          catalogAt: payload.catalogAt || 0, error: payload.error || payload.identityError || "" };
       }));
-      return jsonResponse({ implementation: 6, exchange, elapsedMs: Date.now() - started, local, references }, 200, this.env);
+      const fx = await this.readComparisonFx();
+      return jsonResponse({ implementation: 6, monitorVersion: 1, exchange, elapsedMs: Date.now() - started,
+        fxUsable: comparisonFxUsable(fx) && !fx.stale, local, references }, 200, this.env);
     }
     if (exchange === "fx") {
       const response = await this.handleComparisonFxRequest();
@@ -4811,6 +4850,7 @@ export class BoardStore {
       if (request.headers.get("X-Market-Data-Sync") !== "1") {
         return jsonResponse({ error: "market_data_sync_required" }, 403, this.env);
       }
+      if (url.searchParams.get("comparisonHealth") === "1") return this.writeComparisonHealth(request);
       return this.writeMarketData(request);
     }
 
