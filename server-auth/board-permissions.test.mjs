@@ -174,6 +174,67 @@ test("unknown baseline markets stay informational, but losing a previously verif
   } finally { Date.now = originalNow; }
 });
 
+test("futures source failures participate in private persistent alerts without resetting unrelated coin incidents", async () => {
+  const f = await fixture();
+  const originalNow = Date.now;
+  const now = Date.now();
+  try {
+    for (const minute of [0, 15, 30]) {
+      Date.now = () => now + minute * 60000;
+      const response = await f.store.writeComparisonHealth(new Request('https://board-store/api/market-data?comparisonHealth=1', {
+        method: 'POST', body: JSON.stringify({ rows: [['upbit', 'BTC', 'ok', 'coinbase']], sourceChecks: { coinbase_futures: false } }),
+      }));
+      assert.equal((await response.json()).newAlerts, minute === 30 ? 1 : 0);
+    }
+    assert.equal((await f.storage.get('comparison-health-v1')).sourceChecks.coinbase_futures, false);
+    Date.now = () => now + 45 * 60000;
+    const recovery = await f.store.writeComparisonHealth(new Request('https://board-store/api/market-data?comparisonHealth=1', {
+      method: 'POST', body: JSON.stringify({ rows: [['upbit', 'BTC', 'ok', 'coinbase']], sourceChecks: { coinbase_futures: true } }),
+    }));
+    assert.equal((await recovery.json()).recoveredAlerts, 1);
+  } finally { Date.now = originalNow; }
+});
+
+test("Coinbase futures use the new public gateway, coalesce refreshes and retain real clocks on failure", async () => {
+  const f = await fixture();
+  assert.equal((await f.request('/api/coinbase-futures', 'GET', undefined, null)).status, 401);
+  const originalFetch = globalThis.fetch;
+  const now = Date.now();
+  const originalNow = Date.now;
+  let calls = 0, fail = false;
+  const instrument = { instrument_name: 'BTC_USDC-PERPETUAL', base_currency: 'BTC', kind: 'future', is_active: true,
+    state: 'open', underlying_type: 'crypto', settlement_period: 'perpetual', instrument_type: 'linear', quote_currency: 'USDC', settlement_currency: 'USDC' };
+  globalThis.fetch = async url => {
+    calls++;
+    assert.ok(String(url).startsWith('https://drb.coinbase.com/api/v2/public/') || String(url) === 'https://api.coinbase.com/v2/currencies/crypto');
+    if (fail) throw new Error('upstream_unavailable');
+    if (String(url).includes('/v2/currencies/crypto')) return Response.json({ data: [] });
+    return Response.json({ result: String(url).includes('get_instruments') ? [instrument,
+      { ...instrument, underlying_type: 'equity' }, { ...instrument, settlement_period: 'month' }, { ...instrument, instrument_name: 'BTC-PERP' }]
+      : [{ instrument_name: instrument.instrument_name, last: 100, mark_price: 99, creation_timestamp: Date.now() }] });
+  };
+  try {
+    const responses = await Promise.all([f.request('/api/coinbase-futures'), f.request('/api/coinbase-futures')]);
+    const data = await responses[0].json();
+    assert.equal(data.rows.length, 1);
+    assert.equal(data.rows[0].priceUsd, 100);
+    assert.equal(data.rows[0].markPrice, 99);
+    assert.equal(data.rows[0].futuresPriceBasis, 'last');
+    assert.equal(data.rows[0].priceCurrency, 'USDC');
+    assert.equal(calls, 3, 'one catalog, identity catalog and bulk quote across concurrent readers');
+    await f.request('/api/coinbase-futures');
+    assert.equal(calls, 3);
+    fail = true;
+    Date.now = () => now + 130000;
+    const failed = await (await f.request('/api/coinbase-futures')).json();
+    assert.equal(failed.error, 'coinbase_futures_refresh_failed');
+    assert.equal(failed.stale, true);
+    assert.equal(failed.rows[0].futuresQuoteAt, data.rows[0].futuresQuoteAt);
+    assert.equal(failed.observedAt, data.observedAt);
+    assert.equal(calls, 4, 'catalog is shared for an hour, failures do not fan out per contract');
+  } finally { globalThis.fetch = originalFetch; Date.now = originalNow; }
+});
+
 test("additional comparison feeds accept only valid USDT spot products and success envelopes", () => {
   assert.deepEqual(normalizeAdditionalSpotQuotes("gateio", [{ currency_pair: "XCN_USDT", last: "0.004" }, { currency_pair: "XCN_BTC", last: "10" }]), { XCN: 0.004 });
   assert.deepEqual(normalizeAdditionalSpotQuotes("bybit", { retCode: 0, result: { category: "spot", list: [{ symbol: "NEOUSDT", lastPrice: "2" }, { symbol: "NEOUSDC", lastPrice: "999" }] } }), { NEO: 2 });

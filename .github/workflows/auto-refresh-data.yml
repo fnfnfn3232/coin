@@ -15,6 +15,7 @@ on:
       - "test_coin_logos.py"
       - "test_binance_futures.py"
       - "test_bybit_futures.py"
+      - "test_coinbase_futures.py"
       - "test_market_identity.py"
       - "test_exchange_notices.py"
       - "refresh_health.py"
@@ -76,7 +77,7 @@ jobs:
           fi
 
       - name: Verify coin logos and USDT futures
-        run: python -m unittest test_coin_logos.py test_binance_futures.py test_bybit_futures.py test_market_identity.py test_exchange_notices.py test_refresh_health.py test_apywa_ratings.py test_robinhood_market.py
+        run: python -m unittest test_coinbase_futures.py test_coin_logos.py test_binance_futures.py test_bybit_futures.py test_market_identity.py test_exchange_notices.py test_refresh_health.py test_apywa_ratings.py test_robinhood_market.py
 
       - name: Rebuild data (retry)
         run: |

@@ -9238,6 +9238,7 @@
       let futuresPage = 1;
       let futuresSortDirection = "desc";
       const bybitClient = { rows: null, checkedAt: 0, promise: null, error: "" };
+      const coinbaseFuturesClient = { rows: null, checkedAt: 0, promise: null, error: "", generation: 0 };
       let exchangeHistoryExchange = "upbit";
       let exchangeHistoryData = null;
       let exchangeHistoryLoading = false;
@@ -11929,11 +11930,12 @@
             }
           }
           row.symbol = symbol;
-          const references = lookup.get(symbol) || [];
+          const references = (lookup.get(symbol) || []).filter(item => row.exchange !== "coinbase"
+            || (row.underlyingIdentityVerified === true && marketReferenceCompatible(row, item)));
           const named = references.find((item) => item.koreanName || item.name) || {};
-          row.name = named.koreanName || named.name || symbol;
+          row.name = named.koreanName || named.name || row.underlyingName || symbol;
           row.koreanName = named.koreanName || "";
-          row.englishName = named.englishName || "";
+          row.englishName = named.englishName || (row.exchange === "coinbase" ? row.underlyingName || symbol : "");
           row.logo = references.find((item) => item.logo)?.logo || "";
           const cap = references.find((item) => toPositiveNumber(item.marketCapUsd) !== null && marketReferenceCompatible(row, item));
           for (const key of ["marketCapUsd", "marketCapKrw", "marketCapRank", "circulatingSupply",
@@ -11951,7 +11953,54 @@
 
       function getFuturesRows(exchange) {
         if (exchange === "bybit" && bybitClient.rows !== null) return linkBybitMarketData(bybitClient.rows);
+        if (exchange === "coinbase") return coinbaseFuturesClient.rows !== null ? linkBybitMarketData(coinbaseFuturesClient.rows)
+          : (data.futures?.coinbase || []).filter(isCoinbaseUsdcFuture);
         return Array.isArray(data.futures?.[exchange]) ? data.futures[exchange] : [];
+      }
+
+      function isCoinbaseUsdcFuture(row) {
+        return row?.contractType === "PERPETUAL" && row.underlyingType === "crypto" && row.quoteAsset === "USDC"
+          && row.marginAsset === "USDC" && row.contractId === `${row.rawUnderlyingSymbol}_USDC-PERPETUAL`
+          && /^[A-Z0-9]{1,40}$/.test(row.rawUnderlyingSymbol);
+      }
+
+      function requestCoinbaseFutures() {
+        if (state.viewMode !== "futures" || futuresExchange !== "coinbase" || isSiteLocked() || document.hidden || !navigator.onLine
+          || (!isLocalPreview() && !siteAuthConfirmed) || coinbaseFuturesClient.promise
+          || Date.now() - coinbaseFuturesClient.checkedAt < (coinbaseFuturesClient.error ? 15000 : 60000)) return;
+        const generation = coinbaseFuturesClient.generation;
+        coinbaseFuturesClient.checkedAt = Date.now();
+        coinbaseFuturesClient.promise = fetchServerAuth("/api/coinbase-futures", { method: "GET", timeoutMs: 20000 })
+          .then(payload => {
+            if (generation !== coinbaseFuturesClient.generation || isSiteLocked()) return;
+            if (!Array.isArray(payload?.rows) || !payload.rows.length || !payload.rows.every(isCoinbaseUsdcFuture)) throw new Error("invalid_coinbase_futures");
+            const existing = new Map((coinbaseFuturesClient.rows || []).map(row => [row.contractId, row]));
+            coinbaseFuturesClient.rows = payload.rows.map(row => {
+              const previous = existing.get(row.contractId);
+              return previous && previous.futuresQuoteAt > Number(row.futuresQuoteAt || 0) ? { ...row, ...previous } : row;
+            });
+            coinbaseFuturesClient.error = payload.error || payload.stale ? "코인베이스 선물 갱신 지연 · 자동 재시도 중" : "";
+          }).catch(() => {
+            if (generation === coinbaseFuturesClient.generation) coinbaseFuturesClient.error = "코인베이스 선물 연결 지연 · 자동 재시도 중";
+          }).finally(() => {
+            if (generation !== coinbaseFuturesClient.generation) return;
+            coinbaseFuturesClient.promise = null;
+            if (!isSiteLocked() && state.viewMode === "futures" && futuresExchange === "coinbase") renderContentPanel();
+          });
+        return coinbaseFuturesClient.promise;
+      }
+
+      function refreshCoinbaseFuturesCells() {
+        if (state.viewMode !== "futures" || futuresExchange !== "coinbase" || isSiteLocked()) return;
+        const models = new Map(getFuturesRows("coinbase").map(row => [row.contractId, row]));
+        newsPanel.querySelectorAll('tr[data-live-exchange="coinbase"]').forEach(element => {
+          const row = models.get(element.dataset.liveProduct);
+          if (!row) return;
+          const display = priceDisplay(row, { minimumUsdFractionDigits: 5 });
+          element.querySelector("[data-live-price-main]").textContent = display.main;
+          element.querySelector("[data-live-price-sub]").textContent = display.sub;
+          element.querySelector(".futures-price").title = `최근 체결가 (USDC) · Mark ${row.markPrice ?? "미확인"} · 가격 수신 ${row.futuresQuoteAt ? new Date(row.futuresQuoteAt).toLocaleTimeString("ko-KR", { hour12: false }) : "대기 중"}`;
+        });
       }
 
       // The GitHub collector's US region is blocked by Bybit; public quotes are read in the browser.
@@ -12019,6 +12068,7 @@
           futuresExchange = "binance";
         }
         requestBybitFutures();
+        requestCoinbaseFutures();
         const spotListingLookup = buildSpotListingLookup();
         const allRows = getFuturesRows(futuresExchange).filter((row) => futuresExchange === "bybit"
           ? isBybitUsdtFuture(row) : futuresExchange !== "binance" || isBinanceUsdtFuture(row));
@@ -12082,6 +12132,7 @@
             </div>
             <p class="futures-note">무기한 코인 선물만 표시합니다. 시총은 선물 계약 자체가 아니라 해당 기초 코인의 현물 시총이며, 월물·분기물·비암호화폐 상품은 제외합니다.</p>
             ${futuresExchange === "bybit" && bybitClient.error ? `<p class="futures-note" role="status">${escapeHtml(bybitClient.error)}${allRows.length ? " 마지막 확인 목록을 표시합니다." : ""}</p>` : ""}
+            ${futuresExchange === "coinbase" && coinbaseFuturesClient.error ? `<p class="futures-note" role="status">${escapeHtml(coinbaseFuturesClient.error)}</p>` : ""}
             ${visibleRows.length ? `
               <div class="futures-table-wrap">
                 <table class="futures-table">
@@ -12091,7 +12142,7 @@
                       <th class="futures-contract">선물 계약</th>
                       <th class="futures-underlying">기초 코인</th>
                       <th class="futures-type">구분</th>
-                      <th class="futures-price">선물 가격</th>
+                      <th class="futures-price">${futuresExchange === "coinbase" ? "최근 체결가 (USDC)" : "선물 가격"}</th>
                       <th class="futures-cap" aria-sort="${futuresSortDirection === "asc" ? "ascending" : "descending"}">
                         <button class="futures-cap-sort" type="button" data-futures-sort title="${futuresSortDirection === "desc" ? "클릭하면 낮은 시총순으로 정렬" : "클릭하면 높은 시총순으로 정렬"}">
                           시총 ${futuresSortDirection === "asc" ? "↑" : "↓"}
@@ -12144,7 +12195,7 @@
                 </table>
               </div>
               ${pagesMarkup}
-            ` : `<p class="futures-empty">${futuresExchange === "bybit" && !allRows.length ? (bybitClient.promise ? "바이비트 선물을 불러오는 중입니다." : bybitClient.error || "조건에 맞는 선물 상품이 없습니다.") : data.generatedAt ? "조건에 맞는 선물 상품이 없습니다." : "선물 데이터를 준비 중입니다."}</p>`}
+            ` : `<p class="futures-empty">${futuresExchange === "coinbase" && !allRows.length ? (coinbaseFuturesClient.promise ? "코인베이스 선물을 불러오는 중입니다." : coinbaseFuturesClient.error || "확인된 선물 상품이 없습니다.") : futuresExchange === "bybit" && !allRows.length ? (bybitClient.promise ? "바이비트 선물을 불러오는 중입니다." : bybitClient.error || "조건에 맞는 선물 상품이 없습니다.") : data.generatedAt ? "조건에 맞는 선물 상품이 없습니다." : "선물 데이터를 준비 중입니다."}</p>`}
           </div>
         `);
         const exchangeTabs = newsPanel.querySelector(".futures-tabs");
@@ -13731,6 +13782,8 @@
       }
 
       function clearSiteLoginState() {
+        coinbaseFuturesClient.generation++;
+        Object.assign(coinbaseFuturesClient, { rows: null, promise: null, checkedAt: 0, error: "" });
         clearPriceDifferenceCache();
         closeLivePriceSocket();
         closePriceDifferenceStreams();
@@ -14592,6 +14645,12 @@
         0,
         Math.floor(Number(options.minimumUsdFractionDigits) || 0)
       );
+      if (row.exchange === "coinbase" && row.contractType === "PERPETUAL") {
+        const at = Number(row.futuresQuoteAt);
+        if (!at || at > Date.now() + 5000 || Date.now() - at > 120000) return { main: "갱신 지연", sub: at ? `마지막 수신 ${new Date(at).toLocaleTimeString("ko-KR", { hour12: false })}` : "가격 수신 대기" };
+        return { main: toPositiveNumber(row.priceUsd) ? `${formatUsdPrice(row.priceUsd, minimumUsdFractionDigits).replace(/^\$/, "")} USDC` : "가격 미확인",
+          sub: toPositiveNumber(row.priceKrw) ? `약 ${formatKrwPrice(row.priceKrw)}` : "원화 환산 미확인" };
+      }
       if (row.nativeCurrency === "KRW") {
         return {
           main: formatKrwPrice(toPositiveNumber(row.priceKrw) ?? NaN),
@@ -15714,7 +15773,9 @@
           const unresolved = (comparison.rows || []).filter(row => !["ok", "domestic"].includes(row[2])).map(row =>
             `<li>${escapeHtml(boardShortLabel(row[0]))} · ${escapeHtml(row[1])} · ${escapeHtml(comparisonLabels[row[2]] || "점검 필요")}${row[3] ? ` · ${escapeHtml(comparisonExchangeLabel(row[3]))}` : ""}</li>`).join("");
           const comparisonEvents = (comparison.events || []).slice(0, 20).map(event => `<li>${escapeHtml(formatRefreshHistoryTime(event.at / 1000))} · ${event.newAlerts ? "지속 장애 알림 대상 확인" : event.recoveredAlerts ? "지속 장애 복구 확인" : event.kind === "recovered" ? "비교 상태 복구 확인" : "비교 상태 변경·점검 대상 감지"} · 지연 ${Number(event.counts?.delayed) || 0}개 · 식별 ${Number(event.counts?.identity) || 0}개 · 환율 ${Number(event.counts?.fx) || 0}개</li>`).join("");
-          comparisonHtml = `<div class="refresh-history-status"><h3>시세차이 전체 자동 점검${overdue ? " · 정기 점검 지연" : ""}</h3><p>마지막 확인 ${escapeHtml(formatRefreshHistoryTime(comparison.checkedAt / 1000))}</p><p>${escapeHtml(summary)}</p><p>지속 장애 ${Number(comparison.activeAlerts) || 0}개 · 신규 알림 대상 ${Number(comparison.newAlerts) || 0}개</p><ul>${unresolved || "<li>현재 점검 대상 없음</li>"}</ul><h3>시세차이 상태 변경 기록</h3><ul>${comparisonEvents}</ul></div>`;
+          const futuresSourceStatus = typeof comparison.sourceChecks?.coinbase_futures === "boolean"
+            ? `<p>코인베이스 선물 API · ${comparison.sourceChecks.coinbase_futures ? "정상 확인" : "갱신 지연 · 자동 재시도 중"}</p>` : "";
+          comparisonHtml = `<div class="refresh-history-status"><h3>시세차이 전체 자동 점검${overdue ? " · 정기 점검 지연" : ""}</h3><p>마지막 확인 ${escapeHtml(formatRefreshHistoryTime(comparison.checkedAt / 1000))}</p><p>${escapeHtml(summary)}</p>${futuresSourceStatus}<p>지속 장애 ${Number(comparison.activeAlerts) || 0}개 · 신규 알림 대상 ${Number(comparison.newAlerts) || 0}개</p><ul>${unresolved || "<li>현재 점검 대상 없음</li>"}</ul><h3>시세차이 상태 변경 기록</h3><ul>${comparisonEvents}</ul></div>`;
         } else comparisonHtml = '<div class="refresh-history-status"><h3>시세차이 전체 자동 점검</h3><p>아직 전체 자동 점검 기록이 없습니다.</p></div>';
         refreshHistoryBody.innerHTML = `<div class="refresh-history-status"><h3>조회 시점 상태</h3>${statusHtml}</div>${comparisonHtml}<ol class="refresh-history-list">${rows || '<li class="refresh-history-empty">기록된 변경 내역이 없습니다.</li>'}</ol>`;
         refreshHistoryBody.scrollTop = scrollTop;
@@ -17083,7 +17144,8 @@
       }
 
       function inspectComparisonStreams(now = Date.now()) {
-        if (!isDomesticComparisonBoard() || state.viewMode !== "market" || document.hidden || !navigator.onLine || isSiteLocked()) return;
+        if (!(isDomesticComparisonBoard() && state.viewMode === "market") && !(state.viewMode === "futures" && futuresExchange === "coinbase")) return;
+        if (document.hidden || !navigator.onLine || isSiteLocked()) return;
         const inspect = (socket, target, startedAt) => {
           if (!socket || socket.readyState > 1) return;
           const stalled = socket.readyState === 0 ? now - startedAt > 20000
@@ -17290,6 +17352,10 @@
           requestPriceDifferenceFx();
           requestPriceDifferenceQuotes();
           inspectComparisonStreams();
+        } else if (state.viewMode === "futures" && futuresExchange === "coinbase" && !document.hidden && !isSiteLocked()) {
+          refreshCoinbaseFuturesCells();
+          requestCoinbaseFutures();
+          inspectComparisonStreams();
         }
       }, 5000);
 
@@ -17328,7 +17394,7 @@
         }
 
         if (!root || !["binance", "upbit", "bithumb", "coinbase", "bybit"].includes(exchange)) return null;
-        if (kind === "futures" && !["binance", "bybit"].includes(exchange)) return null;
+        if (kind === "futures" && !["binance", "bybit", "coinbase"].includes(exchange)) return null;
 
         const selector = `tr[data-live-price-row="${kind}"][data-live-exchange="${exchange}"]`;
         const rowElements = Array.from(root.querySelectorAll(selector));
@@ -17390,7 +17456,7 @@
         }
         if (target.exchange === "upbit") return "wss://api.upbit.com/websocket/v1";
         if (target.exchange === "bithumb") return "wss://pubwss.bithumb.com/pub/ws";
-        if (target.exchange === "coinbase") return "wss://advanced-trade-ws.coinbase.com";
+        if (target.exchange === "coinbase") return target.kind === "futures" ? "wss://streams.drb.coinbase.com/ws/api/v2" : "wss://advanced-trade-ws.coinbase.com";
         if (target.exchange === "bybit") return target.kind === "spot" ? "wss://stream.bybit.com/v5/public/spot" : "wss://stream.bybit.com/v5/public/linear";
         if (target.exchange === "gateio") return "wss://api.gateio.ws/ws/v4/";
         if (target.exchange === "bitget") return "wss://ws.bitget.com/v2/ws/public";
@@ -17414,6 +17480,7 @@
           });
           livePricePendingEntries.clear();
           refreshPriceDifferenceCells();
+          refreshCoinbaseFuturesCells();
         });
       }
 
@@ -17421,13 +17488,14 @@
         const numericPrice = toPositiveNumber(value);
         const entry = target?.entries.get(normalizedLiveProduct(product));
         if (numericPrice === null || !entry) return;
-        if (entry.kind === "spot" && eventAt !== null && eventAt !== undefined) {
+        if ((entry.kind === "spot" || (entry.kind === "futures" && entry.exchange === "coinbase")) && eventAt !== null && eventAt !== undefined) {
           let sourceAt = Number(eventAt);
           if (!Number.isFinite(sourceAt)) sourceAt = Date.parse(eventAt);
           if (sourceAt > 0 && sourceAt < 1e12) sourceAt *= 1000;
           if (!Number.isFinite(sourceAt) || sourceAt <= 0 || sourceAt > Date.now() + 5000
-            || Date.now() - sourceAt > PRICE_DIFFERENCE_MAX_AGE_MS || sourceAt < (entry.row.liveSourceAt || 0)) return;
+            || Date.now() - sourceAt > PRICE_DIFFERENCE_MAX_AGE_MS || sourceAt < Math.max(entry.row.liveSourceAt || 0, entry.kind === "futures" ? entry.row.futuresQuoteAt || 0 : 0)) return;
           entry.row.liveSourceAt = sourceAt;
+          if (entry.kind === "futures") entry.row.futuresQuoteAt = sourceAt;
         }
 
         const fx = toPositiveNumber(data.fxUsdKrw);
@@ -17465,6 +17533,19 @@
           if (!text) return;
           payload = JSON.parse(text);
         } catch (_error) {
+          return;
+        }
+
+        if (target.exchange === "coinbase" && target.kind === "futures") {
+          if (payload.error) { livePriceSocket?.close(); return; }
+          const ticker = payload.params?.data;
+          if (payload.method !== "subscription" || !ticker || payload.params.channel !== `ticker.${ticker.instrument_name}.100ms`
+            || !Number.isFinite(ticker.timestamp) || ticker.timestamp > Date.now() + 5000 || Date.now() - ticker.timestamp > 120000) return;
+          const entry = target.entries.get(normalizedLiveProduct(ticker.instrument_name));
+          if (!entry || !isCoinbaseUsdcFuture(entry.row) || ticker.timestamp < Math.max(entry.row.liveSourceAt || 0, entry.row.futuresQuoteAt || 0)) return;
+          if (ticker.state !== "open") { entry.row.futuresQuoteAt = 0; queueLivePriceEntry(entry); return; }
+          entry.row.markPrice = toPositiveNumber(ticker.mark_price);
+          applyRealtimePrice(ticker.instrument_name, ticker.last_price, target, ticker.timestamp);
           return;
         }
 
@@ -17559,6 +17640,9 @@
             ]));
           } else if (target.exchange === "bithumb") {
             socket.send(JSON.stringify({ type: "ticker", symbols: target.products, tickTypes: ["24H"] }));
+          } else if (target.exchange === "coinbase" && target.kind === "futures") {
+            for (let i = 0; i < target.products.length; i += 20) socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1000 + i,
+              method: "public/subscribe", params: { channels: target.products.slice(i, i + 20).map(product => `ticker.${product}.100ms`) } }));
           } else if (target.exchange === "coinbase") {
             socket.send(JSON.stringify({ type: "subscribe", channel: "ticker", product_ids: target.products }));
             socket.send(JSON.stringify({ type: "subscribe", channel: "heartbeats", product_ids: target.products }));
@@ -17625,6 +17709,7 @@
         } else {
           syncLivePriceStream();
           requestBybitFutures();
+          requestCoinbaseFutures();
         }
       });
       window.addEventListener("online", syncLivePriceStream);

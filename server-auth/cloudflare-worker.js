@@ -533,6 +533,19 @@ const ADDITIONAL_SPOT_SOURCES = {
   okx: { url: "https://www.okx.com/api/v5/market/tickers?instType=SPOT", catalog: "okx" },
 };
 
+const COINBASE_FUTURES_API = "https://drb.coinbase.com/api/v2/public/";
+function normalizeCoinbaseFutureInstruments(payload) {
+  if (payload?.error || !Array.isArray(payload?.result)) throw new Error("invalid_coinbase_futures_catalog");
+  const rows = payload.result.filter(item => item.kind === "future" && item.is_active === true && item.state === "open"
+    && item.underlying_type === "crypto" && item.settlement_period === "perpetual" && item.instrument_type === "linear"
+    && item.quote_currency === "USDC" && item.settlement_currency === "USDC" && /^[A-Z0-9]{1,40}$/.test(item.base_currency)
+    && item.instrument_name === `${item.base_currency}_USDC-PERPETUAL`)
+    .map(item => ({ contractId: item.instrument_name, rawUnderlyingSymbol: item.base_currency,
+      underlyingAssetId: String(item.base_currency_uuid || ""), contractSize: item.contract_size }));
+  if (!rows.length || new Set(rows.map(row => row.contractId)).size !== rows.length) throw new Error("empty_coinbase_futures_catalog");
+  return rows;
+}
+
 const COMPARISON_FX_KEY = "price-difference-fx-v2";
 const COMPARISON_FX_URL = "https://currency-converter.live/api/v1/convert?from=USD&to=KRW&amount=1";
 
@@ -1693,6 +1706,7 @@ function isProtectedContentPath(url) {
   return url.pathname === "/api/market-data"
     || url.pathname === "/api/price-difference-fx"
     || url.pathname === "/api/price-difference-quotes"
+    || url.pathname === "/api/coinbase-futures"
     || url.pathname === "/api/admin/refresh-history"
     || url.pathname === "/api/l2-fees"
     || url.pathname === "/api/l1-fees"
@@ -3203,17 +3217,20 @@ export class BoardStore {
 
   async writeComparisonHealth(request) {
     const body = await parseJsonBody(request);
+    const sourceChecks = body?.sourceChecks || {};
     const states = new Set(["ok", "domestic", "delayed", "identity", "no_market", "fx"]);
     const boards = new Set(["upbit", "bithumb", "binance", "coinbase", ...Object.keys(ADDITIONAL_SPOT_SOURCES)]);
     if (!Array.isArray(body?.rows) || !body.rows.length || body.rows.length > 1200
       || !body.rows.every(row => Array.isArray(row) && row.length === 4 && ["upbit", "bithumb"].includes(row[0])
         && /^[A-Z0-9]{1,40}$/.test(row[1]) && states.has(row[2]) && (row[3] === "" || boards.has(row[3])))
-      || new Set(body.rows.map(row => `${row[0]}:${row[1]}`)).size !== body.rows.length) {
+      || new Set(body.rows.map(row => `${row[0]}:${row[1]}`)).size !== body.rows.length
+      || typeof sourceChecks !== "object" || Array.isArray(sourceChecks)
+      || Object.entries(sourceChecks).some(([key, value]) => key !== "coinbase_futures" || typeof value !== "boolean")) {
       return jsonResponse({ error: "invalid_comparison_health" }, 400, this.env);
     }
     const checkedAt = Date.now();
     const counts = Object.fromEntries([...states].map(state => [state, body.rows.filter(row => row[2] === state).length]));
-    const signature = await sha256Hex(JSON.stringify(body.rows.filter(row => !["ok", "domestic"].includes(row[2])).sort()));
+    const signature = await sha256Hex(JSON.stringify({ rows: body.rows.filter(row => !["ok", "domestic"].includes(row[2])).sort(), sourceChecks }));
     const reportId = typeof body.reportId === "string" && /^\d{1,20}:\d{1,6}$/.test(body.reportId) ? body.reportId : "";
     return this.state.storage.transaction(async storage => {
       const previous = await storage.get("comparison-health-v1");
@@ -3226,7 +3243,8 @@ export class BoardStore {
       const priorRows = new Map((previous?.rows || []).map(row => [`${row[0]}:${row[1]}`, row[2]]));
       const next = [];
       let newAlerts = 0;
-      for (const row of body.rows) {
+      const sources = Object.entries(sourceChecks).map(([key, ok]) => ["source", key, ok ? "ok" : "delayed", ""]);
+      for (const row of [...body.rows, ...sources]) {
         const id = `${row[0]}:${row[1]}`;
         const prior = pending.get(id);
         const actionable = ["delayed", "identity", "fx"].includes(row[2])
@@ -3244,8 +3262,8 @@ export class BoardStore {
       const changed = signature !== previous?.signature;
       const events = [...(previous?.events || [])];
       if (changed || newAlerts || recoveredAlerts) events.unshift({ at: checkedAt, counts, newAlerts, recoveredAlerts,
-        kind: counts.delayed + counts.identity + counts.fx + counts.no_market ? "attention" : "recovered" });
-      const payload = { checkedAt, counts, rows: body.rows, signature, events: events.slice(0, 100), reportId,
+        kind: counts.delayed + counts.identity + counts.fx + counts.no_market || Object.values(sourceChecks).includes(false) ? "attention" : "recovered" });
+      const payload = { checkedAt, counts, rows: body.rows, sourceChecks, signature, events: events.slice(0, 100), reportId,
         newAlerts, recoveredAlerts, activeAlerts: next.filter(item => item[4]).length,
         consecutive: changed ? 1 : (previous?.consecutive || 0) + 1 };
       await storage.put("comparison-alerts-v1", next);
@@ -3257,6 +3275,59 @@ export class BoardStore {
   async handleLivePricesRequest() {
     const payload = await this.readMarketData();
     return jsonResponse(await fetchLivePricePayload(payload), 200, this.env);
+  }
+
+  async handleCoinbaseFuturesRequest() {
+    const key = "coinbase-futures-v1";
+    const now = Date.now();
+    const stored = await this.state.storage.get(key);
+    const respond = value => jsonResponse({ ...value, stale: !value?.observedAt || Date.now() - value.observedAt > 120000 },
+      value?.rows?.length ? 200 : 503, this.env);
+    if (stored && now - stored.checkedAt < (stored.error ? 15000 : 20000)) return respond(stored);
+    if (!this.coinbaseFuturesPromise) {
+      this.coinbaseFuturesPromise = (async () => {
+        let payload;
+        try {
+          let catalog = await this.state.storage.get("coinbase-futures-catalog-v1");
+          if (!catalog || now - catalog.fetchedAt > 3600000) {
+            const instruments = normalizeCoinbaseFutureInstruments(await fetchJsonWithTimeout(`${COINBASE_FUTURES_API}get_instruments?currency=any&kind=future&expired=false`, 8000));
+            let assets = [];
+            try { assets = (await fetchJsonWithTimeout("https://api.coinbase.com/v2/currencies/crypto", 6000)).data || []; }
+            catch (_error) { /* Missing identity must not stop official futures prices. */ }
+            const byId = new Map((Array.isArray(assets) ? assets : []).filter(asset => asset.type === "crypto" && asset.asset_id && asset.name).map(asset => [asset.asset_id, asset]));
+            for (const item of instruments) {
+              const asset = byId.get(item.underlyingAssetId);
+              item.underlyingName = asset ? String(asset.name).slice(0, 120) : "";
+              item.underlyingIdentityVerified = Boolean(asset);
+            }
+            if (catalog?.instruments?.length >= 50 && instruments.length < catalog.instruments.length * 0.7) throw new Error("incomplete_coinbase_futures_catalog");
+            catalog = { instruments, fetchedAt: Date.now() };
+            await this.state.storage.put("coinbase-futures-catalog-v1", catalog);
+          }
+          const quotes = await fetchJsonWithTimeout(`${COINBASE_FUTURES_API}get_book_summary_by_currency?currency=USDC&kind=future`, 8000);
+          if (quotes?.error || !Array.isArray(quotes?.result)) throw new Error("invalid_coinbase_futures_quotes");
+          const byContract = new Map(quotes.result.map(row => [row.instrument_name, row]));
+          const rows = catalog.instruments.map(item => {
+            const quote = byContract.get(item.contractId);
+            const at = Number(quote?.creation_timestamp);
+            const valid = Number.isFinite(at) && at <= Date.now() + 5000 && Date.now() - at <= 120000;
+            return { ...item, symbol: item.rawUnderlyingSymbol, pair: item.contractId, exchange: "coinbase",
+              englishName: item.underlyingName || item.rawUnderlyingSymbol,
+              contractType: "PERPETUAL", contractTypeLabel: "무기한", contractMarket: "Coinbase / Deribit",
+              underlyingType: "crypto", quoteAsset: "USDC", marginAsset: "USDC", priceCurrency: "USDC", nativeCurrency: "USD",
+              priceUsd: valid ? toPositiveNumber(quote?.last) : null, markPrice: valid ? toPositiveNumber(quote?.mark_price) : null,
+              futuresQuoteAt: valid ? at : 0, futuresPriceBasis: "last", priceSource: "coinbase_deribit_last_trade" };
+          });
+          if (!rows.some(row => row.priceUsd !== null)) throw new Error("empty_coinbase_futures_prices");
+          payload = { rows, observedAt: Date.now(), checkedAt: Date.now(), error: "" };
+        } catch (_error) {
+          payload = { ...(stored || { rows: [], observedAt: 0 }), checkedAt: Date.now(), error: "coinbase_futures_refresh_failed" };
+        }
+        await this.state.storage.put(key, payload);
+        return payload;
+      })().finally(() => { this.coinbaseFuturesPromise = null; });
+    }
+    return respond(await this.coinbaseFuturesPromise);
   }
 
   async readComparisonFx() {
@@ -3408,6 +3479,13 @@ export class BoardStore {
 
   async probeComparisonSource(exchange) {
     const started = Date.now();
+    if (exchange === "coinbase_futures") {
+      const response = await this.handleCoinbaseFuturesRequest();
+      const value = await response.json();
+      return jsonResponse({ implementation: 6, exchange, quoteCount: value.rows.filter(row => row.priceUsd > 0).length,
+        error: value.error || (value.stale ? "coinbase_futures_stale" : ""), observedAt: value.observedAt,
+        targets: value.rows.filter(row => ["BTC", "ETH", "SOL"].includes(row.symbol)).map(row => ({ contract: row.contractId, last: row.priceUsd, mark: row.markPrice, at: row.futuresQuoteAt })) }, 200, this.env);
+    }
     if (exchange === "audit") {
       const market = await this.readMarketData();
       const fields = row => ({ symbol: row.symbol, compareSymbol: row.compareSymbol, englishName: row.englishName,
@@ -4942,6 +5020,10 @@ export class BoardStore {
       return this.recordApiResponse(await this.handleComparisonQuotesRequest(url));
     }
 
+    if (request.method === "GET" && url.pathname === "/api/coinbase-futures") {
+      return this.recordApiResponse(await this.handleCoinbaseFuturesRequest());
+    }
+
     if (request.method === "GET" && ["/api/l2-fees", "/api/l1-fees"].includes(url.pathname)) {
       return this.recordApiResponse(await this.handleL2FeesRequest(url.pathname === "/api/l1-fees" ? "l1" : "l2"));
     }
@@ -5467,6 +5549,10 @@ export default {
       return env.BOARD_STORE.get(env.BOARD_STORE.idFromName("free-board")).fetch(request);
     }
     if (url.pathname === "/api/price-difference-quotes" && request.method === "GET") {
+      if (!env.BOARD_STORE) return jsonResponse({ error: "auth_storage_unavailable" }, 503, env);
+      return env.BOARD_STORE.get(env.BOARD_STORE.idFromName("free-board")).fetch(request);
+    }
+    if (url.pathname === "/api/coinbase-futures" && request.method === "GET") {
       if (!env.BOARD_STORE) return jsonResponse({ error: "auth_storage_unavailable" }, 503, env);
       return env.BOARD_STORE.get(env.BOARD_STORE.idFromName("free-board")).fetch(request);
     }

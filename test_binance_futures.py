@@ -47,13 +47,13 @@ class BinanceUsdtFuturesTests(unittest.TestCase):
             rows = build_data.fetch_binance_futures_coingecko()
         self.assertEqual([row["contractId"] for row in rows], ["BTCUSDT"])
 
-    def test_previous_snapshot_filters_binance_only_without_mutating_cache(self):
+    def test_previous_snapshot_filters_invalid_contracts_without_mutating_cache(self):
         rows = [self.row("BTCUSDT", "USDT"), self.row("BTCUSD1", "USD1"), self.row("BTCUSDC", "USDC"),
                 self.row("BTCUSD_PERP", "USD", contractMarket="COIN-M"), self.row("ETHBTC", "BTC")]
         previous = {"futures": {"binance": rows, "coinbase": [self.row("BTC-PERP", "USDC")]}}
         before = copy.deepcopy(previous)
         self.assertEqual([row["contractId"] for row in build_data.clone_previous_futures_rows(previous, "binance")], ["BTCUSDT"])
-        self.assertEqual(build_data.clone_previous_futures_rows(previous, "coinbase"), previous["futures"]["coinbase"])
+        self.assertEqual(build_data.clone_previous_futures_rows(previous, "coinbase"), [], "retired INTX contracts cannot be served as current Coinbase contracts")
         self.assertEqual(previous, before)
 
 

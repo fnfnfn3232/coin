@@ -22,6 +22,11 @@ async function request(suffix, options = {}) {
 }
 const audit = await request('?probeComparison=audit');
 const report = assessComparisonHealth(audit);
+try {
+  const futures = await request('?probeComparison=coinbase_futures');
+  report.sourceChecks = { coinbase_futures: !futures.error && futures.quoteCount > 0
+    && futures.observedAt <= Date.now() + 5000 && Date.now() - futures.observedAt <= 120000 };
+} catch (_error) { report.sourceChecks = { coinbase_futures: false }; }
 if (process.env.GITHUB_RUN_ID && process.env.GITHUB_RUN_ATTEMPT) report.reportId = `${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`;
 const result = await request('?comparisonHealth=1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(report) });
 if (result.alertVersion !== 1) throw new Error('comparison_alert_policy_not_deployed');
