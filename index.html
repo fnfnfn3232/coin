@@ -17417,10 +17417,18 @@
         });
       }
 
-      function applyRealtimePrice(product, value, target = livePriceTarget) {
+      function applyRealtimePrice(product, value, target = livePriceTarget, eventAt = null) {
         const numericPrice = toPositiveNumber(value);
         const entry = target?.entries.get(normalizedLiveProduct(product));
         if (numericPrice === null || !entry) return;
+        if (entry.kind === "spot" && eventAt !== null && eventAt !== undefined) {
+          let sourceAt = Number(eventAt);
+          if (!Number.isFinite(sourceAt)) sourceAt = Date.parse(eventAt);
+          if (sourceAt > 0 && sourceAt < 1e12) sourceAt *= 1000;
+          if (!Number.isFinite(sourceAt) || sourceAt <= 0 || sourceAt > Date.now() + 5000
+            || Date.now() - sourceAt > PRICE_DIFFERENCE_MAX_AGE_MS || sourceAt < (entry.row.liveSourceAt || 0)) return;
+          entry.row.liveSourceAt = sourceAt;
+        }
 
         const fx = toPositiveNumber(data.fxUsdKrw);
         if (entry.exchange === "upbit" || entry.exchange === "bithumb") {
@@ -17465,7 +17473,7 @@
           const bid = toPositiveNumber(ticker?.b);
           const ask = toPositiveNumber(ticker?.a);
           const price = toPositiveNumber(ticker?.c) ?? (bid !== null && ask !== null ? (bid + ask) / 2 : bid ?? ask);
-          applyRealtimePrice(ticker?.s, price, target);
+          applyRealtimePrice(ticker?.s, price, target, ticker?.E);
           return;
         }
 
@@ -17473,29 +17481,29 @@
           if (!["snapshot", "delta"].includes(payload?.type) || !String(payload?.topic || "").startsWith("tickers.")) return;
           if (target.kind === "spot" && payload.type !== "snapshot") return;
           const tickers = Array.isArray(payload?.data) ? payload.data : [payload?.data];
-          tickers.forEach(ticker => applyRealtimePrice(ticker?.symbol || payload.topic.slice(8), ticker?.lastPrice, target));
+          tickers.forEach(ticker => applyRealtimePrice(ticker?.symbol || payload.topic.slice(8), ticker?.lastPrice, target, payload.ts));
           return;
         }
 
         if (target.exchange === "gateio") {
-          if (payload.channel === "spot.tickers" && payload.event === "update") applyRealtimePrice(payload.result?.currency_pair, payload.result?.last, target);
+          if (payload.channel === "spot.tickers" && payload.event === "update") applyRealtimePrice(payload.result?.currency_pair, payload.result?.last, target, payload.time_ms ?? payload.time);
           return;
         }
         if (target.exchange === "bitget") {
           if (payload.arg?.instType === "SPOT" && payload.arg?.channel === "ticker" && Array.isArray(payload.data)) {
-            payload.data.forEach(ticker => applyRealtimePrice(ticker.instId || payload.arg.instId, ticker.lastPr, target));
+            payload.data.forEach(ticker => applyRealtimePrice(ticker.instId || payload.arg.instId, ticker.lastPr, target, ticker.ts));
           }
           return;
         }
         if (target.exchange === "okx") {
           if (payload.arg?.channel === "tickers" && Array.isArray(payload.data)) {
-            payload.data.filter(ticker => ticker.instType === "SPOT").forEach(ticker => applyRealtimePrice(ticker.instId, ticker.last, target));
+            payload.data.filter(ticker => ticker.instType === "SPOT").forEach(ticker => applyRealtimePrice(ticker.instId, ticker.last, target, ticker.ts));
           }
           return;
         }
 
         if (target.exchange === "upbit") {
-          applyRealtimePrice(payload?.code, payload?.trade_price, target);
+          applyRealtimePrice(payload?.code, payload?.trade_price, target, payload?.timestamp);
           return;
         }
 
@@ -17508,7 +17516,7 @@
           const events = Array.isArray(payload?.events) ? payload.events : [];
           events.forEach((event) => {
             const tickers = Array.isArray(event?.tickers) ? event.tickers : [];
-            tickers.forEach((ticker) => applyRealtimePrice(ticker?.product_id, ticker?.price, target));
+            tickers.forEach((ticker) => applyRealtimePrice(ticker?.product_id, ticker?.price, target, payload.timestamp));
           });
         }
       }

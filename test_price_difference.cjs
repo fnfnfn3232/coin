@@ -512,6 +512,17 @@ async function main() {
       return row.priceKrw === before;
     });
     assert.equal(late, true, 'a late decoded message from a retired socket cannot update a price');
+    const sourceClocks = await page.evaluate(() => {
+      const row = { symbol: 'BTC' };
+      const target = { entries: new Map([['KRW-BTC', { row, exchange: 'upbit', kind: 'spot' }]]) };
+      const now = Date.now();
+      applyRealtimePrice('KRW-BTC', 100, target, now);
+      applyRealtimePrice('KRW-BTC', 1, target, now - 1);
+      applyRealtimePrice('KRW-BTC', 2, target, now - 130000);
+      applyRealtimePrice('KRW-BTC', 3, target, now + 6000);
+      return { price: row.priceKrw, sourceAt: row.liveSourceAt === now };
+    });
+    assert.deepEqual(sourceClocks, { price: 100, sourceAt: true }, 'old, out-of-order and future source timestamps cannot make stale prices look fresh');
     assert.match(await page.locator('#priceDifferenceHealth').innerText(), /시세 비교/);
     if (process.env.COMPARISON_SCREENSHOT) {
       await page.screenshot({ path: process.env.COMPARISON_SCREENSHOT });

@@ -7,6 +7,9 @@
   heartbeats/no valid ticker for 90 seconds closes and reconnects with backoff.
   Both native and auxiliary sockets are covered. Late decoded messages from a
   retired connection cannot refresh a price.
+- Spot messages with supplied source event clocks reject expired, future and
+  out-of-order timestamps. Feeds without a usable source clock still use receipt
+  age; a receipt time must not be represented as a verified trade event time.
 - Stale individual prices trigger shared bulk refresh after 30 seconds. Even
   apparently healthy ticker streams receive an independent bulk refresh at
   most once per minute/source. Fresh bootstrap/session observations suppress
