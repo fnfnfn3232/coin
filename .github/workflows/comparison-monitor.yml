@@ -2,6 +2,13 @@ name: Comparison Monitor
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/scripts/monitor-comparison.mjs'
+      - '.github/scripts/futures-health.mjs'
+      - 'test_futures_health.mjs'
+      - '.github/workflows/comparison-monitor.yml'
   workflow_run:
     workflows: ['Deploy Cloudflare Worker']
     types: [completed]
@@ -28,6 +35,6 @@ jobs:
         with:
           node-version: '22'
       - name: Verify comparison monitoring policy
-        run: node --test test_comparison_health.cjs comparison-identity.test.cjs
+        run: node --test test_futures_health.mjs test_comparison_health.cjs comparison-identity.test.cjs
       - name: Refresh bulk sources and audit every domestic listing
         run: node .github/scripts/monitor-comparison.mjs

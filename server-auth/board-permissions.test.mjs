@@ -235,6 +235,78 @@ test("Coinbase futures use the new public gateway, coalesce refreshes and retain
   } finally { globalThis.fetch = originalFetch; Date.now = originalNow; }
 });
 
+test("resource monitoring refreshes shared sources and cannot promote old snapshots or failed caches", async () => {
+  const f = await fixture();
+  const now = Date.now();
+  let failed = false;
+  f.store.handleL2FeesRequest = async layer => Response.json({ fetchedAt: now, stale: failed,
+    rows: [{ total24h: layer === 'l1' ? 0 : 1 }] });
+  f.store.refreshNewsStore = async () => ({ stale: failed, store: { fetchedAt: now, items: [{ id: 'news' }] } });
+  const market = { generatedAt: Math.floor(now / 1000), refreshHealth: { components: {
+    defillama: { state: 'healthy', lastSuccessAt: Math.floor(now / 1000) },
+    apywa: { state: 'healthy', lastSuccessAt: Math.floor(now / 1000) - 3600 },
+  } } };
+  f.store.readMarketData = async () => market;
+  const read = async () => (await (await f.store.probeComparisonSource('resources')).json()).sourceChecks;
+  assert.deepEqual(await read(), { l1fees: true, l2fees: true, news: true, market_snapshot: true, defillama: true, apywa: true });
+  failed = true;
+  market.generatedAt -= 1801;
+  assert.equal(Object.values(await read()).every(value => value === false), true);
+  for (const token of ['', f.memberToken, f.adminToken]) {
+    assert.equal((await f.rawRequest('/api/market-data?probeComparison=resources', 'GET', undefined, token, { 'X-Market-Data-Sync': '1' })).status, 401);
+  }
+});
+
+test("only bounded known resource source checks are accepted and their details stay private", async () => {
+  const f = await fixture();
+  const write = sourceChecks => f.store.writeComparisonHealth(new Request('https://board-store/api/market-data?comparisonHealth=1', {
+    method: 'POST', body: JSON.stringify({ rows: [['upbit', 'BTC', 'ok', 'coinbase']], sourceChecks }),
+  }));
+  const sourceChecks = Object.fromEntries(['binance_futures', 'coinbase_futures', 'bybit_futures', 'news', 'l1fees', 'l2fees', 'market_snapshot', 'defillama', 'apywa'].map(key => [key, false]));
+  assert.equal((await write(sourceChecks)).status, 200);
+  assert.equal((await write({ arbitrary_url: true })).status, 400);
+  assert.equal((await write({ news: 'healthy' })).status, 400);
+  assert.deepEqual((await f.storage.get('comparison-health-v1')).sourceChecks, sourceChecks);
+  assert.deepEqual((await f.storage.get('comparison-health-v1')).events[0].sourceChecks, sourceChecks);
+});
+
+test("an empty or malformed HTTP 200 news feed cannot advance the last successful fetch time", async () => {
+  const f = await fixture();
+  const originalFetch = globalThis.fetch;
+  const old = { fetchedAt: Date.now() - 3600000, seededAt: Date.now(), items: [{ id: 1, headline: 'Kept' }] };
+  f.store.readNewsStore = async () => old;
+  try {
+    for (const source of [[], {}, [{ id: 0 }]]) {
+      globalThis.fetch = async () => Response.json(source);
+      const result = await f.store.loadNewsStore();
+      assert.equal(result.stale, true);
+      assert.equal(result.store.fetchedAt, old.fetchedAt);
+      assert.equal(result.store.items[0].headline, 'Kept');
+    }
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("news recovery coalesces concurrent requests, backs off on failure, and retries without renewing old data", async () => {
+  const f = await fixture();
+  const originalNow = Date.now;
+  let now = Date.now(), calls = 0, stale = true;
+  const old = { fetchedAt: now - 3600000, items: [{ id: 'kept' }] };
+  f.store.readNewsStore = async () => old;
+  f.store.loadNewsStore = async () => { calls++; return { store: old, stale }; };
+  Date.now = () => now;
+  try {
+    await Promise.all([f.store.refreshNewsStore(), f.store.refreshNewsStore(true)]);
+    assert.equal(calls, 1);
+    const failed = await f.store.refreshNewsStore(true);
+    assert.equal(calls, 1);
+    assert.equal(failed.stale, true);
+    assert.equal(failed.store.fetchedAt, old.fetchedAt);
+    now += 60001; stale = false;
+    assert.equal((await f.store.refreshNewsStore()).stale, false);
+    assert.equal(calls, 2);
+  } finally { Date.now = originalNow; }
+});
+
 test("additional comparison feeds accept only valid USDT spot products and success envelopes", () => {
   assert.deepEqual(normalizeAdditionalSpotQuotes("gateio", [{ currency_pair: "XCN_USDT", last: "0.004" }, { currency_pair: "XCN_BTC", last: "10" }]), { XCN: 0.004 });
   assert.deepEqual(normalizeAdditionalSpotQuotes("bybit", { retCode: 0, result: { category: "spot", list: [{ symbol: "NEOUSDT", lastPrice: "2" }, { symbol: "NEOUSDC", lastPrice: "999" }] } }), { NEO: 2 });

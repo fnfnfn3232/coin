@@ -7443,6 +7443,7 @@
 
   <script src="./vendor/js-md5.min.js"></script>
   <script src="./comparison-identity.js?v=7e10af073981"></script>
+  <script src="./app-update.js?v=20261031-1"></script>
   <script>
     window.SERVER_AUTH_API_BASE = "https://coin-board-auth.dlatl20000.workers.dev";
   </script>
@@ -11955,7 +11956,11 @@
         if (exchange === "bybit" && bybitClient.rows !== null) return linkBybitMarketData(bybitClient.rows);
         if (exchange === "coinbase") return coinbaseFuturesClient.rows !== null ? linkBybitMarketData(coinbaseFuturesClient.rows)
           : (data.futures?.coinbase || []).filter(isCoinbaseUsdcFuture);
-        return Array.isArray(data.futures?.[exchange]) ? data.futures[exchange] : [];
+        const rows = Array.isArray(data.futures?.[exchange]) ? data.futures[exchange] : [];
+        const snapshotAt = Number(data.refreshHealth?.components?.[`${exchange}_futures`]?.lastSuccessAt
+          || (data.refreshIssues?.[`${exchange}_futures`] ? 0 : data.generatedAt) || 0) * 1000;
+        rows.forEach(row => { row.futuresSnapshotAt = snapshotAt; });
+        return rows;
       }
 
       function isCoinbaseUsdcFuture(row) {
@@ -12024,7 +12029,7 @@
               if (!response.ok) throw new Error(`bybit_http_${response.status}`);
               const payload = await response.json();
               if (payload.retCode !== 0 || !Array.isArray(payload.result?.list)) throw new Error("bybit_invalid_response");
-              return payload.result;
+              return { ...payload.result, sourceAt: Number(payload.time) || 0 };
             };
             const instruments = new Map();
             const cursors = new Set();
@@ -12054,6 +12059,7 @@
               quoteAsset: "USDT", marginAsset: "USDT", exchangeStatus: "Trading",
               symbolType: item.symbolType || "", isPreListing: false, nativeCurrency: "USD",
               priceUsd: prices.get(item.symbol) ?? Number.NaN, priceSource: "bybit_linear_futures_ticker",
+              futuresQuoteAt: tickers.sourceAt > 0 && tickers.sourceAt <= Date.now() + 5000 && Date.now() - tickers.sourceAt <= 120000 ? tickers.sourceAt : 0,
             }));
             bybitClient.rows = rows;
           } catch (_error) {
@@ -14649,6 +14655,10 @@
         0,
         Math.floor(Number(options.minimumUsdFractionDigits) || 0)
       );
+      if (row.contractType === "PERPETUAL" && ["binance", "bybit"].includes(row.exchange)) {
+        const at = Number(row.futuresQuoteAt || row.futuresSnapshotAt);
+        if (!at || at > Date.now() + 5000 || Date.now() - at > 120000) return { main: "갱신 지연", sub: "실시간 가격 수신 대기" };
+      }
       if (row.exchange === "coinbase" && row.contractType === "PERPETUAL") {
         const at = Number(row.futuresQuoteAt);
         if (!at || at > Date.now() + 5000 || Date.now() - at > 120000) return { main: "갱신 지연", sub: at ? `마지막 수신 ${new Date(at).toLocaleTimeString("ko-KR", { hour12: false })}` : "가격 수신 대기" };
@@ -15776,11 +15786,17 @@
             .map(([key, count]) => `${comparisonLabels[key]} ${Number(count) || 0}개`).join(" · ");
           const unresolved = (comparison.rows || []).filter(row => !["ok", "domestic"].includes(row[2])).map(row =>
             `<li>${escapeHtml(boardShortLabel(row[0]))} · ${escapeHtml(row[1])} · ${escapeHtml(comparisonLabels[row[2]] || "점검 필요")}${row[3] ? ` · ${escapeHtml(comparisonExchangeLabel(row[3]))}` : ""}</li>`).join("");
-          const comparisonEvents = (comparison.events || []).slice(0, 20).map(event => `<li>${escapeHtml(formatRefreshHistoryTime(event.at / 1000))} · ${event.newAlerts ? "지속 장애 알림 대상 확인" : event.recoveredAlerts ? "지속 장애 복구 확인" : event.kind === "recovered" ? "비교 상태 복구 확인" : "비교 상태 변경·점검 대상 감지"} · 지연 ${Number(event.counts?.delayed) || 0}개 · 식별 ${Number(event.counts?.identity) || 0}개 · 환율 ${Number(event.counts?.fx) || 0}개</li>`).join("");
-          const futuresSourceStatus = typeof comparison.sourceChecks?.coinbase_futures === "boolean"
-            ? `<p>코인베이스 선물 API · ${comparison.sourceChecks.coinbase_futures ? "정상 확인" : "갱신 지연 · 자동 재시도 중"}</p>` : "";
-          comparisonHtml = `<div class="refresh-history-status"><h3>시세차이 전체 자동 점검${overdue ? " · 정기 점검 지연" : ""}</h3><p>마지막 확인 ${escapeHtml(formatRefreshHistoryTime(comparison.checkedAt / 1000))}</p><p>${escapeHtml(summary)}</p>${futuresSourceStatus}<p>지속 장애 ${Number(comparison.activeAlerts) || 0}개 · 신규 알림 대상 ${Number(comparison.newAlerts) || 0}개</p><ul>${unresolved || "<li>현재 점검 대상 없음</li>"}</ul><h3>시세차이 상태 변경 기록</h3><ul>${comparisonEvents}</ul></div>`;
-        } else comparisonHtml = '<div class="refresh-history-status"><h3>시세차이 전체 자동 점검</h3><p>아직 전체 자동 점검 기록이 없습니다.</p></div>';
+          const sourceLabels = { binance_futures: "바이낸스 선물 실시간 연결", coinbase_futures: "코인베이스 선물 API", bybit_futures: "바이비트 선물 실시간 연결",
+            news: "뉴스", l1fees: "L1 수수료", l2fees: "L2 수수료", market_snapshot: "시총·자료 스냅샷", defillama: "디파이 자료", apywa: "코인 등급" };
+          const comparisonEvents = (comparison.events || []).slice(0, 20).map(event => {
+            const sources = Object.entries(event.sourceChecks || {}).filter(([key]) => sourceLabels[key])
+              .map(([key, ok]) => `${sourceLabels[key]} ${ok ? "정상" : "지연"}`).join(" · ");
+            return `<li>${escapeHtml(formatRefreshHistoryTime(event.at / 1000))} · ${event.newAlerts ? "지속 장애 알림 대상 확인" : event.recoveredAlerts ? "지속 장애 복구 확인" : event.kind === "recovered" ? "갱신 상태 복구 확인" : "갱신 상태 변경·점검 대상 감지"} · 지연 ${Number(event.counts?.delayed) || 0}개 · 식별 ${Number(event.counts?.identity) || 0}개 · 환율 ${Number(event.counts?.fx) || 0}개${sources ? `<p>${escapeHtml(sources)}</p>` : ""}</li>`;
+          }).join("");
+          const futuresSourceStatus = Object.entries(comparison.sourceChecks || {}).filter(([key]) => sourceLabels[key])
+            .map(([key, ok]) => `<p>${escapeHtml(sourceLabels[key])} · ${ok ? "정상 확인" : "갱신 지연 · 자동 재시도 중"}</p>`).join("");
+          comparisonHtml = `<div class="refresh-history-status"><h3>시세·자료 전체 자동 점검${overdue ? " · 정기 점검 지연" : ""}</h3><p>마지막 확인 ${escapeHtml(formatRefreshHistoryTime(comparison.checkedAt / 1000))}</p><p>${escapeHtml(summary)}</p>${futuresSourceStatus}<p>지속 장애 ${Number(comparison.activeAlerts) || 0}개 · 신규 알림 대상 ${Number(comparison.newAlerts) || 0}개</p><ul>${unresolved || "<li>현재 점검 대상 없음</li>"}</ul><h3>갱신 상태 변경 기록</h3><ul>${comparisonEvents}</ul></div>`;
+        } else comparisonHtml = '<div class="refresh-history-status"><h3>시세·자료 전체 자동 점검</h3><p>아직 전체 자동 점검 기록이 없습니다.</p></div>';
         refreshHistoryBody.innerHTML = `<div class="refresh-history-status"><h3>조회 시점 상태</h3>${statusHtml}</div>${comparisonHtml}<ol class="refresh-history-list">${rows || '<li class="refresh-history-empty">기록된 변경 내역이 없습니다.</li>'}</ol>`;
         refreshHistoryBody.scrollTop = scrollTop;
       }
@@ -17148,7 +17164,7 @@
       }
 
       function inspectComparisonStreams(now = Date.now()) {
-        if (!(isDomesticComparisonBoard() && state.viewMode === "market") && !(state.viewMode === "futures" && futuresExchange === "coinbase")) return;
+        if (!(isDomesticComparisonBoard() && state.viewMode === "market") && state.viewMode !== "futures") return;
         if (document.hidden || !navigator.onLine || isSiteLocked()) return;
         const inspect = (socket, target, startedAt) => {
           if (!socket || socket.readyState > 1) return;
@@ -17356,9 +17372,13 @@
           requestPriceDifferenceFx();
           requestPriceDifferenceQuotes();
           inspectComparisonStreams();
-        } else if (state.viewMode === "futures" && futuresExchange === "coinbase" && !document.hidden && !isSiteLocked()) {
-          refreshCoinbaseFuturesCells();
-          requestCoinbaseFutures();
+        } else if (state.viewMode === "futures" && !document.hidden && !isSiteLocked()) {
+          if (futuresExchange === "coinbase") {
+            refreshCoinbaseFuturesCells();
+            requestCoinbaseFutures();
+          } else {
+            livePriceTarget?.entries.forEach(entry => queueLivePriceEntry(entry));
+          }
           inspectComparisonStreams();
         }
       }, 5000);
@@ -17492,7 +17512,8 @@
         const numericPrice = toPositiveNumber(value);
         const entry = target?.entries.get(normalizedLiveProduct(product));
         if (numericPrice === null || !entry) return;
-        if ((entry.kind === "spot" || (entry.kind === "futures" && entry.exchange === "coinbase")) && eventAt !== null && eventAt !== undefined) {
+        if (entry.kind === "futures" && (eventAt === null || eventAt === undefined)) return;
+        if ((entry.kind === "spot" || entry.kind === "futures") && eventAt !== null && eventAt !== undefined) {
           let sourceAt = Number(eventAt);
           if (!Number.isFinite(sourceAt)) sourceAt = Date.parse(eventAt);
           if (sourceAt > 0 && sourceAt < 1e12) sourceAt *= 1000;
@@ -20232,6 +20253,13 @@
         if (!document.hidden && chainFeesStates[state.viewMode]) requestChainFees();
       });
       render();
+      if (location.hostname.endsWith(".github.io") && window.createAppUpdateGuard) window.createAppUpdateGuard({
+        canReload: () => !isSiteLocked() && !["board", "news"].includes(state.viewMode)
+          && !["write", "edit"].includes(freeBoardMode)
+          && !document.querySelector('[contenteditable="true"]:focus, input:focus, textarea:focus, select:focus')
+          && ![...document.querySelectorAll('[role="dialog"], .modal, #refreshHistoryModal')].some(element => element.getClientRects().length > 0)
+          && !document.body.className.match(/(?:admin|modal|editor|history|auth)-open/),
+      });
     </script>
   </body>
   </html>

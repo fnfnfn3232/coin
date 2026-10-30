@@ -2588,6 +2588,7 @@ async function fetchSeedNewsItems(env) {
   if (!seedUrl) return [];
   try {
     const response = await fetch(seedUrl, {
+      signal: AbortSignal.timeout(8000),
       headers: {
         "Accept": "application/javascript,text/javascript,text/plain,*/*",
         "Cache-Control": "no-cache",
@@ -2617,6 +2618,7 @@ async function fetchCoinnessNews(env) {
   const limit = Math.min(Math.max(Number(env.NEWS_LIMIT || NEWS_PAGE_MAX_ITEMS), 1), NEWS_PAGE_MAX_ITEMS);
   const query = new URLSearchParams({ languageCode: "ko", limit: String(limit) });
   const response = await fetch(`${COINNESS_NEWS_ENDPOINT}?${query.toString()}`, {
+    signal: AbortSignal.timeout(8000),
     headers: {
       "Accept": "application/json",
       "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.7,en;q=0.6",
@@ -2632,6 +2634,7 @@ async function fetchCoinnessNews(env) {
   const items = Array.isArray(payload)
     ? payload.map((entry) => normalizeNewsItem(entry)).filter(Boolean)
     : [];
+  if (!items.length) throw new Error("coinness_empty_feed");
   return {
     source: "coinness",
     mode: "preview",
@@ -3225,7 +3228,7 @@ export class BoardStore {
         && /^[A-Z0-9]{1,40}$/.test(row[1]) && states.has(row[2]) && (row[3] === "" || boards.has(row[3])))
       || new Set(body.rows.map(row => `${row[0]}:${row[1]}`)).size !== body.rows.length
       || typeof sourceChecks !== "object" || Array.isArray(sourceChecks)
-      || Object.entries(sourceChecks).some(([key, value]) => key !== "coinbase_futures" || typeof value !== "boolean")) {
+      || Object.entries(sourceChecks).some(([key, value]) => !["binance_futures", "coinbase_futures", "bybit_futures", "news", "l1fees", "l2fees", "market_snapshot", "defillama", "apywa"].includes(key) || typeof value !== "boolean")) {
       return jsonResponse({ error: "invalid_comparison_health" }, 400, this.env);
     }
     const checkedAt = Date.now();
@@ -3261,7 +3264,7 @@ export class BoardStore {
       const recoveredAlerts = saved.filter(item => item[4] && !ids.has(item[0])).length;
       const changed = signature !== previous?.signature;
       const events = [...(previous?.events || [])];
-      if (changed || newAlerts || recoveredAlerts) events.unshift({ at: checkedAt, counts, newAlerts, recoveredAlerts,
+      if (changed || newAlerts || recoveredAlerts) events.unshift({ at: checkedAt, counts, sourceChecks, newAlerts, recoveredAlerts,
         kind: counts.delayed + counts.identity + counts.fx + counts.no_market || Object.values(sourceChecks).includes(false) ? "attention" : "recovered" });
       const payload = { checkedAt, counts, rows: body.rows, sourceChecks, signature, events: events.slice(0, 100), reportId,
         newAlerts, recoveredAlerts, activeAlerts: next.filter(item => item[4]).length,
@@ -3479,6 +3482,33 @@ export class BoardStore {
 
   async probeComparisonSource(exchange) {
     const started = Date.now();
+    if (exchange === "resources") {
+      const sourceChecks = {};
+      try {
+        const response = await this.handleL2FeesRequest("l2");
+        const fees = await response.json();
+        const current = !fees.stale && fees.fetchedAt > 0 && fees.fetchedAt <= Date.now() + 5000 && Date.now() - fees.fetchedAt <= 20 * 60000;
+        sourceChecks.l2fees = Boolean(current && fees.rows?.some(row => Number.isFinite(row.total24h)));
+        const l1 = await (await this.handleL2FeesRequest("l1")).json();
+        sourceChecks.l1fees = Boolean(!l1.stale && l1.fetchedAt > 0 && l1.fetchedAt <= Date.now() + 5000
+          && Date.now() - l1.fetchedAt <= 20 * 60000 && l1.rows?.some(row => Number.isFinite(row.total24h)));
+      } catch (_) { sourceChecks.l1fees = sourceChecks.l2fees = false; }
+      try {
+        const news = await this.refreshNewsStore();
+        sourceChecks.news = !news.stale && news.store.items.length > 0 && news.store.fetchedAt <= Date.now() + 5000
+          && Date.now() - news.store.fetchedAt <= Math.max(getNewsCacheMs(this.env) * 2, 20 * 60000);
+      } catch (_) { sourceChecks.news = false; }
+      const market = await this.readMarketData();
+      const current = market?.generatedAt > 0 && market.generatedAt * 1000 <= Date.now() + 5000 && Date.now() - market.generatedAt * 1000 <= 30 * 60000;
+      sourceChecks.market_snapshot = Boolean(current);
+      for (const key of ["defillama", "apywa"]) {
+        const component = market?.refreshHealth?.components?.[key];
+        sourceChecks[key] = Boolean(current && component?.state === "healthy" && component.lastSuccessAt > 0
+          && component.lastSuccessAt * 1000 <= Date.now() + 5000
+          && Date.now() - component.lastSuccessAt * 1000 <= (key === "apywa" ? 48 * 3600000 : 30 * 60000));
+      }
+      return jsonResponse({ implementation: 6, exchange, sourceChecks }, 200, this.env);
+    }
     if (exchange === "coinbase_futures") {
       const response = await this.handleCoinbaseFuturesRequest();
       const value = await response.json();
@@ -3582,6 +3612,20 @@ export class BoardStore {
   }
 
   async refreshNewsStore(force = false) {
+    if (this.newsRefreshPromise) return this.newsRefreshPromise;
+    this.newsRefreshPromise = (async () => {
+      const status = await this.state.storage.get("news-refresh-status-v1");
+      if (status?.failedAt && Date.now() - status.failedAt < 60000) {
+        return { store: await this.readNewsStore(), stale: true, error: "news_refresh_backoff" };
+      }
+      const result = await this.loadNewsStore(force);
+      await this.state.storage.put("news-refresh-status-v1", { failedAt: result.stale ? Date.now() : 0 });
+      return result;
+    })().finally(() => { this.newsRefreshPromise = null; });
+    return this.newsRefreshPromise;
+  }
+
+  async loadNewsStore(force = false) {
     const now = Date.now();
     const cacheMs = getNewsCacheMs(this.env);
     const store = await this.readNewsStore();
@@ -3620,7 +3664,7 @@ export class BoardStore {
       const fallback = await fetchCoinnessNewsSafely(this.env);
       return {
         store: {
-          fetchedAt: now,
+          fetchedAt: 0,
           items: sortNewsItems(fallback.items || []).slice(0, getNewsStoreLimit(this.env)),
         },
         stale: true,
