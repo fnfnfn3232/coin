@@ -6,12 +6,13 @@ const { chromium } = require('playwright');
 async function main() {
   const root = __dirname;
   const html = fs.readFileSync(process.env.SEARCH_TEST_HTML || path.join(root, 'index.html'), 'utf8');
-  const snapshot = JSON.parse(fs.readFileSync(path.join(root, 'board_snapshot.json'), 'utf8'));
+  const snapshot = require('./test_market_fixture.cjs')();
   const cacheKey = 'blockscope_content_cache_v1';
   const news = { query: '', items: [{ id: 'cached-news', title: 'Cached news headline', summary: 'News summary', publishAt: Date.now() }], total: 1, storedCount: 1, nextOffset: 1, hasMore: false };
   const posts = [{ id: 'cached-post', title: 'Cached board title', body: 'Private board body', author: 'Tester', category: 'free', createdAt: Date.now() }];
   snapshot.news = news;
-  const browser = await chromium.launch({ executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true });
+  const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH
+    || (process.platform === 'win32' ? 'C:/Program Files/Google/Chrome/Application/chrome.exe' : undefined), headless: true });
   try {
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
     const page = await context.newPage();
