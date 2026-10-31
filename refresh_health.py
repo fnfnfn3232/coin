@@ -119,6 +119,8 @@ def build_refresh_health(payload, previous=None, *, now=None, maintenance=None):
     ratings = payload.get("apywaRatings") or {}
     if payload.get("upbitAuditReports") or "upbit_audit" in issues:
         checks["upbit_audit"] = bool(payload.get("upbitAuditReports")) and "upbit_audit" not in issues
+    if payload.get("upbitAssetNames") or "upbit_asset_names" in issues:
+        checks["upbit_asset_names"] = bool(payload.get("upbitAssetNames")) and "upbit_asset_names" not in issues
     if ratings or "apywa" in issues:
         checks["apywa"] = bool(ratings.get("rows")) and not ratings.get("error") and "apywa" not in issues
     components = {}

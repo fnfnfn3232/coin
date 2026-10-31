@@ -42,7 +42,14 @@
     const x = BigInt(a.delta), y = BigInt(b.delta);
     return x === y ? 0 : x < y ? -1 : 1;
   }
-  const api = { quantity, index, compare, formatDelta, compareDelta };
+  function periodLabel(report, includeDate = false) {
+    const at = Date.parse(report?.referenceAt);
+    if (!Number.isFinite(at)) return report?.publishedLabel || report?.reportId || '보고서';
+    const date = new Date(at + 9 * 3600000 - 1);
+    const month = date.getUTCMonth() + 1;
+    return `${date.getUTCFullYear()}년 ${Math.ceil(month / 3)}분기${includeDate ? ` · ${month}.${date.getUTCDate()} 기준` : ''}`;
+  }
+  const api = { quantity, index, compare, formatDelta, compareDelta, periodLabel };
   root.UpbitAuditReport = api;
   if (typeof module !== 'undefined') module.exports = api;
 })(typeof window === 'undefined' ? globalThis : window);

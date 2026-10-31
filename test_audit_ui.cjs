@@ -7,6 +7,13 @@ const { chromium } = require('playwright');
 async function main() {
   const root = __dirname;
   const snapshot = require('./test_market_fixture.cjs')();
+  snapshot.upbitAssetNames = {
+    SHELL: { symbol: 'SHELL', koreanName: '마이쉘', englishName: 'MyShell', source: 'upbit_market_all', active: true, markets: ['BTC-SHELL', 'USDT-SHELL'] },
+    FORMER: { symbol: 'FORMER', koreanName: '이전코인', englishName: 'Former Coin', source: 'upbit_market_all', active: false, markets: ['BTC-FORMER'] },
+    AI: { symbol: 'AI', koreanName: '젠신', englishName: 'Gensyn', source: 'upbit_market_all', active: true, markets: ['KRW-AI'] },
+  };
+  if (process.env.UPBIT_ASSET_NAMES_TEST_FILE) Object.assign(snapshot.upbitAssetNames,
+    JSON.parse(fs.readFileSync(process.env.UPBIT_ASSET_NAMES_TEST_FILE, 'utf8')));
   const make = (month, rows) => ({ reportId: `upbit_asset_report_${month}`, rows,
     publishedLabel: month === '202610' ? '2026년 10월 발행' : '2026년 7월 발행',
     referenceAt: month === '202610' ? '2026-10-01T00:00:00+09:00' : '2026-07-01T00:00:00+09:00',
@@ -16,6 +23,7 @@ async function main() {
   old.find(row => row[1] === 'BTC').splice(2, 3, '173,911', '174,046', '100.08%');
   old.find(row => row[1] === 'ETH').splice(2, 3, '2,338,007', '2,342,336', '100.19%');
   old.push([old.length + 1, 'REMOVED', '100', '100', '100%'], [old.length + 2, 'ZERO', '0', '0', '100%']);
+  old.push([old.length + 1, 'SHELL', '10', '10', '100%'], [old.length + 2, 'FORMER', '10', '10', '100%']);
   const current = old.filter(row => row[1] !== 'REMOVED').map(row => [...row]);
   current.find(row => row[1] === 'BTC').splice(2, 3, '175,473', '175,580', '100.06%');
   current.find(row => row[1] === 'ETH').splice(2, 3, '2,266,575', '2,269,441', '100.13%');
@@ -55,6 +63,34 @@ async function main() {
     await page.waitForSelector('#auditReportSelect');
     assert.equal(await page.locator('#auditReportSelect').inputValue(), reports[0].reportId);
     assert.equal(await page.locator('#auditComparisonSelect').inputValue(), reports[1].reportId);
+    assert.equal(await page.locator('#auditReportSelect option:checked').textContent(), '2026년 3분기');
+    assert.equal(await page.locator('#auditComparisonSelect option:checked').textContent(), '2026년 2분기');
+    const mapped = await page.evaluate(() => {
+      const rows = [
+        { symbol: 'SHELL', name: 'MyShell', englishName: 'MyShell' },
+        { symbol: 'SHELL', name: 'Unrelated Shell', englishName: 'Unrelated Shell' },
+        { symbol: 'AI', name: 'Sleepless AI', englishName: 'Sleepless AI' },
+      ];
+      normalizeKoreanAssetNames({ boards: { binance: rows }, upbitAssetNames: data.upbitAssetNames });
+      return rows.map(row => row.name);
+    });
+    assert.deepEqual(mapped, ['마이쉘', 'Unrelated Shell', 'Sleepless AI']);
+    for (const query of ['마이쉘', '마이 쉘', 'myshell', 'shell']) {
+      await page.locator('#auditSearchForm input').fill(query);
+      assert.equal(await page.locator('.audit-table tbody tr').count(), 1);
+      assert.match(await page.locator('.audit-table tbody tr').innerText(), /마이쉘/);
+    }
+    await page.locator('[data-audit-filter="report"]').click();
+    await page.locator('#auditSearchForm input').fill('마이쉘');
+    assert.equal(await page.locator('.audit-table tbody tr').count(), 1);
+    assert.equal(await page.locator('.audit-table tbody tr .audit-market strong').first().innerText(), '-', 'name metadata never invents supply or price');
+    if (!process.env.AUDIT_REPORTS_TEST_FILE) {
+      await page.locator('#auditSearchForm input').fill('이전코인');
+      assert.equal(await page.locator('.audit-table tbody tr').count(), 1);
+      await page.locator('[data-audit-filter="listed"]').click();
+      assert.equal(await page.locator('.audit-table tbody tr').count(), 0, 'historical names do not claim current listing');
+    }
+    await page.locator('[data-audit-filter="listed"]').click();
     await page.locator('#auditSearchForm input').fill('BTC');
     assert.match(await page.locator('[data-audit-change="BTC"]').innerText(), /\+1,534개.*\+0\.88%/s);
     assert.match(await page.locator('.audit-ledger-change').innerText(), /\+1,562개/);
@@ -107,7 +143,7 @@ async function main() {
     await page.locator('#auditComparisonSelect').selectOption('none');
     assert.equal(await page.locator('[data-audit-change]').count(), 0);
     assert.deepEqual(errors, []);
-    console.log('PASS: new/archived reports, independent A/B changes, exact BTC/ETH amounts, filters/sort, missing/zero semantics, PDF provenance, history/reload and desktop/mobile layout');
+    console.log('PASS: official non-KRW Korean names, Korean/English/ticker/space searches, collision safety, historical listing flags, quarter selection, A/B changes, history/reload and desktop/mobile layout');
   } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
