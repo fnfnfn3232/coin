@@ -62,13 +62,21 @@ def fetch_pdf(url):
     return content
 
 
-def collect_reports(previous=None, legacy=None, *, fetcher=fetch_pdf, specs=REPORTS):
+def cached_report(spec, previous=None, legacy=None):
     previous = previous or {}
     candidates = [*(previous.get("upbitAuditReports") or []), previous.get("upbitAudit"), legacy]
+    return next((item for item in candidates if isinstance(item, dict) and item.get("reportId") == spec["reportId"]
+                 and verified_rows(item.get("rows"), spec)), None)
+
+
+def archive_complete(previous=None, *, specs=REPORTS):
+    return all(cached_report(spec, previous) for spec in specs)
+
+
+def collect_reports(previous=None, legacy=None, *, fetcher=fetch_pdf, specs=REPORTS):
     reports, failures = [], []
     for spec in specs:
-        cached = next((item for item in candidates if isinstance(item, dict) and item.get("reportId") == spec["reportId"]
-                       and verified_rows(item.get("rows"), spec)), None)
+        cached = cached_report(spec, previous, legacy)
         try:
             rows = cached["rows"] if cached else parse_report_pdf(fetcher(spec["sourceUrl"]), spec)
             reports.append({**spec, "title": "업비트 디지털 자산 실사 보고서", "quantityUnit": "수량 단위: 개", "rows": rows})

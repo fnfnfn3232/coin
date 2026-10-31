@@ -29,7 +29,7 @@ async function main() {
   const server = http.createServer((req, res) => {
     const pathname = new URL(req.url, 'http://local').pathname;
     const file = path.resolve(root, '.' + (pathname === '/' ? '/index.html' : pathname));
-    if (!file.startsWith(root + path.sep) || !fs.existsSync(file)) return res.writeHead(404).end();
+    if (!file.startsWith(root + path.sep) || (!file.endsWith('data.js') && !fs.existsSync(file))) return res.writeHead(404).end();
     res.setHeader('Content-Type', file.endsWith('.html') ? 'text/html; charset=utf-8' : 'text/javascript');
     res.end(file.endsWith('index.html') ? html : file.endsWith('data.js') ? `window.BOARD_DATA=${JSON.stringify(snapshot)};` : fs.readFileSync(file));
   });
