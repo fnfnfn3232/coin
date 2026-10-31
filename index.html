@@ -2,6 +2,8 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
+  <!-- Refresh script hashes with: node security-policy.cjs --write -->
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-sXW0LiiVQJjJgNZa1WqWOb6T+hRy+WiFLjpdvu/OrP4='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -7502,6 +7504,11 @@
       if (!serverAuthMemoryToken) {
         serverAuthMemoryToken = String(localStorage.getItem(SERVER_AUTH_TOKEN_KEY) || "");
       }
+      // Storage selection is not authentication; the server still verifies every token.
+      const tokenParts = serverAuthMemoryToken.split(".");
+      const memberSession = ["v2", "v3"].includes(tokenParts[0]) && tokenParts[3] === "member";
+      if (!memberSession) localStorage.removeItem(SERVER_AUTH_TOKEN_KEY);
+      if (serverAuthMemoryToken) sessionStorage.setItem(SERVER_AUTH_SESSION_TOKEN_KEY, serverAuthMemoryToken);
     } catch (_error) {
       // Ignore storage failures; the in-memory/session token remains usable.
     }
@@ -8216,7 +8223,7 @@
         return serverAuthMemoryToken;
       }
 
-      function setServerAuthToken(token) {
+      function setServerAuthToken(token, persistMemberSession = false) {
         serverAuthMemoryToken = String(token || "");
         try {
           if (serverAuthMemoryToken) {
@@ -8228,11 +8235,8 @@
           // The in-memory token and HttpOnly Worker cookie remain available.
         }
         try {
-          if (serverAuthMemoryToken) {
-            localStorage.setItem(SERVER_AUTH_TOKEN_KEY, serverAuthMemoryToken);
-          } else {
-            localStorage.removeItem(SERVER_AUTH_TOKEN_KEY);
-          }
+          if (serverAuthMemoryToken && persistMemberSession) localStorage.setItem(SERVER_AUTH_TOKEN_KEY, serverAuthMemoryToken);
+          else localStorage.removeItem(SERVER_AUTH_TOKEN_KEY);
         } catch (_error) {
           // The in-memory token and HttpOnly Worker cookie remain available.
         }
@@ -8246,7 +8250,7 @@
 
       function syncServerSession(payload) {
         if (!payload?.token) return 0;
-        setServerAuthToken(payload.token);
+        setServerAuthToken(payload.token, payload.role === "member");
         if (Number.isFinite(Number(payload.extensionCount))) {
           setLockExtendCount(Number(payload.extensionCount));
         }
@@ -13571,7 +13575,7 @@
           throw error;
         }
         if (payload?.token) {
-          setServerAuthToken(payload.token);
+          setServerAuthToken(payload.token, payload.role === "member");
         }
         serverUsageStats = payload?.usage || null;
         serverUsageError = "";
