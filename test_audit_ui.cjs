@@ -11,6 +11,7 @@ async function main() {
     SHELL: { symbol: 'SHELL', koreanName: '마이쉘', englishName: 'MyShell', source: 'upbit_market_all', active: true, markets: ['BTC-SHELL', 'USDT-SHELL'] },
     FORMER: { symbol: 'FORMER', koreanName: '이전코인', englishName: 'Former Coin', source: 'upbit_market_all', active: false, markets: ['BTC-FORMER'] },
     AI: { symbol: 'AI', koreanName: '젠신', englishName: 'Gensyn', source: 'upbit_market_all', active: true, markets: ['KRW-AI'] },
+    OSMO: { symbol: 'OSMO', koreanName: '오스모시스', englishName: 'Osmosis', source: 'upbit_market_all', active: true, markets: ['BTC-OSMO'] },
   };
   snapshot.upbitAuditMarket = {
     SHELL: { symbol: 'SHELL', source: 'upbit_audit_market', supply: { value: 1000, field: 'circulating_supply',
@@ -20,6 +21,15 @@ async function main() {
   };
   if (process.env.UPBIT_AUDIT_MARKET_TEST_FILE) Object.assign(snapshot.upbitAuditMarket,
     JSON.parse(fs.readFileSync(process.env.UPBIT_AUDIT_MARKET_TEST_FILE, 'utf8')));
+  snapshot.upbitAuditMarket.OSMO ||= { symbol: 'OSMO', source: 'upbit_audit_market', supply: { value: 973272894 },
+    price: { market: 'BTC-OSMO', quote: 'BTC', value: 0.00000064, priceKrw: 66.5, conversionMarket: 'KRW-BTC',
+      conversionPrice: 103906250, checkedAt: Math.floor(Date.now() / 1000) } };
+  for (const exchange of ['bithumb', 'coinbase', 'binance']) snapshot.boards[exchange].push({
+    exchange, symbol: 'OSMO', koreanName: '오스모시스', englishName: 'Osmosis', name: '오스모시스',
+    pair: `OSMO/${exchange === 'bithumb' ? 'KRW' : exchange === 'coinbase' ? 'USD' : 'USDT'}`,
+    priceKrw: exchange === 'bithumb' ? 80 : null, priceUsd: exchange === 'coinbase' ? 0.05 : 0.04,
+    comparisonPriceAt: Date.now(),
+  });
   if (process.env.UPBIT_ASSET_NAMES_TEST_FILE) Object.assign(snapshot.upbitAssetNames,
     JSON.parse(fs.readFileSync(process.env.UPBIT_ASSET_NAMES_TEST_FILE, 'utf8')));
   const make = (month, rows) => ({ reportId: `upbit_asset_report_${month}`, rows,
@@ -32,6 +42,7 @@ async function main() {
   old.find(row => row[1] === 'ETH').splice(2, 3, '2,338,007', '2,342,336', '100.19%');
   old.push([old.length + 1, 'REMOVED', '100', '100', '100%'], [old.length + 2, 'ZERO', '0', '0', '100%']);
   old.push([old.length + 1, 'SHELL', '10', '10', '100%'], [old.length + 2, 'FORMER', '10', '10', '100%']);
+  old.push([old.length + 1, 'OSMO', '580193', '580217', '100%']);
   const current = old.filter(row => row[1] !== 'REMOVED').map(row => [...row]);
   current.find(row => row[1] === 'BTC').splice(2, 3, '175,473', '175,580', '100.06%');
   current.find(row => row[1] === 'ETH').splice(2, 3, '2,266,575', '2,269,441', '100.13%');
@@ -55,6 +66,16 @@ async function main() {
     || (process.platform === 'win32' ? 'C:/Program Files/Google/Chrome/Application/chrome.exe' : undefined) });
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    await page.addInitScript(() => {
+      window.__auditSockets = [];
+      window.WebSocket = class {
+        static OPEN = 1; static CONNECTING = 0; static CLOSED = 3;
+        constructor(url) { this.url = url; this.readyState = 0; this.sent = []; window.__auditSockets.push(this);
+          queueMicrotask(() => { if (this.readyState === 0) { this.readyState = 1; this.onopen?.(); } }); }
+        send(value) { this.sent.push(value); }
+        close() { this.readyState = 3; this.onclose?.(); }
+      };
+    });
     const errors = []; page.on('pageerror', error => errors.push(error.message));
     await page.route('https://**/*', route => {
       const url = new URL(route.request().url());
@@ -73,6 +94,55 @@ async function main() {
     assert.equal(await page.locator('#auditComparisonSelect').inputValue(), reports[1].reportId);
     assert.equal(await page.locator('#auditReportSelect option:checked').textContent(), '2026년 3분기');
     assert.equal(await page.locator('#auditComparisonSelect option:checked').textContent(), '2026년 2분기');
+    await page.locator('#auditSearchForm input').fill('오스모시스');
+    assert.match(await page.locator('[data-audit-price]').innerText(), /80원.*빗썸/s);
+    const oldValue = await page.locator('[data-audit-value] strong').innerText();
+    await page.evaluate(() => window.__auditSockets.filter(socket => socket.readyState === 1 && socket.url.includes('pubwss.bithumb.com')).at(-1)
+      .onmessage({ data: JSON.stringify({ type: 'ticker', content: { symbol: 'OSMO_KRW', closePrice: '81' } }) }));
+    await page.waitForFunction(() => document.querySelector('[data-audit-price]').textContent.includes('81원'));
+    assert.notEqual(await page.locator('[data-audit-value] strong').innerText(), oldValue, 'holding value follows the live reference price');
+    const selections = await page.evaluate(() => {
+      const identity = { symbol: 'OSMO', englishName: 'Osmosis', koreanName: '오스모시스' };
+      priceDifferenceFx = { rate: 1400, source: 'currency-converter.live', frequency: 'intraday', asOf: Date.now(), stale: false };
+      Object.assign(priceDifferenceUsdt, { priceUsd: 0.98, comparisonPriceAt: Date.now() });
+      const bithumb = data.boards.bithumb.find(row => row.symbol === 'OSMO');
+      const coinbase = data.boards.coinbase.find(row => row.symbol === 'OSMO');
+      coinbase.priceUsd = .05;
+      const results = [auditReferencePrice(identity)];
+      bithumb.englishName = 'Unrelated Project';
+      results.push(auditReferencePrice(identity));
+      coinbase.priceUsd = null;
+      results.push(auditReferencePrice(identity));
+      const binance = data.boards.binance.find(row => row.symbol === 'OSMO');
+      binance.priceUsd = null;
+      results.push(enrichUpbitAuditRow({ ...identity, blockchainQuantity: '580217' }));
+      Object.assign(bithumb, { englishName: 'Osmosis', priceKrw: 80, livePriceUpdatedAt: 0, comparisonPriceAt: Date.now() - 180000 });
+      Object.assign(coinbase, { priceUsd: .05, comparisonPriceAt: Date.now() });
+      results.push(auditReferencePrice(identity));
+      bithumb.comparisonPriceAt = Date.now();
+      data.boards.bithumb.push({ ...bithumb }); resetComparisonIdentityCache();
+      results.push(auditReferencePrice(identity));
+      data.boards.bithumb.pop(); resetComparisonIdentityCache();
+      data.boards.upbit.push({ ...bithumb, exchange: 'upbit', priceKrw: 82 }); resetComparisonIdentityCache();
+      results.push(auditReferencePrice(identity));
+      data.boards.upbit.pop(); resetComparisonIdentityCache();
+      coinbase.priceUsd = null; bithumb.comparisonPriceAt = Date.now() - 180000;
+      results.push(auditReferencePrice(identity));
+      Object.assign(coinbase, { priceUsd: .05, comparisonPriceAt: Date.now() });
+      bithumb.comparisonPriceAt = Date.now();
+      binance.priceUsd = .04; syncLivePriceStream(); refreshAuditPriceCells();
+      return results.map(result => result && ({ price: result.priceKrw, label: result.priceLabel }));
+    });
+    assert.match(selections[0].label, /빗썸/);
+    assert.equal(selections[1].price, 70); assert.match(selections[1].label, /코인베이스/);
+    assert.ok(Math.abs(selections[2].price - 54.88) < 1e-9); assert.match(selections[2].label, /바이낸스/);
+    assert.equal(selections[3].price, snapshot.upbitAuditMarket.OSMO.price.priceKrw); assert.match(selections[3].label, /BTC 원화 환산/);
+    assert.match(selections[4].label, /코인베이스/, 'fresh alternative beats an expired preferred quote');
+    assert.match(selections[5].label, /코인베이스/, 'ambiguous duplicate identities are rejected');
+    assert.equal(selections[6].price, 82); assert.match(selections[6].label, /업비트/);
+    assert.match(selections[7].label, /갱신 지연/, 'old values must not be promoted to live quotes');
+    assert.ok(await page.evaluate(() => ['bithumb', 'coinbase', 'binance'].every(exchange => priceDifferenceSockets.has(exchange))));
+    await page.locator('#auditSearchForm input').fill('');
     const mapped = await page.evaluate(() => {
       const rows = [
         { symbol: 'SHELL', name: 'MyShell', englishName: 'MyShell' },
@@ -127,7 +197,7 @@ async function main() {
         assert.ok((await page.locator('.audit-coin').last().boundingBox()).width > 150);
       }
       if (process.env.AUDIT_SCREENSHOT_PREFIX) {
-        if (process.env.UPBIT_AUDIT_MARKET_TEST_FILE) await page.locator('#auditSearchForm input').fill('오스모시스');
+        await page.locator('#auditSearchForm input').fill('오스모시스');
         await page.screenshot({ path: `${process.env.AUDIT_SCREENSHOT_PREFIX}-${width}.png`, fullPage: true });
         await page.locator('#auditSearchForm input').fill('BTC');
       }
@@ -166,6 +236,9 @@ async function main() {
     await page.locator('#auditComparisonSelect').selectOption('none');
     assert.equal(await page.locator('[data-audit-change]').count(), 0);
     assert.deepEqual(errors, []);
+    await page.locator('#resourcesMenuBtn').click();
+    await page.locator('[data-resource-view="ranking"]').first().click();
+    assert.equal(await page.evaluate(() => [...window.__auditSockets].filter(socket => socket.readyState === 1).length), 0, 'audit subscriptions stop on navigation');
     console.log('PASS: official non-KRW Korean names, Korean/English/ticker/space searches, collision safety, historical listing flags, quarter selection, A/B changes, history/reload and desktop/mobile layout');
   } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
 }
