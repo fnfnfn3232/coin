@@ -17,6 +17,7 @@ from apywa_ratings import collect_ratings, apply_ratings
 from robinhood_market import build_robinhood_board
 from upbit_audit import collect_reports as collect_upbit_audit_reports
 from upbit_asset_names import normalize_asset_names, merge_asset_names, suspicious_catalog_drop
+from upbit_audit_market import issued_supply, collect_market_data as collect_upbit_audit_market
 
 
 ROOT = Path(__file__).resolve().parent
@@ -24,6 +25,7 @@ DATA_JS_PATH = ROOT / "data.js"
 SNAPSHOT_JSON_PATH = ROOT / "board_snapshot.json"
 UPBIT_AUDIT_DATA_PATH = ROOT / "upbit-audit-202607.json"
 UPBIT_ASSET_NAMES = {}
+UPBIT_AUDIT_DETAILS = {}
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
@@ -1731,6 +1733,8 @@ def fetch_upbit_details(symbol: str) -> dict:
     query = urllib.parse.urlencode({"currency": symbol, "language": "ko"})
     payload = fetch_json(f"https://ccx.upbit.com/coin-infos/api/v1/digital-assets?{query}")
     document = payload.get("document") or {}  # type: ignore[union-attr]
+    if payload.get("currency") != symbol or not document.get("categories"):
+        raise ValueError("upbit_asset_document_mismatch")
     market_cap_krw, source_label, base_date = extract_upbit_market_cap(document)
     market_cap_usd = market_cap_krw / FX_USD_KRW if market_cap_krw is not None else None
     circulating_supply, circulating_base_date = extract_upbit_numeric_field(
@@ -1748,6 +1752,7 @@ def fetch_upbit_details(symbol: str) -> dict:
         "capSourceDetail": base_date,
         "circulatingSupply": circulating_supply,
         "totalSupply": total_supply,
+        "auditSupply": issued_supply(document),
         "supplyDetail": circulating_base_date or total_supply_base_date or "",
         "info": collect_upbit_coin_info(document),
         "status": "ok" if market_cap_krw is not None else "missing",
@@ -1779,7 +1784,7 @@ def fetch_upbit_prices(symbols: list[str]) -> dict[str, float]:
 
 
 def fetch_upbit() -> tuple[list[dict], dict[str, list[dict]]]:
-    global UPBIT_ASSET_NAMES
+    global UPBIT_ASSET_NAMES, UPBIT_AUDIT_DETAILS
     listings = fetch_json("https://api.upbit.com/v1/market/all?is_details=true")
     try:
         UPBIT_ASSET_NAMES = normalize_asset_names(listings)
@@ -1831,6 +1836,7 @@ def fetch_upbit() -> tuple[list[dict], dict[str, list[dict]]]:
                     "status": "missing",
                 }
 
+    UPBIT_AUDIT_DETAILS = details
     try:
         upbit_prices = fetch_upbit_prices([row["symbol"] for row in base_rows])
     except Exception:  # noqa: BLE001
@@ -4506,8 +4512,9 @@ def build_defillama_rankings(
 
 
 def make_payload(previous_payload: dict | None = None) -> dict:
-    global UPBIT_ASSET_NAMES
+    global UPBIT_ASSET_NAMES, UPBIT_AUDIT_DETAILS
     UPBIT_ASSET_NAMES = {}
+    UPBIT_AUDIT_DETAILS = {}
     refresh_fx_usd_krw(previous_payload)
     refresh_issues: dict[str, str] = {}
     refresh_scheduled_delistings(previous_payload, refresh_issues)
@@ -4829,6 +4836,18 @@ def make_payload(previous_payload: dict | None = None) -> dict:
         refresh_issues["upbit_asset_names"] = "official_name_catalog_refresh_failed"
     elif any(item is None for item in UPBIT_ASSET_NAMES.values()):
         refresh_issues["upbit_asset_names"] = "official_name_catalog_conflict"
+    audit_market, audit_market_error = collect_upbit_audit_market(
+        UPBIT_ASSET_NAMES, UPBIT_AUDIT_DETAILS, (previous_payload or {}).get("upbitAuditMarket"),
+        fetch_upbit_details, fetch_json)
+    if audit_market_error:
+        refresh_issues["upbit_audit_market"] = audit_market_error
+    print("Upbit audit market coverage:", json.dumps({
+        "assets": len(audit_market),
+        "issuedSupply": sum(to_float((item.get("supply") or {}).get("value")) is not None for item in audit_market.values()),
+        "prices": sum(to_float((item.get("price") or {}).get("priceKrw")) is not None for item in audit_market.values()),
+        "converted": sum((item.get("price") or {}).get("quote") in ("BTC", "USDT") for item in audit_market.values()),
+        "error": audit_market_error,
+    }, separators=(",", ":")))
     upbit_audit = upbit_audit_reports[0] if upbit_audit_reports else None
     if not isinstance(upbit_audit, dict) or not upbit_audit.get("rows"):
         raise RuntimeError("protected_upbit_audit_data_missing")
@@ -4854,6 +4873,7 @@ def make_payload(previous_payload: dict | None = None) -> dict:
         "upbitAudit": upbit_audit,
         "upbitAuditReports": upbit_audit_reports,
         "upbitAssetNames": merge_asset_names((previous_payload or {}).get("upbitAssetNames"), UPBIT_ASSET_NAMES),
+        "upbitAuditMarket": audit_market,
         "changes": build_changes(boards, previous_payload),
         "notes": {
             "binance": "binance_exact_market_cap",
