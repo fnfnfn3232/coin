@@ -106,7 +106,7 @@ async function main() {
   const server = http.createServer((req, res) => {
     const pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
     const file = path.resolve(root, '.' + (pathname === '/' ? '/index.html' : pathname));
-    if (!file.startsWith(root + path.sep) || !fs.existsSync(file)) { res.writeHead(404).end(); return; }
+    if (!file.startsWith(root + path.sep) || (!file.endsWith('data.js') && !fs.existsSync(file))) { res.writeHead(404).end(); return; }
     res.setHeader('Content-Type', file.endsWith('.html') ? 'text/html; charset=utf-8' : file.endsWith('.js') ? 'text/javascript' : 'application/json');
     res.end(file.endsWith('data.js') ? `window.BOARD_DATA = ${JSON.stringify(snapshot)};` : file.endsWith('index.html') ? html : fs.readFileSync(file));
   });

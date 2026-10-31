@@ -3,7 +3,7 @@ import hashlib
 import unittest
 from unittest.mock import Mock, patch
 
-from upbit_audit import collect_reports, parse_report_pdf, parse_rows, rows_digest, verified_rows
+from upbit_audit import archive_complete, collect_reports, parse_report_pdf, parse_rows, rows_digest, verified_rows
 
 
 class AuditTests(unittest.TestCase):
@@ -27,6 +27,8 @@ class AuditTests(unittest.TestCase):
         fetcher = Mock(side_effect=AssertionError("unexpected network"))
         old = {"reportId": "old", "rows": copy.deepcopy(self.rows)}
         previous = {"upbitAuditReports": [{"reportId": "new", "rows": self.rows}], "upbitAudit": old}
+        self.assertTrue(archive_complete(previous, specs=self.specs))
+        self.assertFalse(archive_complete({"upbitAudit": old}, specs=self.specs))
         reports, errors = collect_reports(previous, fetcher=fetcher, specs=self.specs)
         self.assertEqual([report["reportId"] for report in reports], ["new", "old"])
         self.assertEqual(reports[1]["rows"], old["rows"])
