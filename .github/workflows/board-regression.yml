@@ -7,6 +7,9 @@ on:
     paths:
       - "index.html"
       - "app-update.js"
+      - "audit-report.js"
+      - "test_audit_report.cjs"
+      - "test_audit_ui.cjs"
       - "test_app_update.cjs"
       - "test_resource_search.cjs"
       - "test_content_cache.cjs"
@@ -25,6 +28,9 @@ on:
     paths:
       - "index.html"
       - "app-update.js"
+      - "audit-report.js"
+      - "test_audit_report.cjs"
+      - "test_audit_ui.cjs"
       - "test_app_update.cjs"
       - "test_resource_search.cjs"
       - "test_content_cache.cjs"
@@ -57,7 +63,7 @@ jobs:
         with:
           node-version: "22"
       - name: Verify permissions, sessions and uploads
-        run: node --test test_app_update.cjs test_futures_health.mjs test_comparison_health.cjs comparison-identity.test.cjs server-auth/board-permissions.test.mjs server-auth/security-regression.test.mjs
+        run: node --test test_audit_report.cjs test_app_update.cjs test_futures_health.mjs test_comparison_health.cjs comparison-identity.test.cjs server-auth/board-permissions.test.mjs server-auth/security-regression.test.mjs
       - name: Install isolated browser test tools
         run: |
           npm install --no-save --package-lock=false playwright@1.62.1
@@ -71,3 +77,4 @@ jobs:
           node test_price_difference.cjs
           node test_resource_search.cjs
           node test_content_cache.cjs
+          node test_audit_ui.cjs

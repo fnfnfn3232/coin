@@ -15,6 +15,7 @@ from pathlib import Path
 from refresh_health import build_refresh_health, call_notice_provider
 from apywa_ratings import collect_ratings, apply_ratings
 from robinhood_market import build_robinhood_board
+from upbit_audit import collect_reports as collect_upbit_audit_reports
 
 
 ROOT = Path(__file__).resolve().parent
@@ -2699,19 +2700,20 @@ def pick_first_candidate_with_market_signal(candidate_rows: list[dict]) -> dict 
     return None
 
 
-def load_upbit_audit_data(previous_payload: dict | None) -> dict | None:
+def load_upbit_audit_reports(previous_payload: dict | None, issues: dict) -> list[dict]:
+    legacy = None
     if UPBIT_AUDIT_DATA_PATH.exists():
         try:
             payload = json.loads(UPBIT_AUDIT_DATA_PATH.read_text(encoding="utf-8"))
             if isinstance(payload, dict) and isinstance(payload.get("rows"), list) and payload["rows"]:
-                return payload
+                legacy = payload
         except (OSError, json.JSONDecodeError):
             pass
 
-    previous = (previous_payload or {}).get("upbitAudit")
-    if isinstance(previous, dict) and isinstance(previous.get("rows"), list) and previous["rows"]:
-        return clone_json_value(previous)
-    return None
+    reports, failures = collect_upbit_audit_reports(previous_payload, legacy)
+    if failures:
+        issues["upbit_audit"] = "verified_report_unavailable:" + ",".join(failures)
+    return reports
 
 
 def derive_circulating_supply(
@@ -4811,7 +4813,8 @@ def make_payload(previous_payload: dict | None = None) -> dict:
         with_cap = sum(1 for row in rows if row.get("sortCapUsd") is not None)
         futures_stats[exchange_name] = {"total": len(rows), "withCap": with_cap}
 
-    upbit_audit = load_upbit_audit_data(previous_payload)
+    upbit_audit_reports = load_upbit_audit_reports(previous_payload, refresh_issues)
+    upbit_audit = upbit_audit_reports[0] if upbit_audit_reports else None
     if not isinstance(upbit_audit, dict) or not upbit_audit.get("rows"):
         raise RuntimeError("protected_upbit_audit_data_missing")
 
@@ -4834,6 +4837,7 @@ def make_payload(previous_payload: dict | None = None) -> dict:
         "scheduledDelistings": ACTIVE_SCHEDULED_DELISTINGS,
         "noticeRefresh": NOTICE_REFRESH_STATUS,
         "upbitAudit": upbit_audit,
+        "upbitAuditReports": upbit_audit_reports,
         "changes": build_changes(boards, previous_payload),
         "notes": {
             "binance": "binance_exact_market_cap",

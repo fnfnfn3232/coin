@@ -101,6 +101,19 @@ class RefreshHealthTests(unittest.TestCase):
         self.assertEqual(health['state'], 'healthy')
         self.assertEqual(health['components']['upbit_notices']['lastSuccessAt'], 10000)
 
+    def test_audit_archive_failure_retains_last_success_and_records_actual_recovery(self):
+        payload = self.snapshot()
+        payload['upbitAuditReports'] = [{'reportId': 'verified_report', 'rows': [[1, 'BTC', '100', '101', '101%']]}]
+        initial = build_refresh_health(payload, now=10000)
+        payload['refreshIssues']['upbit_audit'] = 'verified_report_unavailable:latest'
+        failed = build_refresh_health(payload, {'refreshHealth': initial}, now=10300)
+        self.assertEqual(failed['components']['upbit_audit']['state'], 'degraded')
+        self.assertEqual(failed['components']['upbit_audit']['lastSuccessAt'], 10000)
+        payload['refreshIssues'].clear()
+        recovered = build_refresh_health(payload, {'refreshHealth': failed}, now=10600)
+        self.assertEqual(recovered['components']['upbit_audit']['lastSuccessAt'], 10600)
+        self.assertTrue(any(event['component'] == 'upbit_audit' and event['kind'] == 'recovered' for event in recovered['events']))
+
     def test_new_snapshot_timestamp_does_not_make_cached_component_fresh(self):
         payload = self.snapshot()
         previous = {'refreshHealth': build_refresh_health(payload, now=10000)}

@@ -11,5 +11,5 @@ __pycache__/
 # Generated protected data. Keep local copies out of the public Pages repository.
 /data.js
 /board_snapshot.json
-/upbit-audit-202607.json
+/upbit-audit-*.json
 /bithumb_coinmarketcap.json
