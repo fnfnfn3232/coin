@@ -12,6 +12,14 @@ async function main() {
     FORMER: { symbol: 'FORMER', koreanName: '이전코인', englishName: 'Former Coin', source: 'upbit_market_all', active: false, markets: ['BTC-FORMER'] },
     AI: { symbol: 'AI', koreanName: '젠신', englishName: 'Gensyn', source: 'upbit_market_all', active: true, markets: ['KRW-AI'] },
   };
+  snapshot.upbitAuditMarket = {
+    SHELL: { symbol: 'SHELL', source: 'upbit_audit_market', supply: { value: 1000, field: 'circulating_supply',
+      provider: 'coin_market_cap', baseDate: '2026-10-30', checkedAt: 1793422000 },
+      price: { market: 'BTC-SHELL', quote: 'BTC', value: 0.000001, priceKrw: 100, conversionMarket: 'KRW-BTC',
+        conversionPrice: 100000000, checkedAt: 1793422000, tradeAt: 1793421999000, conversionTradeAt: 1793421998000 } },
+  };
+  if (process.env.UPBIT_AUDIT_MARKET_TEST_FILE) Object.assign(snapshot.upbitAuditMarket,
+    JSON.parse(fs.readFileSync(process.env.UPBIT_AUDIT_MARKET_TEST_FILE, 'utf8')));
   if (process.env.UPBIT_ASSET_NAMES_TEST_FILE) Object.assign(snapshot.upbitAssetNames,
     JSON.parse(fs.readFileSync(process.env.UPBIT_ASSET_NAMES_TEST_FILE, 'utf8')));
   const make = (month, rows) => ({ reportId: `upbit_asset_report_${month}`, rows,
@@ -85,6 +93,15 @@ async function main() {
     await page.locator('[data-audit-filter="report"]').click();
     await page.locator('#auditSearchForm input').fill('마이쉘');
     assert.equal(await page.locator('.audit-table tbody tr').count(), 1);
+    const financial = page.locator('.audit-table tbody tr .audit-market');
+    assert.match(await financial.nth(0).innerText(), /1,000|1천/);
+    if (!process.env.AUDIT_REPORTS_TEST_FILE) assert.match(await financial.nth(1).innerText(), /1(?:\.00)?%/);
+    assert.match(await financial.nth(2).innerText(), /100원.*BTC 원화 환산/s);
+    assert.match(await financial.nth(2).getAttribute('title'), /BTC-SHELL.*KRW-BTC/s);
+    assert.match(await financial.nth(0).getAttribute('title'), /2026-10-30/);
+    await page.evaluate(() => { data.upbitAuditMarket.SHELL.priceError = true; renderAuditPanel(); });
+    assert.match(await page.locator('.audit-table tbody tr').innerText(), /이전 시세/);
+    await page.evaluate(() => { delete data.upbitAuditMarket.SHELL; renderAuditPanel(); });
     assert.equal(await page.locator('.audit-table tbody tr .audit-market strong').first().innerText(), '-', 'name metadata never invents supply or price');
     if (!process.env.AUDIT_REPORTS_TEST_FILE) {
       await page.locator('#auditSearchForm input').fill('이전코인');
@@ -109,7 +126,11 @@ async function main() {
         assert.ok((await page.locator('[data-audit-change="BTC"] strong').boundingBox()).width > 150);
         assert.ok((await page.locator('.audit-coin').last().boundingBox()).width > 150);
       }
-      if (process.env.AUDIT_SCREENSHOT_PREFIX) await page.screenshot({ path: `${process.env.AUDIT_SCREENSHOT_PREFIX}-${width}.png`, fullPage: true });
+      if (process.env.AUDIT_SCREENSHOT_PREFIX) {
+        if (process.env.UPBIT_AUDIT_MARKET_TEST_FILE) await page.locator('#auditSearchForm input').fill('오스모시스');
+        await page.screenshot({ path: `${process.env.AUDIT_SCREENSHOT_PREFIX}-${width}.png`, fullPage: true });
+        await page.locator('#auditSearchForm input').fill('BTC');
+      }
     }
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.locator('#auditSearchForm input').fill('ETH');

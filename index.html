@@ -12274,8 +12274,16 @@
 
       function enrichUpbitAuditRow(row, marketRow) {
         const holdingQuantity = parseAuditQuantity(row.blockchainQuantity);
-        const totalSupply = toPositiveNumber(marketRow?.totalSupply);
-        const priceKrw = toPositiveNumber(marketRow?.priceKrw);
+        const candidate = data.upbitAuditMarket?.[normalizeAuditSymbol(row.symbol)];
+        const official = candidate?.source === "upbit_audit_market" && candidate.symbol === row.symbol ? candidate : null;
+        const totalSupply = toPositiveNumber(official?.supply?.value);
+        const priceKrw = official ? toPositiveNumber(official.price?.priceKrw) : toPositiveNumber(marketRow?.priceKrw);
+        const price = official?.price;
+        const converted = price && price.quote !== "KRW";
+        const priceTime = price?.checkedAt ? formatDateTime(price.checkedAt) : "";
+        const priceLabel = `${official?.priceError ? "이전 시세 · " : ""}${converted ? `${price.quote} 원화 환산` : "업비트 원화 시세"}`;
+        const priceDetail = price ? `${price.market}: ${price.value} ${price.quote}\n조회: ${priceTime}\n마지막 체결: ${price.tradeAt ? formatDateTime(price.tradeAt / 1000) : "미제공"}${converted ? `\n환산: ${price.conversionMarket} ${price.conversionPrice}원\n환산 시세 체결: ${price.conversionTradeAt ? formatDateTime(price.conversionTradeAt / 1000) : "미제공"}` : ""}` : "";
+        const supplyDetail = official?.supply ? `업비트 기발행수량 · ${official.supply.provider || "미제공"}\n자료 기준일: ${official.supply.baseDate || "미제공"}\n조회: ${official.supply.checkedAt ? formatDateTime(official.supply.checkedAt) : "미제공"}` : "업비트 기발행수량 미제공";
         const supplyShare = holdingQuantity !== null && totalSupply !== null
           ? (holdingQuantity / totalSupply) * 100
           : null;
@@ -12289,6 +12297,8 @@
           holdingQuantity,
           supplyShare,
           holdingValueKrw,
+          priceLabel, priceDetail, priceTime, supplyDetail,
+          supplyError: official?.supplyError === true,
         };
       }
 
@@ -12511,6 +12521,7 @@
               </select></label>
             </div>
             ${data.refreshIssues?.upbit_audit ? '<p class="audit-note" role="status">보고서 갱신이 지연되어 마지막 검증 자료를 표시합니다.</p>' : ""}
+            ${data.refreshIssues?.upbit_audit_market ? '<p class="audit-note" role="status">일부 업비트 시세·발행량 갱신이 지연되어 이전 조회값을 표시합니다. 각 값의 기준 시각을 확인해 주세요.</p>' : ""}
             <div class="audit-summary" aria-label="실사 보고서 요약">
               <div class="audit-summary-item"><span>현재 업비트 상장</span><strong>${formatNumber(listedAuditRows.length, 0)}개</strong></div>
               <div class="audit-summary-item"><span>보고서 일치</span><strong>${formatNumber(matchedCount, 0)}개</strong></div>
@@ -12535,6 +12546,7 @@
               전산원장은 이용자 위탁 수량(A), 분산원장은 블록체인상 이용자 위탁 수량(B)입니다.
               보고서 수량은 정수 단위로 반올림되어 0은 0.5개 미만일 수 있습니다.
               보유가치·발행량 비율은 현재 시세·발행량을 적용하므로 실사 기준일과 시점이 다릅니다.
+              총발행량은 업비트의 기발행수량이며 발행한도와 구분합니다. BTC·USDT 마켓은 해당 업비트 원화 시세로 환산합니다.
               ${previousReport ? `증감은 ${escapeHtml(previousReport.publishedLabel)} 대비 같은 심볼의 수량이며 가격 수익률이 아닙니다. 명칭·단위 변경을 임의로 연결하지 않습니다.` : ""}
               ${missingCount ? `현재 상장 코인 중 선택 보고서에 없는 자산은 ${formatNumber(missingCount, 0)}개이며 “보고서 없음”으로 표시합니다.` : ""}
             </p></details>
@@ -12548,7 +12560,7 @@
                       <th class="audit-quantity">전산원장 수량 (A)</th>
                       <th class="audit-quantity">분산원장 수량 (B)</th>
                       ${previousReport ? `<th class="audit-change" aria-sort="${upbitAuditSort === "change-asc" ? "ascending" : upbitAuditSort === "change-desc" ? "descending" : "none"}"><button class="audit-column-sort" type="button" data-audit-sort="change">보유량 증감 (B)${upbitAuditSort === "change-asc" ? " ↑" : upbitAuditSort === "change-desc" ? " ↓" : ""}</button></th>` : ""}
-                      <th class="audit-market">총발행량</th>
+                      <th class="audit-market" title="업비트 기발행수량. 총발행한도·유통량과 구분합니다.">총발행량</th>
                       <th class="audit-market" aria-sort="${upbitAuditSort === "share-asc" ? "ascending" : upbitAuditSort === "share-desc" ? "descending" : "none"}">
                         <button class="audit-column-sort${upbitAuditSort.startsWith("share-") ? " is-active" : ""}" type="button" data-audit-sort="share" title="${upbitAuditSort === "share-desc" ? "클릭하면 낮은 순으로 정렬" : "클릭하면 높은 순으로 정렬"}">
                           발행량 대비 보유${upbitAuditSort === "share-asc" ? " ↑" : upbitAuditSort === "share-desc" ? " ↓" : ""}
@@ -12576,9 +12588,9 @@
                           <td class="audit-quantity"><strong>${escapeHtml(row.ledgerQuantity)}</strong><span>전산원장</span>${previousReport ? `<div class="audit-ledger-change">${renderAuditChange(row.ledgerChange)}</div>` : ""}</td>
                           <td class="audit-quantity"><strong>${escapeHtml(row.blockchainQuantity)}</strong><span>분산원장</span></td>
                           ${previousReport ? `<td class="audit-change" data-audit-change="${escapeAttr(row.symbol)}"><span class="audit-change-label">보유량 증감 (B)</span>${renderAuditChange(row.change)}</td>` : ""}
-                          <td class="audit-market"><strong>${row.totalSupply !== null ? escapeHtml(formatTokenAmount(row.totalSupply)) : "-"}</strong><span>현재 총발행량</span></td>
+                          <td class="audit-market" title="${escapeAttr(row.supplyDetail)}"><strong>${row.totalSupply !== null ? escapeHtml(formatTokenAmount(row.totalSupply)) : "-"}</strong><span>${row.supplyError ? "이전 기발행수량" : "업비트 기발행수량"}</span></td>
                           <td class="audit-market"><strong>${escapeHtml(formatAuditSupplyShare(row.supplyShare))}</strong><span>분산원장 ÷ 총발행량</span></td>
-                          <td class="audit-market"><strong>${row.priceKrw !== null ? escapeHtml(formatKrwPrice(row.priceKrw)) : "-"}</strong><span>현재 업비트 가격</span></td>
+                          <td class="audit-market" title="${escapeAttr(row.priceDetail)}"><strong>${row.priceKrw !== null ? escapeHtml(formatKrwPrice(row.priceKrw)) : "-"}</strong><span>${escapeHtml(row.priceLabel)}</span>${row.priceTime ? `<span>${escapeHtml(row.priceTime)}</span>` : ""}</td>
                           <td class="audit-market"><strong>${row.holdingValueKrw !== null ? escapeHtml(formatKrwShort(row.holdingValueKrw)) : "-"}</strong><span>분산원장 × 현재 가격</span></td>
                           <td class="audit-ratio${low ? " is-low" : ""}">
                             <strong>${escapeHtml(row.reported ? row.ratio : "보고서 없음")}</strong>
@@ -15850,7 +15862,7 @@
         const labels = { upbit: "업비트 시세", bithumb: "빗썸 시세", binance: "바이낸스 시세", coinbase: "코인베이스 시세",
           robinhood: "로빈후드 시세",
           upbit_notices: "업비트 공지", bithumb_notices: "빗썸 공지", binance_notices: "바이낸스 공지",
-          binance_futures: "바이낸스 선물", coinbase_futures: "코인베이스 선물", defillama: "디파이 자료", apywa: "APYWA 등급", upbit_audit: "업비트 실사 보고서", upbit_asset_names: "업비트 공식 코인명", pipeline: "서버 갱신" };
+          binance_futures: "바이낸스 선물", coinbase_futures: "코인베이스 선물", defillama: "디파이 자료", apywa: "APYWA 등급", upbit_audit: "업비트 실사 보고서", upbit_asset_names: "업비트 공식 코인명", upbit_audit_market: "업비트 실사 시세·발행량", pipeline: "서버 갱신" };
         const kinds = { failure: "장애 감지", recovered: "복구 완료", attention: "반복 장애", fallback: "예비 경로 전환",
           fallback_active: "예비 경로 사용", source_changed: "수집 경로 변경", pipeline_resumed: "갱신 재개", maintenance: "개발 수정" };
         const details = { failure: "수집 확인에 실패해 마지막 정상 데이터를 유지하고 있습니다.",
