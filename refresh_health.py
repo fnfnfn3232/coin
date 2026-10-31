@@ -117,6 +117,8 @@ def build_refresh_health(payload, previous=None, *, now=None, maintenance=None):
     defi = payload.get("defillamaRankings") or {}
     checks["defillama"] = bool(defi.get("categories")) and not any(key == "defillama" or key.startswith("defillama_") for key in issues)
     ratings = payload.get("apywaRatings") or {}
+    if payload.get("upbitAuditReports") or "upbit_audit" in issues:
+        checks["upbit_audit"] = bool(payload.get("upbitAuditReports")) and "upbit_audit" not in issues
     if ratings or "apywa" in issues:
         checks["apywa"] = bool(ratings.get("rows")) and not ratings.get("error") and "apywa" not in issues
     components = {}
