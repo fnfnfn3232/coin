@@ -58,7 +58,7 @@ async function main() {
     const file = path.resolve(root, '.' + (pathname === '/' ? '/index.html' : pathname));
     if (!file.startsWith(root + path.sep) || (!file.endsWith('data.js') && !fs.existsSync(file))) return res.writeHead(404).end();
     res.setHeader('Content-Type', file.endsWith('.html') ? 'text/html; charset=utf-8' : 'text/javascript');
-    res.end(file.endsWith('index.html') ? html : file.endsWith('data.js') ? `window.BOARD_DATA=${JSON.stringify(snapshot)};` : fs.readFileSync(file));
+    res.end(file.endsWith('index.html') ? require('./security-policy.cjs').withScriptPolicy(html) : file.endsWith('data.js') ? `window.BOARD_DATA=${JSON.stringify(snapshot)};` : fs.readFileSync(file));
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
