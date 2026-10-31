@@ -1792,7 +1792,7 @@
         min-width: 0;
       }
 
-      .audit-reports { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 14px 0; }
+      .audit-reports { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: min(100%, 460px); gap: 12px; padding: 12px 0; }
       .audit-reports label { display: grid; gap: 6px; min-width: 0; font-size: 13px; color: var(--muted); }
       .audit-reports select { width: 100%; min-width: 0; font-size: 13px; }
       .audit-search button { flex: 0 0 auto; white-space: nowrap; min-height: 42px; padding: 0 12px; }
@@ -1821,7 +1821,9 @@
         .audit-table-compare .audit-change { grid-column: 1 / -1; }
         .audit-change .audit-change-label { display: block; margin: 0 0 4px; }
       }
-      @media (max-width: 600px) { .audit-reports { grid-template-columns: minmax(0, 1fr); } }
+      .audit-method { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+      .audit-method summary { cursor: pointer; padding: 4px 0; }
+      .audit-method .audit-note { padding: 8px 0 0; }
 
       .audit-head {
         display: flex;
@@ -7475,7 +7477,7 @@
   <script src="./vendor/js-md5.min.js"></script>
   <script src="./comparison-identity.js?v=7e10af073981"></script>
   <script src="./app-update.js?v=20261031-1"></script>
-  <script src="./audit-report.js?v=20261031-1"></script>
+  <script src="./audit-report.js?v=20261031-2"></script>
   <script>
     window.SERVER_AUTH_API_BASE = "https://coin-board-auth.dlatl20000.workers.dev";
   </script>
@@ -12292,7 +12294,9 @@
 
       function getUpbitAuditListedRows() {
         const seen = new Set();
-        return (Array.isArray(data.boards?.upbit) ? data.boards.upbit : []).filter((row) => {
+        const rows = [...(Array.isArray(data.boards?.upbit) ? data.boards.upbit : []),
+          ...Object.values(data.upbitAssetNames || {}).filter(item => item?.source === "upbit_market_all" && item.active === true)];
+        return rows.filter((row) => {
           const symbol = normalizeAuditSymbol(row?.symbol);
           if (!symbol || seen.has(symbol)) return false;
           seen.add(symbol);
@@ -12401,6 +12405,17 @@
         const reportBySymbol = new Map(reportRows.map((row) => [row.symbol, row]));
         const listedRows = getUpbitAuditListedRows();
         const listedBySymbol = new Map(listedRows.map((row) => [normalizeAuditSymbol(row.symbol), row]));
+        const assetNames = data.upbitAssetNames || {};
+        const auditIdentity = symbol => {
+          const official = assetNames[symbol];
+          const market = listedBySymbol.get(symbol);
+          const trusted = official?.source === "upbit_market_all" && official.symbol === symbol;
+          const koreanName = trusted ? official.koreanName : market?.koreanName || "";
+          const englishName = trusted ? official.englishName : market?.englishName || "";
+          return { name: koreanName || market?.name || englishName || symbol, koreanName, englishName,
+            nameKeys: [koreanName, englishName, symbol, ...(market?.nameKeys || [])].filter(Boolean),
+            logo: market?.logo || (trusted ? `https://static.upbit.com/logos/${encodeURIComponent(symbol)}.png` : "") };
+        };
         const listedAuditRows = listedRows.map((marketRow) => {
           const symbol = normalizeAuditSymbol(marketRow.symbol);
           return enrichUpbitAuditRow({
@@ -12415,7 +12430,7 @@
               change: UpbitAuditReport.compare(null, previousRows.get(symbol), 3, Boolean(previousReport)),
               ledgerChange: UpbitAuditReport.compare(null, previousRows.get(symbol), 2, Boolean(previousReport)),
             }),
-            name: marketRow.name || marketRow.koreanName || marketRow.englishName || symbol,
+            ...auditIdentity(symbol),
             listed: true,
           }, marketRow);
         });
@@ -12423,14 +12438,14 @@
           const marketRow = listedBySymbol.get(row.symbol);
           return enrichUpbitAuditRow({
             ...row,
-            name: marketRow?.name || marketRow?.koreanName || marketRow?.englishName || row.symbol,
+            ...auditIdentity(row.symbol),
             listed: Boolean(marketRow),
           }, marketRow);
         });
         const lowRows = fullReportRows.filter((row) => Number.isFinite(row.ratioValue) && row.ratioValue < 100);
         const removedRows = [...previousRows.values()].filter(values => values && !currentRows.has(normalizeAuditSymbol(values[1])))
           .map(values => enrichUpbitAuditRow({ ...mapReportRow(values, false), ledgerQuantity: "-", blockchainQuantity: "-", ratio: "-", ratioValue: NaN,
-            name: listedBySymbol.get(values[1])?.name || values[1], listed: listedBySymbol.has(values[1]) }, listedBySymbol.get(values[1])));
+            ...auditIdentity(values[1]), listed: listedBySymbol.has(values[1]) }, listedBySymbol.get(values[1])));
         const baseRows = upbitAuditFilter === "report"
           ? fullReportRows
           : upbitAuditFilter === "low"
@@ -12438,10 +12453,11 @@
             : ["increase", "decrease"].includes(upbitAuditFilter)
               ? fullReportRows.filter(row => row.change.state === upbitAuditFilter)
               : upbitAuditFilter === "unmatched" ? [...fullReportRows.filter(row => row.change.state === "new"), ...removedRows] : listedAuditRows;
-        const normalizedQuery = upbitAuditQuery.trim().toLocaleLowerCase("ko-KR");
+        const auditSearchKey = value => String(value || "").normalize("NFKC").toLocaleLowerCase("ko-KR").replace(/\s+/g, "");
+        const normalizedQuery = auditSearchKey(upbitAuditQuery);
         const searchedRows = normalizedQuery
-          ? baseRows.filter((row) => [row.name, row.symbol].some((value) =>
-              String(value || "").toLocaleLowerCase("ko-KR").includes(normalizedQuery)
+          ? baseRows.filter((row) => [row.name, row.koreanName, row.englishName, row.symbol, ...(row.nameKeys || [])].some((value) =>
+              auditSearchKey(value).includes(normalizedQuery)
             ))
           : baseRows;
         const filteredRows = searchedRows.map((row, index) => ({ row, index })).sort((a, b) => {
@@ -12483,15 +12499,15 @@
             <div class="audit-head">
               <div>
                 <h2 class="audit-title">업비트 디지털 자산 실사 보유량</h2>
-                <p class="audit-subtitle">${escapeHtml(upbitAuditData.publishedLabel || "2026년 7월 발행")} · 기준 시점 ${escapeHtml(upbitAuditData.referenceLabel || "2026년 6월 30일 24시")}</p>
+                <p class="audit-subtitle" title="${escapeAttr(upbitAuditData.referenceLabel || "")}">${escapeHtml(UpbitAuditReport.periodLabel(upbitAuditData, true))} · ${escapeHtml(upbitAuditData.publishedLabel || "")}</p>
               </div>
               <a class="audit-source-link" href="${escapeAttr(sourceUrl)}" target="_blank" rel="noopener noreferrer">공식 PDF 보기</a>
             </div>
             <div class="audit-reports">
-              <label>보고서<select id="auditReportSelect">${reports.map(report => `<option value="${escapeAttr(report.reportId)}"${report.reportId === upbitAuditData.reportId ? " selected" : ""}>${escapeHtml(report.publishedLabel || report.reportId)} · ${escapeHtml(report.referenceLabel || "")}</option>`).join("")}</select></label>
-              <label>비교 보고서<select id="auditComparisonSelect"${olderReports.length ? "" : " disabled"}>
+              <label>조회 분기<select id="auditReportSelect">${reports.map(report => `<option value="${escapeAttr(report.reportId)}"${report.reportId === upbitAuditData.reportId ? " selected" : ""}>${escapeHtml(UpbitAuditReport.periodLabel(report))}</option>`).join("")}</select></label>
+              <label>비교 분기<select id="auditComparisonSelect"${olderReports.length ? "" : " disabled"}>
                 <option value="none"${previousReport ? "" : " selected"}>비교 안 함</option>
-                ${olderReports.map(report => `<option value="${escapeAttr(report.reportId)}"${report.reportId === previousReport?.reportId ? " selected" : ""}>${escapeHtml(report.publishedLabel || report.reportId)} · ${escapeHtml(report.referenceLabel || "")}</option>`).join("")}
+                ${olderReports.map(report => `<option value="${escapeAttr(report.reportId)}"${report.reportId === previousReport?.reportId ? " selected" : ""}>${escapeHtml(UpbitAuditReport.periodLabel(report))}</option>`).join("")}
               </select></label>
             </div>
             ${data.refreshIssues?.upbit_audit ? '<p class="audit-note" role="status">보고서 갱신이 지연되어 마지막 검증 자료를 표시합니다.</p>' : ""}
@@ -12515,13 +12531,13 @@
               </form>
               <p class="audit-meta">총 ${formatNumber(filteredRows.length, 0)}개 · ${upbitAuditPage} / ${totalPages} 페이지</p>
             </div>
-            <p class="audit-note">
+            <details class="audit-method"><summary>수량·증감 산정 기준</summary><p class="audit-note">
               전산원장은 이용자 위탁 수량(A), 분산원장은 블록체인상 이용자 위탁 수량(B)입니다.
               보고서 수량은 정수 단위로 반올림되어 0은 0.5개 미만일 수 있습니다.
               보유가치·발행량 비율은 현재 시세·발행량을 적용하므로 실사 기준일과 시점이 다릅니다.
               ${previousReport ? `증감은 ${escapeHtml(previousReport.publishedLabel)} 대비 같은 심볼의 수량이며 가격 수익률이 아닙니다. 명칭·단위 변경을 임의로 연결하지 않습니다.` : ""}
               ${missingCount ? `현재 상장 코인 중 선택 보고서에 없는 자산은 ${formatNumber(missingCount, 0)}개이며 “보고서 없음”으로 표시합니다.` : ""}
-            </p>
+            </p></details>
             ${visibleRows.length ? `
               <div class="audit-table-wrap">
                 <table class="audit-table${previousReport ? " audit-table-compare" : ""}">
@@ -14939,7 +14955,8 @@
 
       function normalizeKoreanAssetNames(payload = data) {
         const boards = payload?.boards || {};
-        const referenceRows = [...(boards.bithumb || []), ...(boards.upbit || [])];
+        const referenceRows = [...(boards.bithumb || []), ...(boards.upbit || []),
+          ...Object.values(payload.upbitAssetNames || {}).filter(item => item?.source === "upbit_market_all")];
         const koreanRowsBySymbol = new Map();
 
         referenceRows.forEach((row) => {
@@ -15830,7 +15847,7 @@
         const labels = { upbit: "업비트 시세", bithumb: "빗썸 시세", binance: "바이낸스 시세", coinbase: "코인베이스 시세",
           robinhood: "로빈후드 시세",
           upbit_notices: "업비트 공지", bithumb_notices: "빗썸 공지", binance_notices: "바이낸스 공지",
-          binance_futures: "바이낸스 선물", coinbase_futures: "코인베이스 선물", defillama: "디파이 자료", apywa: "APYWA 등급", upbit_audit: "업비트 실사 보고서", pipeline: "서버 갱신" };
+          binance_futures: "바이낸스 선물", coinbase_futures: "코인베이스 선물", defillama: "디파이 자료", apywa: "APYWA 등급", upbit_audit: "업비트 실사 보고서", upbit_asset_names: "업비트 공식 코인명", pipeline: "서버 갱신" };
         const kinds = { failure: "장애 감지", recovered: "복구 완료", attention: "반복 장애", fallback: "예비 경로 전환",
           fallback_active: "예비 경로 사용", source_changed: "수집 경로 변경", pipeline_resumed: "갱신 재개", maintenance: "개발 수정" };
         const details = { failure: "수집 확인에 실패해 마지막 정상 데이터를 유지하고 있습니다.",

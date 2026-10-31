@@ -16,12 +16,14 @@ from refresh_health import build_refresh_health, call_notice_provider
 from apywa_ratings import collect_ratings, apply_ratings
 from robinhood_market import build_robinhood_board
 from upbit_audit import collect_reports as collect_upbit_audit_reports
+from upbit_asset_names import normalize_asset_names, merge_asset_names, suspicious_catalog_drop
 
 
 ROOT = Path(__file__).resolve().parent
 DATA_JS_PATH = ROOT / "data.js"
 SNAPSHOT_JSON_PATH = ROOT / "board_snapshot.json"
 UPBIT_AUDIT_DATA_PATH = ROOT / "upbit-audit-202607.json"
+UPBIT_ASSET_NAMES = {}
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
@@ -1777,7 +1779,12 @@ def fetch_upbit_prices(symbols: list[str]) -> dict[str, float]:
 
 
 def fetch_upbit() -> tuple[list[dict], dict[str, list[dict]]]:
+    global UPBIT_ASSET_NAMES
     listings = fetch_json("https://api.upbit.com/v1/market/all?is_details=true")
+    try:
+        UPBIT_ASSET_NAMES = normalize_asset_names(listings)
+    except ValueError:
+        UPBIT_ASSET_NAMES = {}
     base_rows = []
     for item in listings:  # type: ignore[assignment]
         market = item.get("market", "")
@@ -4499,6 +4506,8 @@ def build_defillama_rankings(
 
 
 def make_payload(previous_payload: dict | None = None) -> dict:
+    global UPBIT_ASSET_NAMES
+    UPBIT_ASSET_NAMES = {}
     refresh_fx_usd_krw(previous_payload)
     refresh_issues: dict[str, str] = {}
     refresh_scheduled_delistings(previous_payload, refresh_issues)
@@ -4814,6 +4823,12 @@ def make_payload(previous_payload: dict | None = None) -> dict:
         futures_stats[exchange_name] = {"total": len(rows), "withCap": with_cap}
 
     upbit_audit_reports = load_upbit_audit_reports(previous_payload, refresh_issues)
+    if suspicious_catalog_drop((previous_payload or {}).get("upbitAssetNames"), UPBIT_ASSET_NAMES):
+        UPBIT_ASSET_NAMES = {}
+    if not UPBIT_ASSET_NAMES:
+        refresh_issues["upbit_asset_names"] = "official_name_catalog_refresh_failed"
+    elif any(item is None for item in UPBIT_ASSET_NAMES.values()):
+        refresh_issues["upbit_asset_names"] = "official_name_catalog_conflict"
     upbit_audit = upbit_audit_reports[0] if upbit_audit_reports else None
     if not isinstance(upbit_audit, dict) or not upbit_audit.get("rows"):
         raise RuntimeError("protected_upbit_audit_data_missing")
@@ -4838,6 +4853,7 @@ def make_payload(previous_payload: dict | None = None) -> dict:
         "noticeRefresh": NOTICE_REFRESH_STATUS,
         "upbitAudit": upbit_audit,
         "upbitAuditReports": upbit_audit_reports,
+        "upbitAssetNames": merge_asset_names((previous_payload or {}).get("upbitAssetNames"), UPBIT_ASSET_NAMES),
         "changes": build_changes(boards, previous_payload),
         "notes": {
             "binance": "binance_exact_market_cap",
