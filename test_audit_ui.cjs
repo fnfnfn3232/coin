@@ -70,11 +70,13 @@ async function main() {
         { symbol: 'SHELL', name: 'MyShell', englishName: 'MyShell' },
         { symbol: 'SHELL', name: 'Unrelated Shell', englishName: 'Unrelated Shell' },
         { symbol: 'AI', name: 'Sleepless AI', englishName: 'Sleepless AI' },
+        { symbol: 'FOO', name: 'Other Project', englishName: 'Other Project' },
       ];
-      normalizeKoreanAssetNames({ boards: { binance: rows }, upbitAssetNames: data.upbitAssetNames });
+      normalizeKoreanAssetNames({ boards: { binance: rows }, upbitAssetNames: { ...data.upbitAssetNames,
+        FOO: { symbol: 'FOO', koreanName: '공식푸', englishName: 'FOO', source: 'upbit_market_all' } } });
       return rows.map(row => row.name);
     });
-    assert.deepEqual(mapped, ['마이쉘', 'Unrelated Shell', 'Sleepless AI']);
+    assert.deepEqual(mapped, ['마이쉘', 'Unrelated Shell', 'Sleepless AI', 'Other Project']);
     for (const query of ['마이쉘', '마이 쉘', 'myshell', 'shell']) {
       await page.locator('#auditSearchForm input').fill(query);
       assert.equal(await page.locator('.audit-table tbody tr').count(), 1);

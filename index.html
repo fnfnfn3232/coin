@@ -14955,6 +14955,7 @@
 
       function normalizeKoreanAssetNames(payload = data) {
         const boards = payload?.boards || {};
+        const englishKey = value => String(value || "").normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, "");
         const referenceRows = [...(boards.bithumb || []), ...(boards.upbit || []),
           ...Object.values(payload.upbitAssetNames || {}).filter(item => item?.source === "upbit_market_all")];
         const koreanRowsBySymbol = new Map();
@@ -14972,7 +14973,9 @@
         Object.values(boards).forEach((rows) => {
           (rows || []).forEach((row) => {
             const symbol = getComparableSymbol(row);
-            const reference = (koreanRowsBySymbol.get(symbol) || []).find(candidate => marketReferenceCompatible(row, candidate));
+            const reference = (koreanRowsBySymbol.get(symbol) || []).find(candidate => marketReferenceCompatible(row, candidate)
+              && (candidate.source !== "upbit_market_all" || (englishKey(row.englishName)
+                && englishKey(row.englishName) === englishKey(candidate.englishName))));
             const koreanName = reference && [reference.koreanName, reference.name].find(hasHangul);
             if (!koreanName) return;
             if (row.name !== koreanName || row.koreanName !== koreanName) changed += 1;
