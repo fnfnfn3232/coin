@@ -9290,6 +9290,7 @@
       let upbitAuditSort = "report";
       let upbitAuditQuery = "";
       let upbitAuditPage = 1;
+      let upbitAuditVisibleRows = [];
       const chainFeesStates = Object.fromEntries(["l1fees", "l2fees"].map((mode) => [mode, {
         data: null, promise: null, checkedAt: 0, error: "", query: "", sortKey: "total24h", sortDirection: "desc",
       }]));
@@ -12272,17 +12273,71 @@
         return `${formatNumber(value, value < 0.01 ? 4 : 2)}%`;
       }
 
+      function auditMarketReferences(identity) {
+        return ["upbit", "bithumb", "coinbase", "binance"].flatMap(exchange => {
+          const matches = comparisonMarketMatches(exchange, comparisonIdentitySymbol(identity, "upbit")).filter(candidate =>
+            String(candidate.pair || "").endsWith(exchange === "binance" ? "/USDT" : exchange === "coinbase" ? "/USD" : "/KRW")
+            && window.BlockscopeComparisonIdentity?.matches(identity, candidate, { baseBoard: "upbit", referenceBoard: exchange,
+              info: data.coinInfo?.[identity.symbol], referenceInfo: data.coinInfo?.[candidate.symbol] }) === true);
+          return matches.length === 1 ? [{ exchange, row: matches[0] }] : [];
+        });
+      }
+
+      function auditReferencePrice(identity, now = Date.now()) {
+        const candidates = auditMarketReferences(identity).flatMap(({ exchange, row }) => {
+          const liveAt = comparisonPriceTimestamp(row);
+          const observedAt = liveAt || Number(data.generatedAt) * 1000;
+          if (!Number.isFinite(observedAt) || observedAt <= 0 || observedAt > now + 5000 || row.priceStale
+            || Number(row.comparisonQuoteMissingAt) > observedAt) return [];
+          const native = toPositiveNumber(exchange === "upbit" || exchange === "bithumb" ? row.priceKrw : row.priceUsd);
+          if (native === null) return [];
+          const foreign = exchange === "coinbase" || exchange === "binance";
+          const fx = priceDifferenceFx;
+          if (foreign && (!usableComparisonFx(fx, now) || fx.stale)) return [];
+          const pegRow = freshComparisonPrice(priceDifferenceUsdt, now) ? priceDifferenceUsdt
+            : (data.boards?.coinbase || []).find(item => item.symbol === "USDT" && item.pair === "USDT/USD");
+          const peg = exchange === "binance" ? toPositiveNumber(pegRow?.priceUsd) : 1;
+          if (exchange === "binance" && (peg === null || !freshComparisonPrice(pegRow, now))) return [];
+          const priceKrw = native * peg * (foreign ? fx.rate : 1);
+          if (!Number.isFinite(priceKrw) || priceKrw <= 0) return [];
+          const stale = now - observedAt > PRICE_DIFFERENCE_MAX_AGE_MS || Boolean(!liveAt && data.refreshIssues?.[exchange]);
+          return [{ priceKrw, priceTime: formatDateTime(observedAt / 1000), stale,
+            priceLabel: `${stale ? "갱신 지연 · " : ""}${boardLabel(exchange)}${foreign ? " 환산" : ""}`,
+            priceDetail: `${boardLabel(exchange)} 현물 ${row.pair}: ${native}\n시세 수신: ${formatDateTime(observedAt / 1000)}${foreign ? `\nUSD/KRW: ${fx.rate} (${fx.source})\n환율 기준: ${formatDateTime(fx.asOf / 1000)}` : ""}${exchange === "binance" ? `\nUSDT/USD: ${peg}` : ""}\n보유가치는 이 참조가격으로 계산한 평가액입니다.` }];
+        });
+        return candidates.find(item => !item.stale) || candidates[0] || null;
+      }
+
+      function renderAuditPrice(row) {
+        return `<strong>${row.priceKrw !== null ? escapeHtml(formatKrwPrice(row.priceKrw)) : "-"}</strong><span>${escapeHtml(row.priceLabel)}</span>${row.priceTime ? `<span>${escapeHtml(row.priceTime)}</span>` : ""}`;
+      }
+
+      function refreshAuditPriceCells() {
+        if (state.viewMode !== "audit" || isSiteLocked()) return;
+        const models = new Map(upbitAuditVisibleRows.map(row => [row.symbol, row]));
+        newsPanel.querySelectorAll("tr[data-audit-symbol]").forEach(element => {
+          const model = models.get(element.dataset.auditSymbol);
+          if (!model) return;
+          const row = enrichUpbitAuditRow(model);
+          const price = element.querySelector("[data-audit-price]");
+          const value = element.querySelector("[data-audit-value] strong");
+          if (price) { price.innerHTML = renderAuditPrice(row); price.title = row.priceDetail; }
+          if (value) value.textContent = row.holdingValueKrw !== null ? formatKrwShort(row.holdingValueKrw) : "-";
+        });
+      }
+
       function enrichUpbitAuditRow(row, marketRow) {
         const holdingQuantity = parseAuditQuantity(row.blockchainQuantity);
         const candidate = data.upbitAuditMarket?.[normalizeAuditSymbol(row.symbol)];
         const official = candidate?.source === "upbit_audit_market" && candidate.symbol === row.symbol ? candidate : null;
         const totalSupply = toPositiveNumber(official?.supply?.value);
-        const priceKrw = official ? toPositiveNumber(official.price?.priceKrw) : toPositiveNumber(marketRow?.priceKrw);
+        const reference = auditReferencePrice(row);
+        const priceKrw = reference?.priceKrw ?? (official ? toPositiveNumber(official.price?.priceKrw) : toPositiveNumber(marketRow?.priceKrw));
         const price = official?.price;
         const converted = price && price.quote !== "KRW";
-        const priceTime = price?.checkedAt ? formatDateTime(price.checkedAt) : "";
-        const priceLabel = `${official?.priceError ? "이전 시세 · " : ""}${converted ? `${price.quote} 원화 환산` : "업비트 원화 시세"}`;
-        const priceDetail = price ? `${price.market}: ${price.value} ${price.quote}\n조회: ${priceTime}\n마지막 체결: ${price.tradeAt ? formatDateTime(price.tradeAt / 1000) : "미제공"}${converted ? `\n환산: ${price.conversionMarket} ${price.conversionPrice}원\n환산 시세 체결: ${price.conversionTradeAt ? formatDateTime(price.conversionTradeAt / 1000) : "미제공"}` : ""}` : "";
+        const priceTime = reference?.priceTime || (price?.checkedAt ? formatDateTime(price.checkedAt) : "");
+        const priceLabel = reference?.priceLabel || `${official?.priceError ? "이전 시세 · " : ""}${converted ? `업비트 ${price.quote} 원화 환산` : "업비트 원화 시세"}`;
+        const priceDetail = reference?.priceDetail || (price ? `${price.market}: ${price.value} ${price.quote}\n조회: ${priceTime}\n마지막 체결: ${price.tradeAt ? formatDateTime(price.tradeAt / 1000) : "미제공"}${converted ? `\n환산: ${price.conversionMarket} ${price.conversionPrice}원\n환산 시세 체결: ${price.conversionTradeAt ? formatDateTime(price.conversionTradeAt / 1000) : "미제공"}` : ""}` : "");
         const supplyDetail = official?.supply ? `업비트 기발행수량 · ${official.supply.provider || "미제공"}\n자료 기준일: ${official.supply.baseDate || "미제공"}\n조회: ${official.supply.checkedAt ? formatDateTime(official.supply.checkedAt) : "미제공"}` : "업비트 기발행수량 미제공";
         const supplyShare = holdingQuantity !== null && totalSupply !== null
           ? (holdingQuantity / totalSupply) * 100
@@ -12503,6 +12558,7 @@
             }).join("")}</div>`
           : "";
 
+        upbitAuditVisibleRows = visibleRows;
         renderResourceSearchPanel(`
           <div class="audit-shell">
             ${renderResourceTabs()}
@@ -12547,6 +12603,7 @@
               보고서 수량은 정수 단위로 반올림되어 0은 0.5개 미만일 수 있습니다.
               보유가치·발행량 비율은 현재 시세·발행량을 적용하므로 실사 기준일과 시점이 다릅니다.
               총발행량은 업비트의 기발행수량이며 발행한도와 구분합니다. BTC·USDT 마켓은 해당 업비트 원화 시세로 환산합니다.
+              가격은 업비트 원화, 빗썸 원화, 코인베이스 USD, 바이낸스 USDT 순으로 동일 자산의 현물 시세를 참조하며, 참조가격이 없으면 업비트 환산가격을 사용합니다. 보유가치는 참조 시세에 따른 평가액입니다.
               ${previousReport ? `증감은 ${escapeHtml(previousReport.publishedLabel)} 대비 같은 심볼의 수량이며 가격 수익률이 아닙니다. 명칭·단위 변경을 임의로 연결하지 않습니다.` : ""}
               ${missingCount ? `현재 상장 코인 중 선택 보고서에 없는 자산은 ${formatNumber(missingCount, 0)}개이며 “보고서 없음”으로 표시합니다.` : ""}
             </p></details>
@@ -12579,7 +12636,7 @@
                     ${visibleRows.map((row) => {
                       const low = Number.isFinite(row.ratioValue) && row.ratioValue < 100;
                       return `
-                        <tr>
+                        <tr data-audit-symbol="${escapeAttr(row.symbol)}">
                           <td class="audit-no">${row.no ? formatNumber(row.no, 0) : "-"}</td>
                           <td class="audit-coin">
                             <strong>${renderCoinIdentity(row, row.name || row.symbol || "-")}</strong>
@@ -12590,8 +12647,8 @@
                           ${previousReport ? `<td class="audit-change" data-audit-change="${escapeAttr(row.symbol)}"><span class="audit-change-label">보유량 증감 (B)</span>${renderAuditChange(row.change)}</td>` : ""}
                           <td class="audit-market" title="${escapeAttr(row.supplyDetail)}"><strong>${row.totalSupply !== null ? escapeHtml(formatTokenAmount(row.totalSupply)) : "-"}</strong><span>${row.supplyError ? "이전 기발행수량" : "업비트 기발행수량"}</span></td>
                           <td class="audit-market"><strong>${escapeHtml(formatAuditSupplyShare(row.supplyShare))}</strong><span>분산원장 ÷ 총발행량</span></td>
-                          <td class="audit-market" title="${escapeAttr(row.priceDetail)}"><strong>${row.priceKrw !== null ? escapeHtml(formatKrwPrice(row.priceKrw)) : "-"}</strong><span>${escapeHtml(row.priceLabel)}</span>${row.priceTime ? `<span>${escapeHtml(row.priceTime)}</span>` : ""}</td>
-                          <td class="audit-market"><strong>${row.holdingValueKrw !== null ? escapeHtml(formatKrwShort(row.holdingValueKrw)) : "-"}</strong><span>분산원장 × 현재 가격</span></td>
+                          <td class="audit-market" data-audit-price title="${escapeAttr(row.priceDetail)}">${renderAuditPrice(row)}</td>
+                          <td class="audit-market" data-audit-value><strong>${row.holdingValueKrw !== null ? escapeHtml(formatKrwShort(row.holdingValueKrw)) : "-"}</strong><span>분산원장 × 참조 가격</span></td>
                           <td class="audit-ratio${low ? " is-low" : ""}">
                             <strong>${escapeHtml(row.reported ? row.ratio : "보고서 없음")}</strong>
                             <span>${row.reported ? "분산원장 ÷ 전산원장" : "선택 보고서 미수록"}</span>
@@ -12606,6 +12663,7 @@
             ` : '<p class="audit-empty">조건에 맞는 자산이 없습니다.</p>'}
           </div>
         `);
+        syncLivePriceStream();
       }
 
       const EXCHANGE_HISTORY_LABELS = {
@@ -17032,12 +17090,14 @@
       }
 
       function requestPriceDifferenceQuotes(prewarm = false) {
-        if (!isDomesticComparisonBoard() || isLocalPreview() || !hasServerAuth() || !siteAuthConfirmed || isSiteLocked() || document.hidden || !navigator.onLine || (!prewarm && state.viewMode !== "market")) return;
+        const audit = state.viewMode === "audit";
+        if ((!audit && !isDomesticComparisonBoard()) || isLocalPreview() || !hasServerAuth() || !siteAuthConfirmed || isSiteLocked() || document.hidden || !navigator.onLine || (!prewarm && state.viewMode !== "market" && !audit)) return;
         const exchange = state.board === "triple" ? "bithumb" : state.board;
-        const boards = new Set([exchange, state.priceDifferenceBoard]);
+        const auditReferences = audit ? upbitAuditVisibleRows.flatMap(auditMarketReferences) : [];
+        const boards = new Set(audit ? auditReferences.map(item => item.exchange) : [exchange, state.priceDifferenceBoard]);
         if (boards.has("binance")) boards.add("coinbase");
         const models = new Map((data.boards?.[exchange] || []).map((row) => [liveSpotProductId(row, exchange), row]));
-        const visibleRows = prewarm && state.viewMode !== "market" ? [...models.values()]
+        const visibleRows = audit ? [] : prewarm && state.viewMode !== "market" ? [...models.values()]
           : Array.from(tableBody.querySelectorAll("tr[data-live-product]"), (element) => models.get(element.dataset.liveProduct)).filter(Boolean);
         for (const row of visibleRows) {
           const reference = priceDifferenceReference(row);
@@ -17056,7 +17116,8 @@
           if (!["upbit", "bithumb", "binance", "coinbase", ...PRICE_DIFFERENCE_ADDITIONAL_BOARDS].includes(board)) continue;
           const request = priceDifferenceQuoteRequests.get(board);
           if (request?.pending || Date.now() < (request?.retryAt || 0)) continue;
-          let relevant = board === exchange ? visibleRows : visibleRows.map(row => priceDifferenceCandidates(row).find(candidate => candidate.comparisonExchange === board)).filter(Boolean);
+          let relevant = audit ? auditReferences.filter(item => item.exchange === board).map(item => item.row)
+            : board === exchange ? visibleRows : visibleRows.map(row => priceDifferenceCandidates(row).find(candidate => candidate.comparisonExchange === board)).filter(Boolean);
           if (PRICE_DIFFERENCE_ADDITIONAL_BOARDS.includes(board) && board !== state.priceDifferenceBoard) {
             relevant = fallbackRows.map(row => {
               const selected = priceDifferenceReference(row);
@@ -17239,6 +17300,7 @@
       }
 
       function refreshPriceDifferenceCells() {
+        if (state.viewMode === "audit") { refreshAuditPriceCells(); return; }
         if (state.viewMode !== "market" || isSiteLocked()) return;
         const exchange = state.board === "triple" ? "bithumb" : state.board;
         const models = new Map((data.boards?.[exchange] || []).map((row) => [liveSpotProductId(row, exchange), row]));
@@ -17279,7 +17341,7 @@
       }
 
       function inspectComparisonStreams(now = Date.now()) {
-        if (!(isDomesticComparisonBoard() && state.viewMode === "market") && state.viewMode !== "futures") return;
+        if (!(isDomesticComparisonBoard() && state.viewMode === "market") && !["futures", "audit"].includes(state.viewMode)) return;
         if (document.hidden || !navigator.onLine || isSiteLocked()) return;
         const inspect = (socket, target, startedAt) => {
           if (!socket || socket.readyState > 1) return;
@@ -17346,7 +17408,7 @@
       }
 
       async function requestPriceDifferenceFx() {
-        if (!isDomesticComparisonBoard() || isLocalPreview() || !hasServerAuth() || !siteAuthConfirmed || isSiteLocked() || document.hidden || !navigator.onLine
+        if ((state.viewMode !== "audit" && !isDomesticComparisonBoard()) || isLocalPreview() || !hasServerAuth() || !siteAuthConfirmed || isSiteLocked() || document.hidden || !navigator.onLine
           || priceDifferenceFxPromise || Date.now() < priceDifferenceFxRetryAt) return;
         priceDifferenceFxRetryAt = Date.now() + 30000;
         const generation = priceDifferenceGeneration;
@@ -17383,7 +17445,8 @@
       }
 
       function syncPriceDifferenceStreams() {
-        if (!isDomesticComparisonBoard() || document.hidden || !navigator.onLine || isSiteLocked() || (!isLocalPreview() && !siteAuthConfirmed) || state.viewMode !== "market") { closePriceDifferenceStreams(); return; }
+        const audit = state.viewMode === "audit";
+        if ((!audit && !isDomesticComparisonBoard()) || document.hidden || !navigator.onLine || isSiteLocked() || (!isLocalPreview() && !siteAuthConfirmed) || (!audit && state.viewMode !== "market")) { closePriceDifferenceStreams(); return; }
         requestPriceDifferenceFx();
         requestPriceDifferenceQuotes();
         const exchange = state.board === "triple" ? "bithumb" : state.board;
@@ -17391,18 +17454,19 @@
         const visibleProducts = new Set(Array.from(tableBody.querySelectorAll("tr[data-live-product]"), (element) => element.dataset.liveProduct));
         const targets = new Map();
         const add = (board, row) => {
-          if (board === exchange && visibleProducts.has(liveSpotProductId(row, board))) return;
+          if (!audit && board === exchange && visibleProducts.has(liveSpotProductId(row, board))) return;
           if (!targets.has(board)) targets.set(board, { kind: "spot", exchange: board, entries: new Map() });
           targets.get(board).entries.set(liveSpotProductId(row, board), { row, exchange: board, kind: "spot", element: null });
         };
-        tableBody.querySelectorAll("tr[data-live-product]").forEach((element) => {
+        if (audit) upbitAuditVisibleRows.flatMap(auditMarketReferences).forEach(item => add(item.exchange, item.row));
+        else tableBody.querySelectorAll("tr[data-live-product]").forEach((element) => {
           const row = baseModels.get(element.dataset.liveProduct);
           const reference = row && priceDifferenceReference(row);
           if (reference) add(reference.comparisonExchange || state.priceDifferenceBoard, reference);
           const preferred = row && priceDifferenceCandidates(row).find(candidate => candidate.comparisonExchange === state.priceDifferenceBoard);
           if (preferred && preferred !== reference) add(state.priceDifferenceBoard, preferred);
         });
-        if (exchange === "binance" || [...targets.values()].some(target => [...target.entries.values()].some(entry => entry.row.pair?.endsWith("/USDT")))) add("coinbase", priceDifferenceUsdt);
+        if ((!audit && exchange === "binance") || [...targets.values()].some(target => [...target.entries.values()].some(entry => entry.row.pair?.endsWith("/USDT")))) add("coinbase", priceDifferenceUsdt);
         targets.forEach((target) => { target.products = [...target.entries.keys()].sort(); });
         priceDifferenceSockets.forEach((connection, board) => {
           const target = targets.get(board);
@@ -17422,7 +17486,7 @@
           const connection = { target, signature: target.products.join(","), attempts: 0, timer: 0, heartbeat: 0, socket: null };
           priceDifferenceSockets.set(board, connection);
           const connect = () => {
-            if (priceDifferenceSockets.get(board) !== connection || document.hidden || !navigator.onLine || isSiteLocked() || state.viewMode !== "market") return;
+            if (priceDifferenceSockets.get(board) !== connection || document.hidden || !navigator.onLine || isSiteLocked() || !["market", "audit"].includes(state.viewMode)) return;
             const retry = () => {
               window.clearInterval(connection.heartbeat);
               if (priceDifferenceSockets.get(board) !== connection) return;
@@ -17481,7 +17545,7 @@
       }
 
       window.setInterval(() => {
-        if (isDomesticComparisonBoard() && !document.hidden && state.viewMode === "market" && !isSiteLocked()) {
+        if ((isDomesticComparisonBoard() && state.viewMode === "market" || state.viewMode === "audit") && !document.hidden && !isSiteLocked()) {
           refreshPriceDifferenceCells();
           if (priceDifferenceFx) renderComparisonFxStatus();
           requestPriceDifferenceFx();
