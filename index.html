@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-cWtzM8nM96T3A8NBJBtHnOENuEJwj9XohbBTH/0qXQg='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-NuZmKwq7+d3eQ8ANPL7bZzUFhdtGIrphan8/BfFJcjI='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -1801,7 +1801,7 @@
         min-width: 0;
       }
 
-      .audit-reports { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: min(100%, 460px); gap: 12px; padding: 12px 0; }
+      .audit-reports { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); width: min(100%, 700px); gap: 12px; padding: 12px 0; }
       .audit-reports label { display: grid; gap: 6px; min-width: 0; font-size: 13px; color: var(--muted); }
       .audit-reports select { width: 100%; min-width: 0; font-size: 13px; }
       .audit-search button { flex: 0 0 auto; white-space: nowrap; min-height: 42px; padding: 0 12px; }
@@ -4872,6 +4872,9 @@
         .audit-title {
           font-size: 19px;
         }
+
+        .audit-reports { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .audit-market-selector { grid-column: 1 / -1; }
 
         .audit-source-link {
           align-self: flex-start;
@@ -9326,6 +9329,7 @@
       let upbitAuditPromise = null;
       let upbitAuditError = "";
       let upbitAuditFilter = "listed";
+      let upbitAuditMarketFilter = "all";
       let upbitAuditSort = "report";
       let upbitAuditQuery = "";
       let upbitAuditPage = 1;
@@ -12408,6 +12412,20 @@
         });
       }
 
+      function getUpbitAuditMarketQuotes(symbol, marketRow) {
+        const official = data.upbitAssetNames?.[symbol];
+        if (official?.source === "upbit_market_all" && official.symbol === symbol) {
+          if (official.active === false) return [];
+          if (official.active === true && Array.isArray(official.markets)) {
+            return [...new Set(official.markets.map(market => String(market).split("-"))
+              .filter(parts => parts.length === 2 && parts[1] === symbol && /^[A-Z0-9]{2,16}$/.test(parts[0]))
+              .map(parts => parts[0]))];
+          }
+        }
+        const parts = String(marketRow?.pair || "").split("/");
+        return parts.length === 2 && parts[0] === symbol && /^[A-Z0-9]{2,16}$/.test(parts[1]) ? [parts[1]] : [];
+      }
+
       async function loadUpbitAuditData(force = false) {
         if (upbitAuditData && !force) return upbitAuditData;
         if (upbitAuditPromise) return upbitAuditPromise;
@@ -12517,6 +12535,7 @@
           const koreanName = trusted ? official.koreanName : market?.koreanName || "";
           const englishName = trusted ? official.englishName : market?.englishName || "";
           return { name: koreanName || market?.name || englishName || symbol, koreanName, englishName,
+            marketQuotes: getUpbitAuditMarketQuotes(symbol, market),
             nameKeys: [koreanName, englishName, symbol, ...(market?.nameKeys || [])].filter(Boolean),
             logo: market?.logo || (trusted ? `https://static.upbit.com/logos/${encodeURIComponent(symbol)}.png` : "") };
         };
@@ -12557,13 +12576,19 @@
             : ["increase", "decrease"].includes(upbitAuditFilter)
               ? fullReportRows.filter(row => row.change.state === upbitAuditFilter)
               : upbitAuditFilter === "unmatched" ? [...fullReportRows.filter(row => row.change.state === "new"), ...removedRows] : listedAuditRows;
+        const marketFilters = [["all", "전체 마켓"], ["KRW", "원화 (KRW)"], ["BTC", "BTC"], ["USDT", "USDT"],
+          ["other", "기타 마켓"], ["unknown", "미상장·미확인"]];
+        const matchesMarket = (row, market) => market === "all" || (market === "unknown" ? !row.marketQuotes.length
+          : market === "other" ? row.marketQuotes.some(quote => !["KRW", "BTC", "USDT"].includes(quote))
+            : row.marketQuotes.includes(market));
+        const marketRows = baseRows.filter(row => matchesMarket(row, upbitAuditMarketFilter));
         const auditSearchKey = value => String(value || "").normalize("NFKC").toLocaleLowerCase("ko-KR").replace(/\s+/g, "");
         const normalizedQuery = auditSearchKey(upbitAuditQuery);
         const searchedRows = normalizedQuery
-          ? baseRows.filter((row) => [row.name, row.koreanName, row.englishName, row.symbol, ...(row.nameKeys || [])].some((value) =>
+          ? marketRows.filter((row) => [row.name, row.koreanName, row.englishName, row.symbol, ...(row.nameKeys || [])].some((value) =>
               auditSearchKey(value).includes(normalizedQuery)
             ))
-          : baseRows;
+          : marketRows;
         const filteredRows = searchedRows.map((row, index) => ({ row, index })).sort((a, b) => {
           if (upbitAuditSort === "report") return a.index - b.index;
           if (upbitAuditSort.startsWith("change-")) {
@@ -12614,6 +12639,8 @@
                 <option value="none"${previousReport ? "" : " selected"}>비교 안 함</option>
                 ${olderReports.map(report => `<option value="${escapeAttr(report.reportId)}"${report.reportId === previousReport?.reportId ? " selected" : ""}>${escapeHtml(UpbitAuditReport.periodLabel(report))}</option>`).join("")}
               </select></label>
+              <label class="audit-market-selector">상장 마켓<select id="auditMarketSelect">${marketFilters.map(([key, label]) =>
+                `<option value="${key}"${upbitAuditMarketFilter === key ? " selected" : ""}>${label} · ${formatNumber(baseRows.filter(row => matchesMarket(row, key)).length, 0)}개</option>`).join("")}</select></label>
             </div>
             ${data.refreshIssues?.upbit_audit ? '<p class="audit-note" role="status">보고서 갱신이 지연되어 마지막 검증 자료를 표시합니다.</p>' : ""}
             ${data.refreshIssues?.upbit_audit_market ? '<p class="audit-note" role="status">일부 업비트 시세·발행량 갱신이 지연되어 이전 조회값을 표시합니다. 각 값의 기준 시각을 확인해 주세요.</p>' : ""}
@@ -12679,7 +12706,7 @@
                           <td class="audit-no">${row.no ? formatNumber(row.no, 0) : "-"}</td>
                           <td class="audit-coin">
                             <strong>${renderCoinIdentity(row, row.name || row.symbol || "-")}</strong>
-                            <span>${escapeHtml(row.symbol || "-")}${row.listed ? " · 현재 상장" : ""}</span>
+                            <span>${escapeHtml(row.symbol || "-")}${row.listed ? " · 현재 상장" : ""}${row.marketQuotes.length ? ` · ${escapeHtml(row.marketQuotes.join("/"))}` : ""}</span>
                           </td>
                           <td class="audit-quantity"><strong>${escapeHtml(row.ledgerQuantity)}</strong><span>전산원장</span>${previousReport ? `<div class="audit-ledger-change">${renderAuditChange(row.ledgerChange)}</div>` : ""}</td>
                           <td class="audit-quantity"><strong>${escapeHtml(row.blockchainQuantity)}</strong><span>분산원장</span></td>
@@ -18236,6 +18263,7 @@
           exchangeHistoryExchange,
           exchangeHistoryFilter,
           upbitAuditFilter,
+          upbitAuditMarketFilter,
           upbitAuditReportId,
           upbitAuditComparisonId,
           upbitAuditSort,
@@ -18350,6 +18378,8 @@
         upbitAuditFilter = ["listed", "report", "low", "increase", "decrease", "unmatched"].includes(payload.upbitAuditFilter)
           ? String(payload.upbitAuditFilter)
           : "listed";
+        upbitAuditMarketFilter = ["all", "KRW", "BTC", "USDT", "other", "unknown"].includes(payload.upbitAuditMarketFilter)
+          ? payload.upbitAuditMarketFilter : "all";
         upbitAuditSort = ["report", "share-desc", "share-asc", "value-desc", "value-asc", "change-desc", "change-asc"].includes(payload.upbitAuditSort)
           ? String(payload.upbitAuditSort)
           : "report";
@@ -20003,6 +20033,15 @@
       });
 
       newsPanel.addEventListener("change", event => {
+        if (event.target.id === "auditMarketSelect") {
+          const market = event.target.value;
+          if (!["all", "KRW", "BTC", "USDT", "other", "unknown"].includes(market)) return;
+          upbitAuditMarketFilter = market;
+          upbitAuditPage = 1;
+          renderAuditPanel();
+          writeAppHistoryState(true);
+          return;
+        }
         if (!["auditReportSelect", "auditComparisonSelect"].includes(event.target.id)) return;
         if (event.target.id === "auditReportSelect") {
           upbitAuditReportId = event.target.value;

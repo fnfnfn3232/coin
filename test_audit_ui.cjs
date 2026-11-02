@@ -12,6 +12,10 @@ async function main() {
     FORMER: { symbol: 'FORMER', koreanName: '이전코인', englishName: 'Former Coin', source: 'upbit_market_all', active: false, markets: ['BTC-FORMER'] },
     AI: { symbol: 'AI', koreanName: '젠신', englishName: 'Gensyn', source: 'upbit_market_all', active: true, markets: ['KRW-AI'] },
     OSMO: { symbol: 'OSMO', koreanName: '오스모시스', englishName: 'Osmosis', source: 'upbit_market_all', active: true, markets: ['BTC-OSMO'] },
+    MULTI: { symbol: 'MULTI', koreanName: '\ub2e4\uc911\ub9c8\ucf13', englishName: 'Multiple Markets', source: 'upbit_market_all', active: true,
+      markets: ['KRW-MULTI', 'BTC-MULTI', 'USDT-MULTI', 'BTC-MULTI', 'KRW-OTHER'] },
+    USDTONLY: { symbol: 'USDTONLY', koreanName: '\ud14c\ub354\ub9c8\ucf13', englishName: 'USDT Only', source: 'upbit_market_all', active: true, markets: ['USDT-USDTONLY'] },
+    OTHERQUOTE: { symbol: 'OTHERQUOTE', koreanName: '\uae30\ud0c0\ub9c8\ucf13', englishName: 'Other Quote', source: 'upbit_market_all', active: true, markets: ['USDC-OTHERQUOTE'] },
   };
   snapshot.upbitAuditMarket = {
     SHELL: { symbol: 'SHELL', source: 'upbit_audit_market', supply: { value: 1000, field: 'circulating_supply',
@@ -94,6 +98,48 @@ async function main() {
     assert.equal(await page.locator('#auditComparisonSelect').inputValue(), reports[1].reportId);
     assert.equal(await page.locator('#auditReportSelect option:checked').textContent(), '2026년 3분기');
     assert.equal(await page.locator('#auditComparisonSelect option:checked').textContent(), '2026년 2분기');
+    const shownSymbols = () => page.locator('tr[data-audit-symbol]').evaluateAll(rows => rows.map(row => row.dataset.auditSymbol));
+    await page.evaluate(() => { upbitAuditPage = 2; renderAuditPanel(); });
+    await page.locator('#auditMarketSelect').selectOption('KRW');
+    assert.equal(await page.evaluate(() => upbitAuditPage), 1);
+    assert.ok((await shownSymbols()).includes('BTC'));
+    assert.ok(!(await shownSymbols()).includes('OSMO'), 'a Bithumb KRW reference price cannot turn an Upbit BTC listing into a KRW listing');
+    await page.locator('#auditSearchForm input').fill('MULTI');
+    assert.deepEqual(await shownSymbols(), ['MULTI']);
+    await page.locator('#auditSearchForm input').fill('');
+    await page.locator('#auditMarketSelect').selectOption('BTC');
+    assert.deepEqual((await shownSymbols()).sort(), ['MULTI', 'OSMO', 'SHELL']);
+    assert.equal(await page.locator('tr[data-audit-symbol="MULTI"]').count(), 1, 'duplicate native markets never duplicate audit assets');
+    await page.locator('#auditSearchForm input').fill('마이쉘');
+    assert.deepEqual(await shownSymbols(), ['SHELL']);
+    await page.locator('#auditSearchForm input').fill('');
+    assert.equal((await shownSymbols()).length, 3, 'clearing search restores the selected market, not every market');
+    await page.locator('#auditMarketSelect').selectOption('USDT');
+    assert.deepEqual((await shownSymbols()).sort(), ['MULTI', 'SHELL', 'USDTONLY']);
+    await page.evaluate(() => setViewMode('ranking'));
+    await page.goBack();
+    assert.equal(await page.locator('#auditMarketSelect').inputValue(), 'USDT');
+    await page.goForward();
+    assert.equal(await page.evaluate(() => state.viewMode), 'ranking');
+    await page.goBack();
+    await page.reload(); await page.waitForSelector('#auditMarketSelect');
+    assert.equal(await page.locator('#auditMarketSelect').inputValue(), 'USDT');
+    await page.locator('#auditMarketSelect').selectOption('other');
+    assert.deepEqual(await shownSymbols(), ['OTHERQUOTE']);
+    await page.locator('#auditMarketSelect').selectOption('unknown');
+    assert.equal((await shownSymbols()).length, 0);
+    await page.locator('[data-audit-filter="report"]').click();
+    if (!process.env.AUDIT_REPORTS_TEST_FILE) {
+      assert.ok((await shownSymbols()).includes('FORMER'), 'delisted assets remain separate from current native markets');
+    }
+    const classifications = await page.evaluate(() => ({
+      inactive: getUpbitAuditMarketQuotes('FORMER', { pair: 'FORMER/KRW' }),
+      suffix: getUpbitAuditMarketQuotes('MULTI'),
+      fallback: getUpbitAuditMarketQuotes('BTC', data.boards.upbit.find(row => row.symbol === 'BTC')),
+    }));
+    assert.deepEqual(classifications, { inactive: [], suffix: ['KRW', 'BTC', 'USDT'], fallback: ['KRW'] });
+    await page.locator('[data-audit-filter="listed"]').click();
+    await page.locator('#auditMarketSelect').selectOption('all');
     await page.locator('#auditSearchForm input').fill('오스모시스');
     assert.match(await page.locator('[data-audit-price]').innerText(), /80원.*빗썸/s);
     const oldValue = await page.locator('[data-audit-value] strong').innerText();
@@ -188,7 +234,7 @@ async function main() {
     for (const width of [1440, 390, 320]) {
       await page.setViewportSize({ width, height: 1000 });
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
-      for (const selector of ['#auditReportSelect', '#auditComparisonSelect']) {
+      for (const selector of ['#auditReportSelect', '#auditComparisonSelect', '#auditMarketSelect']) {
         const box = await page.locator(selector).boundingBox();
         assert.ok(box.x >= 0 && box.x + box.width <= width + 1);
       }
@@ -197,8 +243,10 @@ async function main() {
         assert.ok((await page.locator('.audit-coin').last().boundingBox()).width > 150);
       }
       if (process.env.AUDIT_SCREENSHOT_PREFIX) {
+        await page.locator('#auditMarketSelect').selectOption('BTC');
         await page.locator('#auditSearchForm input').fill('오스모시스');
         await page.screenshot({ path: `${process.env.AUDIT_SCREENSHOT_PREFIX}-${width}.png`, fullPage: true });
+        await page.locator('#auditMarketSelect').selectOption('all');
         await page.locator('#auditSearchForm input').fill('BTC');
       }
     }
@@ -239,7 +287,7 @@ async function main() {
     await page.locator('#resourcesMenuBtn').click();
     await page.locator('[data-resource-view="ranking"]').first().click();
     assert.equal(await page.evaluate(() => [...window.__auditSockets].filter(socket => socket.readyState === 1).length), 0, 'audit subscriptions stop on navigation');
-    console.log('PASS: official non-KRW Korean names, Korean/English/ticker/space searches, collision safety, historical listing flags, quarter selection, A/B changes, history/reload and desktop/mobile layout');
+    console.log('PASS: official KRW/BTC/USDT/other market filters, multi-market deduplication, reference-price independence, search clearing, historical assets, quarter comparison, history/reload and desktop/mobile layout');
   } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
