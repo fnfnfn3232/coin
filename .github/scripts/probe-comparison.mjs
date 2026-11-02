@@ -45,7 +45,7 @@ for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", 
       console.log(JSON.stringify({ exchange: "audit", total: rows.length, matched: rows.filter(row => row.matches.length).length,
         domesticFallback: rows.filter(row => row.domestic.length),
         unverified: rows.filter(row => row.candidates), unavailable: rows.filter(row => !row.matches.length && !row.candidates),
-        reported: rows.filter(row => ["SOON", "BEAM", "FLUID", "PIEVERSE", "CC", "WAVES", "B3"].includes(row.symbol)) }));
+        reported: rows.filter(row => ["SOON", "BEAM", "FLUID", "PIEVERSE", "CC", "WAVES", "B3", "UP2", "UP"].includes(row.symbol)) }));
     } else console.log(JSON.stringify(result));
     if (result.error || result.identityError || (board === "fx" ? !result.rate || result.stale : !["audit", "bootstrap"].includes(board) && !result.quoteCount)) failed += 1;
   } catch (error) { console.log(JSON.stringify({ exchange: board, error: error.message })); failed += 1; }

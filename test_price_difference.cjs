@@ -35,12 +35,14 @@ async function main() {
     { symbol: 'FLUID', name: 'Fluid', foreign: 'Fluid' }, { symbol: 'PIEVERSE', name: 'Pieverse', foreign: 'Pieverse' },
     { symbol: 'CC', name: 'Canton', foreign: 'Canton Network' }, { symbol: 'WAVES', name: 'Waves', foreign: 'Waves' },
     { symbol: 'B3', name: 'B3', foreign: 'B3 Base' },
+    { symbol: 'UP2', name: 'Superform', foreign: 'Superform', foreignSymbol: 'SUPERFORM' },
     { symbol: 'CAP', name: 'Cap', foreign: 'Cap', foreignBoard: 'coinbase' },
     { symbol: 'GRVT', name: 'Grvt', foreign: 'Grvt', foreignBoard: 'coinbase' },
   ];
   for (const item of reported) snapshot.boards.upbit.push({ ...row(item.symbol, item.name, 'KRW', 1350), koreanName: '\uad6d\ub0b4\ucf54\uc778',
     marketIdentityVerified: false, marketCapUsd: null, marketCapKrw: null, sortCapUsd: null });
   for (const item of reported.filter(item => item.foreignBoard === 'coinbase')) snapshot.boards.coinbase.push(row(item.symbol, item.foreign, 'USD', 1));
+  snapshot.boards.bithumb.push(row('UP', 'Superform', 'KRW', 1200));
   for (const fixture of Object.values(fallbackFixtures)) snapshot.boards.upbit.push(row(fixture.symbol, fixture.name, 'KRW', fixture.price * 1350));
   const browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH
     || (process.platform === 'win32' ? 'C:/Program Files/Google/Chrome/Application/chrome.exe' : undefined) });
@@ -326,6 +328,41 @@ async function main() {
       assert.equal(await page.evaluate(board => priceDifferenceSockets.get(board)?.target.kind, board), 'spot');
     }
     await emit('gateio', { channel: 'spot.tickers', event: 'update', result: { currency_pair: 'GATEONLY_USDT', last: '11' } });
+    await emit('upbit', { code: 'KRW-UP2', trade_price: 1350 });
+    await emit('gateio', { channel: 'spot.tickers', event: 'update', result: { currency_pair: 'SUPERFORM_USDT', last: '1.1' } });
+    await page.waitForFunction(() => comparisonMarketRows('gateio').find(row => row.symbol === 'SUPERFORM')?.priceUsd === 1.1);
+    assert.equal(await cell('UP2').locator('.price-difference-source').innerText(), 'Gate.io');
+    assert.ok(await page.evaluate(() => priceDifferenceSockets.get('gateio').socket.sent.some(value => value.payload?.includes('SUPERFORM_USDT'))));
+    assert.ok(await page.evaluate(() => testSockets.filter(socket => socket.url.includes('api.upbit.com')).some(socket => socket.sent.some(value =>
+      Array.isArray(value) && value.some(item => item.codes?.includes('KRW-UP2'))))));
+    const superformFallback = await page.evaluate(() => {
+      const original = { additional: priceDifferenceAdditionalRows, board: state.board, fx: priceDifferenceFx };
+      try {
+        priceDifferenceAdditionalRows = {};
+        priceDifferenceFx = null;
+        const upbit = data.boards.upbit.find(row => row.symbol === 'UP2');
+        const bithumb = data.boards.bithumb.find(row => row.symbol === 'UP');
+        bithumb.comparisonPriceAt = Date.now();
+        state.board = 'upbit';
+        resetComparisonIdentityCache();
+        const a = getPriceDifference(upbit);
+        state.board = 'bithumb';
+        resetComparisonIdentityCache();
+        const b = getPriceDifference(bithumb);
+        return { upbit: a.percent, bithumb: b.percent, boards: [a.referenceBoard, b.referenceBoard],
+          products: [liveSpotProductId(upbit, 'upbit'), liveSpotProductId(bithumb, 'bithumb')] };
+      } finally {
+        priceDifferenceAdditionalRows = original.additional;
+        state.board = original.board;
+        priceDifferenceFx = original.fx;
+        resetComparisonIdentityCache();
+      }
+    });
+    assert.equal(superformFallback.upbit, 12.5);
+    assert.ok(Math.abs(superformFallback.bithumb - (1200 / 1350 - 1) * 100) < 1e-9);
+    assert.deepEqual(superformFallback.boards, ['bithumb', 'upbit']);
+    assert.deepEqual(superformFallback.products, ['KRW-UP2', 'UP_KRW']);
+    console.log('PASS: Superform UP2/UP/SUPERFORM uses native live subscriptions, Gate priority and bidirectional domestic fallback without FX');
     await emit('bybit', { topic: 'tickers.BYBITONLYUSDT', type: 'snapshot', data: { symbol: 'BYBITONLYUSDT', lastPrice: '21' } });
     await emit('bitget', { arg: { instType: 'SPOT', channel: 'ticker', instId: 'BITGETONLYUSDT' }, data: [{ instId: 'BITGETONLYUSDT', lastPr: '31' }] });
     await emit('okx', { arg: { channel: 'tickers' }, data: [{ instType: 'SPOT', instId: 'OKXONLY-USDT', last: '41' }] });
