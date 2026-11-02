@@ -56,10 +56,11 @@ async function main() {
   let directCalls = 0;
   let snapshotBootstrap = false;
   let fxRate = 1300;
+  let fxSourceName = 'currency-converter.live';
   let coinbaseFuturesCalls = 0;
   let coinbaseFuturesFailure = false;
   const fxPayload = () => ({ rate: fxRate, asOf: Date.now(), date: new Date().toISOString().slice(0, 10),
-    source: 'currency-converter.live', frequency: 'intraday', marketStatus: 'open', checkedAt: Date.now(), stale: false });
+    source: fxSourceName, basis: fxSourceName === 'naver_hana' ? 'bank_notice' : 'reference', frequency: 'intraday', marketStatus: 'open', checkedAt: Date.now(), verifiedAt: Date.now(), stale: false });
   page.on('pageerror', error => { errors.push(error.message); console.error('Browser error:', error.message); });
   await context.addInitScript(() => {
     window.testSockets = [];
@@ -442,6 +443,7 @@ async function main() {
     console.log('PASS: OKX public fallback retains verified metadata and excludes perpetual contracts');
 
     snapshotBootstrap = true;
+    fxSourceName = 'naver_hana';
     bootstrapFailure = 0;
     const bootPage = await context.newPage();
     try {
@@ -460,7 +462,18 @@ async function main() {
       assert.notEqual(await bootPage.evaluate(() => getPriceDifference(data.boards.upbit.find(row => row.symbol === 'BTC')).percent), previous);
       assert.equal(await bootPage.evaluate(() => usableComparisonFx({ ...priceDifferenceFx, asOf: Date.now() - 600000 })), false);
       assert.equal(await bootPage.evaluate(() => usableComparisonFx({ ...priceDifferenceFx, frequency: 'daily' })), false);
-      assert.match(await bootPage.locator('#priceDifferenceFxStatus').innerText(), /장중 참고/);
+      assert.match(await bootPage.locator('#priceDifferenceFxStatus').innerText(), /하나은행 고시/);
+      assert.equal(await bootPage.evaluate(() => usableComparisonFx({ ...priceDifferenceFx, source: 'unverified' })), false);
+      const closure = await bootPage.evaluate(() => {
+        const now = Date.parse('2026-11-02T00:05:00Z');
+        const value = { ...priceDifferenceFx, asOf: now - 48 * 3600000, verifiedAt: now, checkedAt: now, marketStatus: 'closed' };
+        return [usableComparisonFx(value, now), usableComparisonFx({ ...value, checkedAt: now + 600000 }, now + 600000)];
+      });
+      assert.deepEqual(closure, [true, false], 'bank closure status cannot remain verified through failed refreshes');
+      for (const width of [1440, 390]) {
+        await bootPage.setViewportSize({ width, height: 1000 });
+        assert.equal(await bootPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+      }
       assert.equal(await bootPage.evaluate(() => priceDifferenceFxRetryAt - Date.now() <= 60000), true);
       const binanceBefore = bulkCalls.filter(board => board === 'binance').length;
       const directBefore = directCalls;
@@ -472,7 +485,7 @@ async function main() {
       assert.equal(bulkCalls.filter(board => board === 'binance').length, binanceBefore);
       assert.equal(directCalls, directBefore + 1);
       console.log('PASS: snapshot bootstrap renders without quote/FX round trips; live FX changes recalculate deltas; source clocks expire; known blocked proxies are skipped');
-    } finally { await bootPage.close(); snapshotBootstrap = false; fxRate = 1300; }
+    } finally { await bootPage.close(); snapshotBootstrap = false; fxRate = 1300; fxSourceName = 'currency-converter.live'; }
 
     bootstrapFailure = 0;
     await page.evaluate(() => { state.viewMode = 'market'; state.board = 'upbit'; renderCurrentView(); });

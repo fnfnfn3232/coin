@@ -25,7 +25,7 @@ for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", 
       }
       if (!response.ok) throw new Error(`probe_http_${response.status}`);
       result = await response.json();
-      if (result.implementation === 6) break;
+      if (result.implementation === 7) break;
       // Worker deployment acknowledgement precedes worldwide propagation.
       if (attempt === 12) throw new Error("new_worker_not_propagated");
       await new Promise(resolve => setTimeout(resolve, 5000));

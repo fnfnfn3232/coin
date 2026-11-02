@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-sXW0LiiVQJjJgNZa1WqWOb6T+hRy+WiFLjpdvu/OrP4='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-+9sVoAlO5P/cd+LZALY10Zixz2Ol1Ku8Vj5Qw2o5pnY='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -17360,18 +17360,26 @@
 
       function usableComparisonFx(fx, now = Date.now()) {
         const age = now - Number(fx?.asOf);
+        if (fx?.frequency !== "intraday" || !["currency-converter.live", "naver_hana", "yahoo_finance"].includes(fx.source)
+          || !Number.isFinite(fx.rate) || fx.rate < 100 || fx.rate > 10000 || !Number.isFinite(fx.asOf) || age < -5000) return false;
+        if (age <= 300000) return true;
+        const statusAge = now - Number(fx.verifiedAt ?? fx.checkedAt);
+        if (fx.marketStatus !== "closed" || !Number.isFinite(statusAge) || statusAge < -5000 || statusAge > 300000) return false;
+        if (fx.source === "naver_hana") return age <= 72 * 3600000;
         const day = new Date(now).getUTCDay();
-        return fx?.frequency === "intraday" && fx.source === "currency-converter.live" && Number.isFinite(fx.rate)
-          && fx.rate >= 100 && fx.rate <= 10000 && Number.isFinite(fx.asOf) && age >= -5000
-          && (age <= 300000 || (fx.marketStatus === "closed" && (day === 0 || day === 6) && age <= 72 * 3600000));
+        return (day === 0 || day === 6) && age <= 72 * 3600000;
+      }
+
+      function comparisonFxSourceLabel(fx) {
+        return ({ naver_hana: "네이버 증권 · 하나은행 고시", yahoo_finance: "Yahoo Finance 참고", "currency-converter.live": "currency-converter.live 참고" })[fx?.source] || "환율 출처 미확인";
       }
 
       function renderComparisonFxStatus() {
         const fx = priceDifferenceFx;
         priceDifferenceFxStatus.textContent = usableComparisonFx(fx) && !fx.stale
-          ? `원/달러 ${formatNumber(fx.rate, 2)}원 · ${fx.marketStatus === "closed" ? "주말 참고" : "장중 참고"} ${new Date(fx.asOf).toLocaleString("ko-KR", { hour12: false })}${fx.refreshError ? " · 갱신 재시도 중" : ""}`
+          ? `원/달러 ${formatNumber(fx.rate, 2)}원 · ${comparisonFxSourceLabel(fx)}${fx.marketStatus === "closed" ? " · 휴장 기준" : ""} · ${new Date(fx.asOf).toLocaleString("ko-KR", { hour12: false })}${fx.refreshError ? " · 갱신 재시도 중" : ""}`
           : "원/달러 환율 갱신 지연";
-        priceDifferenceFxStatus.title = "currency-converter.live 공개 참고환율 · 1분마다 확인 · 원본 시각 기준 · 은행 체결환율이 아니며 원 공급업체는 검증되지 않았습니다.";
+        priceDifferenceFxStatus.title = "무료 공개 고시·참고환율을 서버에서 1분마다 확인합니다. 표시된 시각은 원본 환율의 기준 시각이며 실제 환전·체결가격과 다를 수 있습니다.";
       }
 
       function seedComparisonBootstrap(bootstrap) {
