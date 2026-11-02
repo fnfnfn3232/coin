@@ -373,6 +373,55 @@ test("a paid exchange catalog failure uses the free metadata endpoint while pric
   } finally { globalThis.fetch = originalFetch; }
 });
 
+test("blocked quote transport still provides bounded independent identities without inventing quotes or accepting ticker collisions", async () => {
+  const { request, store, storage } = await fixture();
+  store.readMarketData = async () => ({ boards: { upbit: [{ symbol: 'KGEN' }, { symbol: 'CLASH' }], bithumb: [{ symbol: 'PCI' }] } });
+  const originalFetch = globalThis.fetch;
+  let catalogs = 0;
+  globalThis.fetch = async url => {
+    if (String(url).endsWith('/v1/coins')) {
+      catalogs++;
+      return Response.json([
+        { symbol: 'KGEN', name: 'KGeN', id: 'kgen-kgen', is_active: true },
+        { symbol: 'PCI', name: 'PayProtocol Paycoin', id: 'pci-paycoin', is_active: true },
+        { symbol: 'CLASH', name: 'Project A', id: 'clash-a', is_active: true },
+        { symbol: 'CLASH', name: 'Project B', id: 'clash-b', is_active: true },
+        { symbol: 'NOTLOCAL', name: 'Not Local', id: 'notlocal-project', is_active: true },
+      ]);
+    }
+    return new Response('upstream_blocked', { status: 403 });
+  };
+  try {
+    for (const board of ['bybit', 'bitget']) {
+      const response = await request(`/api/price-difference-quotes?exchange=${board}`);
+      const value = await response.json();
+      assert.equal(response.status, 503);
+      assert.deepEqual(value.prices, {});
+      assert.equal(value.observedAt, 0);
+      assert.deepEqual(value.assets, { KGEN: ['KGeN', 'kgen-kgen'], PCI: ['PayProtocol Paycoin', 'pci-paycoin'] });
+      assert.equal(value.identityError, '');
+      assert.equal(value.identityCandidatesOnly, true);
+      assert.ok(value.catalogAt > 0);
+      assert.deepEqual((await storage.get(`price-difference-quotes-v1:${board}`)).prices, {});
+    }
+    assert.equal(catalogs, 1, 'blocked sources share one metadata fetch');
+    assert.equal((await request('/api/price-difference-quotes?exchange=bitget', 'GET', undefined, '')).status, 401);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("server health cannot promote unquoted identity candidates into verified overseas listings", async () => {
+  const { store } = await fixture();
+  store.readMarketData = async () => ({ boards: { upbit: [{ symbol: 'KGEN', englishName: 'KGeN' }] } });
+  store.readComparisonFx = async () => null;
+  store.handleComparisonQuotesRequest = async url => {
+    const board = url.searchParams.get('exchange');
+    return Response.json({ prices: board === 'upbit' ? { KGEN: 1000 } : {}, observedAt: Date.now(),
+      ...(board === 'bybit' ? { assets: { KGEN: ['KGeN', 'kgen-kgen'] }, catalogAt: Date.now(), identityCandidatesOnly: true } : {}) });
+  };
+  const result = await (await store.probeComparisonSource('audit')).json();
+  assert.deepEqual(result.references.find(source => source.board === 'bybit').rows, []);
+});
+
 test("an unavailable aggregator cannot suppress the reviewed official XDP spot identity", async () => {
   const { request } = await fixture();
   const originalFetch = globalThis.fetch;

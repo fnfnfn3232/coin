@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-ag6FFHdpQh/uZnutbScw7Oa04w0ZOV4pPs8nEPFPzT8='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-UrTh+b/gojtb9Byjuo0uOfijPJIZB8WLbafgRKvU698='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -7477,7 +7477,7 @@
   </div>
 
   <script src="./vendor/js-md5.min.js"></script>
-  <script src="./comparison-identity.js?v=a5fb6b63259f"></script>
+  <script src="./comparison-identity.js?v=6b64708158a3"></script>
   <script src="./app-update.js?v=20261031-1"></script>
   <script src="./audit-report.js?v=20261031-2"></script>
   <script>
@@ -16908,6 +16908,7 @@
       let priceDifferenceSaveTimer = 0;
       let priceDifferenceGeneration = 0;
       const priceDifferenceQuoteRequests = new Map();
+      const priceDifferencePublicListings = new Map();
       const PRICE_DIFFERENCE_ADDITIONAL_BOARDS = ["gateio", "bybit", "bitget", "okx"];
       let priceDifferenceAdditionalRows = {};
 
@@ -16974,6 +16975,7 @@
         priceDifferenceFxPromise = null;
         priceDifferenceFxRetryAt = 0;
         priceDifferenceQuoteRequests.clear();
+        priceDifferencePublicListings.clear();
         try {
           sessionStorage.removeItem(PRICE_DIFFERENCE_CACHE_KEY);
           sessionStorage.removeItem("price-difference-session-v2");
@@ -17076,18 +17078,44 @@
 
       async function fetchPublicComparisonQuotes(board, metadata = {}) {
         const observedAt = Date.now();
-        const url = board === "binance" ? "https://data-api.binance.vision/api/v3/ticker/price"
-          : "https://www.okx.com/api/v5/market/tickers?instType=SPOT";
+        const url = { binance: "https://data-api.binance.vision/api/v3/ticker/price",
+          okx: "https://www.okx.com/api/v5/market/tickers?instType=SPOT",
+          bybit: "https://api.bybit.com/v5/market/tickers?category=spot",
+          bitget: "https://api.bitget.com/api/v2/spot/market/tickers" }[board];
+        if (!url) throw new Error("unsupported_public_quote_source");
+        let listing = null;
+        if (["bybit", "bitget"].includes(board)) {
+          listing = priceDifferencePublicListings.get(board);
+          if (!listing || Date.now() - listing.at > 300000) {
+            const listingUrl = board === "bybit" ? "https://api.bybit.com/v5/market/instruments-info?category=spot"
+              : "https://api.bitget.com/api/v2/spot/public/symbols";
+            const response = await fetch(listingUrl, { credentials: "omit", signal: AbortSignal.timeout(6000) });
+            if (!response.ok) throw new Error(`public_listing_failed:${response.status}`);
+            const source = await response.json();
+            const rows = board === "bybit" ? source?.retCode === 0 && source.result?.category === "spot" ? source.result.list : null
+              : source?.code === "00000" ? source.data : null;
+            if (!Array.isArray(rows)) throw new Error("invalid_public_listing");
+            const symbols = new Set(rows.filter(row => row.status === (board === "bybit" ? "Trading" : "online")
+              && row.quoteCoin === "USDT" && /^[A-Z0-9]{1,40}$/.test(row.baseCoin)
+              && row.symbol === `${row.baseCoin}USDT`).map(row => row.symbol));
+            if (!symbols.size) throw new Error("empty_public_listing");
+            listing = { symbols, at: observedAt };
+            priceDifferencePublicListings.set(board, listing);
+          }
+        }
         const response = await fetch(url, { credentials: "omit", signal: AbortSignal.timeout(6000) });
         if (!response.ok) throw new Error(`public_quote_failed:${response.status}`);
         const source = await response.json();
-        const rows = board === "binance" ? source : source?.code === "0" ? source.data : null;
+        const rows = board === "binance" ? source : board === "bybit"
+          ? source?.retCode === 0 && source.result?.category === "spot" ? source.result.list : null
+          : source?.code === (board === "bitget" ? "00000" : "0") ? source.data : null;
         if (!Array.isArray(rows)) throw new Error("invalid_public_quotes");
         const prices = {};
         for (const row of rows) {
           if (board === "okx" && row.instType !== "SPOT") continue;
-          const match = String(row.symbol || row.instId || "").match(board === "binance" ? /^([A-Z0-9]{1,40})USDT$/ : /^([A-Z0-9]{1,40})-USDT$/);
-          const price = toPositiveNumber(board === "binance" ? row.price : row.last);
+          if (listing && !listing.symbols.has(row.symbol)) continue;
+          const match = String(row.symbol || row.instId || "").match(board === "okx" ? /^([A-Z0-9]{1,40})-USDT$/ : /^([A-Z0-9]{1,40})USDT$/);
+          const price = toPositiveNumber(board === "binance" ? row.price : board === "bybit" ? row.lastPrice : board === "bitget" ? row.lastPr : row.last);
           if (match && price) prices[match[1]] = price;
         }
         return { ...metadata, exchange: board, prices, observedAt, error: "", revalidating: false };
@@ -17142,13 +17170,13 @@
           initialRequest
             .catch(async error => {
               // A public quote fallback cannot replace site authentication.
-              if (!["binance", "okx"].includes(board) || error.status !== 503 || !siteAuthConfirmed || isSiteLocked()
+              if (!["binance", "okx", "bybit", "bitget"].includes(board) || error.status !== 503 || !siteAuthConfirmed || isSiteLocked()
                 || generation !== priceDifferenceGeneration || comparisonCacheOwner() !== owner) throw error;
               if (board === "binance") pending.directUntil = Date.now() + 300000;
               return fetchPublicComparisonQuotes(board, error.payload);
             })
             .then(payload => {
-              if (["binance", "okx"].includes(board) && payload?.error && Date.now() - payload.observedAt > PRICE_DIFFERENCE_MAX_AGE_MS
+              if (["binance", "okx", "bybit", "bitget"].includes(board) && payload?.error && Date.now() - payload.observedAt > PRICE_DIFFERENCE_MAX_AGE_MS
                 && generation === priceDifferenceGeneration && comparisonCacheOwner() === owner && !isSiteLocked()) return fetchPublicComparisonQuotes(board, payload);
               return payload;
             })
