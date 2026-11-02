@@ -80,6 +80,19 @@ test('MetaDAO domestic suffix resolves only to MetaDAO, never Metadium or other 
   }
 });
 
+test('public identity recovery keeps only bounded unique active candidates, not listing or price claims', () => {
+  const source = [
+    { symbol: 'PCI', name: 'PayProtocol Paycoin', id: 'pci-paycoin', is_active: true },
+    { symbol: 'SPACE', name: 'Spacecoin', id: 'space-spacecoin', is_active: true },
+    { symbol: 'SPACE', name: 'MicroVisionChain', id: 'space-mvc', is_active: true },
+    { symbol: 'OLD', name: 'Old', id: 'old-old', is_active: false },
+    { symbol: 'OTHER', name: 'Other', id: 'other-other', is_active: true },
+  ];
+  assert.deepEqual(identity.uniqueCatalog(source, new Set(['PCI', 'SPACE', 'OLD'])), { PCI: ['PayProtocol Paycoin', 'pci-paycoin'] });
+  assert.throws(() => identity.uniqueCatalog({}, new Set()));
+  assert.throws(() => identity.uniqueCatalog(source, new Set(Array.from({ length: 2001 }, (_, i) => `X${i}`))));
+});
+
 test('whole-list audit spelling differences resolve without admitting unrelated project names', () => {
   const pairs = [
     ['ADA', 'Ada', 'Cardano'], ['XLM', 'Lumen', 'Stellar Lumens'], ['SKY', 'Sky Protocol', 'Sky'],

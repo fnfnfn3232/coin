@@ -1,5 +1,23 @@
 # Price Difference (2026-10-29)
 
+## Blocked Spot Transport Recovery (2026-11-02)
+
+- An authenticated Worker 503 can use official public Bybit/Bitget spot quotes.
+  Site 401/403 never starts this fallback. Requests omit credentials entirely.
+- Official trading-pair catalogs exclude halted, delisted, non-USDT and futures
+  instruments. Catalogs are reused for five minutes; failure never renews them.
+- If server-side identity metadata is also blocked, one shared browser request
+  checks the public CoinPaprika coin catalog. Only unique active IDs for at most
+  2,000 domestic symbols are retained. Ambiguous tickers remain unverified.
+  The bounded result is cached for six hours in the current account's session;
+  expiration, account changes and logout cannot reuse another account's cache.
+- Names alone create no price or listing. A current official, active USDT spot
+  quote and the existing shared project-identity checks are still required.
+  Server diagnostics do not treat unquoted metadata candidates as listings.
+- Reviewed MetaDAO META2/META, Paycoin name variants and Teller name variants
+  are comparison-only mappings. Native products, cap/supply provenance,
+  authentication, fixed login expiry and password iteration counts are unchanged.
+
 ## Automatic Detection And Maintenance (2026-10-30)
 
 - The visible domestic market inspects streams locally every five seconds. A
