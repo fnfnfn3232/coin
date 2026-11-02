@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-UrTh+b/gojtb9Byjuo0uOfijPJIZB8WLbafgRKvU698='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-TitWOx0ILLGo9HBVCAi8/LTS4d4OdQylUgNGylXWFHQ='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -7477,7 +7477,7 @@
   </div>
 
   <script src="./vendor/js-md5.min.js"></script>
-  <script src="./comparison-identity.js?v=6b64708158a3"></script>
+  <script src="./comparison-identity.js?v=762328f0a7b3"></script>
   <script src="./app-update.js?v=20261031-1"></script>
   <script src="./audit-report.js?v=20261031-2"></script>
   <script>
@@ -16909,6 +16909,8 @@
       let priceDifferenceGeneration = 0;
       const priceDifferenceQuoteRequests = new Map();
       const priceDifferencePublicListings = new Map();
+      let priceDifferencePublicCatalog = null;
+      let priceDifferencePublicCatalogPromise = null;
       const PRICE_DIFFERENCE_ADDITIONAL_BOARDS = ["gateio", "bybit", "bitget", "okx"];
       let priceDifferenceAdditionalRows = {};
 
@@ -16955,7 +16957,8 @@
         try {
           const requests = Object.fromEntries([...priceDifferenceQuoteRequests].map(([board, value]) => [board,
             { checkedAt: value.checkedAt || 0, catalogCheckedAt: value.catalogCheckedAt || 0, retryAt: value.retryAt || 0, directUntil: value.directUntil || 0, error: Boolean(value.error), symbols: [...(value.symbols || [])].slice(0, 5000) }]));
-          sessionStorage.setItem(PRICE_DIFFERENCE_CACHE_KEY, JSON.stringify({ owner: comparisonCacheOwner(), fx: priceDifferenceFx, quotes: priceDifferenceQuoteCache, requests }));
+          sessionStorage.setItem(PRICE_DIFFERENCE_CACHE_KEY, JSON.stringify({ owner: comparisonCacheOwner(), fx: priceDifferenceFx,
+            quotes: priceDifferenceQuoteCache, requests, publicCatalog: priceDifferencePublicCatalog }));
         } catch (_error) { /* Cache availability must not affect live prices. */ }
       }
 
@@ -16976,6 +16979,8 @@
         priceDifferenceFxRetryAt = 0;
         priceDifferenceQuoteRequests.clear();
         priceDifferencePublicListings.clear();
+        priceDifferencePublicCatalog = null;
+        priceDifferencePublicCatalogPromise = null;
         try {
           sessionStorage.removeItem(PRICE_DIFFERENCE_CACHE_KEY);
           sessionStorage.removeItem("price-difference-session-v2");
@@ -17022,11 +17027,18 @@
             priceDifferenceAdditionalRows = {};
             priceDifferenceFx = null;
             priceDifferenceFxRetryAt = 0;
+            priceDifferencePublicCatalog = null;
           }
           priceDifferenceCacheOwner = owner;
           try {
             const cached = JSON.parse(sessionStorage.getItem(PRICE_DIFFERENCE_CACHE_KEY) || "null");
             if (cached?.owner === owner) {
+              const catalog = cached.publicCatalog;
+              if (Number.isFinite(catalog?.at) && catalog.at <= Date.now() + 5000 && Date.now() - catalog.at <= 6 * 3600000
+                && catalog.assets && typeof catalog.assets === "object" && Object.entries(catalog.assets).length <= 2000
+                && Object.entries(catalog.assets).every(([symbol, asset]) => /^[A-Z0-9]{1,40}$/.test(symbol)
+                  && Array.isArray(asset) && asset.length === 2 && typeof asset[0] === "string" && asset[0].length > 0
+                  && asset[0].length <= 120 && /^[a-z0-9-]{1,120}$/.test(asset[1]))) priceDifferencePublicCatalog = catalog;
               for (const [board, value] of Object.entries(cached.requests || {})) {
                 if (!["upbit", "bithumb", "binance", "coinbase", ...PRICE_DIFFERENCE_ADDITIONAL_BOARDS].includes(board) || priceDifferenceQuoteRequests.has(board)) continue;
                 const catalogCheckedAt = Number(value?.catalogCheckedAt) || 0;
@@ -17076,8 +17088,34 @@
         if (usdt && Date.now() - usdt.at < PRICE_DIFFERENCE_MAX_AGE_MS) applyComparisonQuote(priceDifferenceUsdt, "coinbase", usdt.price, usdt.at);
       }
 
+      async function fetchPublicComparisonIdentityCandidates() {
+        if (priceDifferencePublicCatalog && Date.now() - priceDifferencePublicCatalog.at <= 6 * 3600000) return priceDifferencePublicCatalog;
+        if (!priceDifferencePublicCatalogPromise) {
+          const generation = priceDifferenceGeneration;
+          const at = Date.now();
+          priceDifferencePublicCatalogPromise = (async () => {
+            const response = await fetch("https://api.coinpaprika.com/v1/coins", { credentials: "omit", signal: AbortSignal.timeout(8000) });
+            if (!response.ok) throw new Error(`public_identity_failed:${response.status}`);
+            const symbols = new Set([...(data.boards?.upbit || []), ...(data.boards?.bithumb || [])].slice(0, 2000).map(row => row.symbol));
+            const assets = window.BlockscopeComparisonIdentity.uniqueCatalog(await response.json(), symbols);
+            if (!Object.keys(assets).length) throw new Error("empty_public_identity_candidates");
+            const catalog = { assets, at };
+            if (generation === priceDifferenceGeneration && !isSiteLocked()) {
+              priceDifferencePublicCatalog = catalog;
+              schedulePriceDifferenceCacheSave();
+            }
+            return catalog;
+          })().finally(() => { if (generation === priceDifferenceGeneration) priceDifferencePublicCatalogPromise = null; });
+        }
+        return priceDifferencePublicCatalogPromise;
+      }
+
       async function fetchPublicComparisonQuotes(board, metadata = {}) {
         const observedAt = Date.now();
+        if (["bybit", "bitget"].includes(board) && (metadata.identityError || !Object.keys(metadata.assets || {}).length)) {
+          const catalog = await fetchPublicComparisonIdentityCandidates();
+          metadata = { ...metadata, assets: catalog.assets, catalogAt: catalog.at, identityError: "", identityErrorDetail: "" };
+        }
         const url = { binance: "https://data-api.binance.vision/api/v3/ticker/price",
           okx: "https://www.okx.com/api/v5/market/tickers?instType=SPOT",
           bybit: "https://api.bybit.com/v5/market/tickers?category=spot",

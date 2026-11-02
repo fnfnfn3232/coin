@@ -101,7 +101,23 @@
     return ownNames.length > 0 && names(candidate).some(value => ownNames.includes(value));
   }
 
-  const api = Object.freeze({ matches, symbol, contracts });
+  function uniqueCatalog(source, symbols) {
+    if (!Array.isArray(source) || !(symbols instanceof Set) || symbols.size > 2000) throw new Error("invalid_identity_candidates");
+    const assets = {};
+    const ambiguous = new Set();
+    for (const row of source) {
+      const symbol = String(row?.symbol || "").toUpperCase();
+      const name = String(row?.name || "").trim();
+      if (!symbols.has(symbol) || row.is_active !== true || !/^[A-Z0-9]{1,40}$/.test(symbol)
+        || !name || name.length > 120 || !/^[a-z0-9-]{1,120}$/.test(row.id || "")) continue;
+      if (assets[symbol] && assets[symbol][1] !== row.id) ambiguous.add(symbol);
+      assets[symbol] = [name, row.id];
+    }
+    for (const symbol of ambiguous) delete assets[symbol];
+    return assets;
+  }
+
+  const api = Object.freeze({ matches, symbol, contracts, uniqueCatalog });
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.BlockscopeComparisonIdentity = api;
 })(globalThis);
