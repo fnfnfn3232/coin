@@ -19,3 +19,18 @@ Tests: `python -m unittest test_upbit_audit.py test_refresh_health.py`; `node --
 `upbitAssetNames` reuses the existing official full-market request before KRW filtering. BTC/USDT-only listings such as SHELL retain their official Korean and English names without inventing KRW prices or supplies. Previously verified names remain searchable for archived assets; refreshed metadata marks delisted names inactive so they do not inflate current listings. Different project names on another exchange are never translated solely on a shared ticker. Audit searches normalize Unicode, case and whitespace and remain local, including clear/reset behavior.
 
 Report controls use calendar audit quarters (for example, the October publication reflects Q3) rather than repeating long publication/cutoff strings. The full reference timestamp stays in the subtitle tooltip and official PDF. Additional quarters fit the same compact selectors; explanatory methodology is folded separately from the data table.
+# Listing Market Filters (2026-11-02)
+
+- The audit view has an independent current-listing market selector: all, KRW,
+  BTC, USDT, other quotes, and unlisted/unknown. It combines with the existing
+  report filters, quarter comparison, search, sorting and pagination.
+- Membership comes from active official `upbitAssetNames.markets` records with
+  an exact native asset symbol. A verified Upbit board pair is the fallback when
+  no official catalog record is available. Inactive historical catalog entries
+  never supply current market memberships.
+- A multi-market asset can be found under each of its actual quote currencies,
+  but appears only once within a result list. Missing market evidence is not
+  inferred from a reference price, conversion currency or report holding.
+- The market selection survives navigation/reload; changing it resets the page
+  but preserves the current search and report comparison. No API polling is added.
+
