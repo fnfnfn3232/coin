@@ -27,6 +27,12 @@ test('domestic fallback is used only without a verified overseas identity and ne
   assert.equal(states(input)[0][2], 'delayed');
 });
 
+test('whole-list monitor recognizes reviewed MetaDAO aliases without matching Metadium', () => {
+  const input = audit([local('META2', 'upbit', { row: row('META2', 'MetaDAO') }), local('META', 'bithumb', { row: row('META', 'Metadium') })],
+    [source('coinbase', [row('META', 'Metadao')])]);
+  assert.deepEqual(states(input), [['upbit', 'META2', 'ok', 'coinbase'], ['bithumb', 'META', 'identity', '']]);
+});
+
 test('freshness, native quotes, FX, identity expiry and ambiguous candidates fail closed', () => {
   assert.equal(states(audit([local('A', 'upbit', { priceAvailable: false })], [source('coinbase', [row('A')])]))[0][2], 'delayed');
   assert.equal(states(audit([local('A')], [source('coinbase', [row('A')])], { fxUsable: false }))[0][2], 'fx');

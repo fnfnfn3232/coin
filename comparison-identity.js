@@ -17,6 +17,7 @@
     TFUEL: ["tfuel", "thetafuel"], RON: ["ronin", "roninnetwork"], WAXP: ["waxp", "wax"],
     US: ["talus", "talusnetwork"], BILL: ["billions", "billionsnetwork"], SIX: ["six", "sixnetwork"],
     HUNT: ["hunt", "hunttown"],
+    PCI: ["paycoin", "payprotocolpaycoin"], DEBIT: ["teller", "tellerfinance"],
   };
   const chains = { ETH: "ethereum", ERC20: "ethereum", BSC: "bsc", BEP20: "bsc", ARBEVM: "arbitrum",
     ARBITRUM: "arbitrum", BASEEVM: "base", BASE: "base", SOL: "solana", SOLANA: "solana" };
@@ -29,6 +30,8 @@
     // https://www.gate.com/announcements/article/50627
     if (nameKey(row?.englishName) === "superform"
       && ((board === "upbit" && value === "UP2") || (board === "gateio" && value === "SUPERFORM"))) return "UP";
+    // Domestic META2 is MetaDAO; domestic META is the unrelated Metadium.
+    if (["upbit", "bithumb"].includes(board) && value === "META2" && nameKey(row?.englishName) === "metadao") return "META";
     // Binance's BEAMX is the gaming BEAM token, not the privacy coin BEAM.
     // https://www.binance.com/en/support/announcement/detail/c8705b752c7c47fc814a373a0f1856ee
     return value === "BEAMX" && ["binance", "gateio"].includes(board) && nameKey(row.englishName) === "beam" ? "BEAM" : value;

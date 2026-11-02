@@ -664,14 +664,14 @@ function normalizeGateComparisonCatalog(source, prices, contractSymbols = new Se
   return assets;
 }
 
-function normalizeUniqueCoinCatalog(source, prices, exchange) {
+function normalizeUniqueCoinCatalog(source, prices, exchange, candidateSymbols = null) {
   if (!Array.isArray(source)) throw new Error("invalid_coin_catalog");
   const assets = {};
   const ambiguous = new Set();
   for (const row of source) {
     const symbol = String(row.symbol || "").toUpperCase();
     const name = String(row.name || "").trim();
-    if (row.is_active !== true || !toPositiveNumber(prices?.[symbol]) || !/^[A-Z0-9]{1,40}$/.test(symbol)
+    if (row.is_active !== true || !(candidateSymbols ? candidateSymbols.has(symbol) : toPositiveNumber(prices?.[symbol])) || !/^[A-Z0-9]{1,40}$/.test(symbol)
       || !name || name.length > 120 || !/^[a-z0-9-]{1,120}$/.test(row.id || "")) continue;
     if (assets[symbol] && assets[symbol][1] !== row.id) ambiguous.add(symbol);
     assets[symbol] = [name, row.id];
@@ -3424,7 +3424,8 @@ export class BoardStore {
     if (stored && now - stored.checkedAt < (stored.error ? 300000 : 6 * 3600000)) {
       return now - stored.fetchedAt <= 86400000 ? stored : { ...stored, assets: {} };
     }
-    if (!Object.keys(prices).length) return { assets: {}, fetchedAt: 0, error: "spot_quotes_unavailable" };
+    const metadataOnly = !Object.keys(prices).length;
+    if (metadataOnly && !["bybit", "bitget", "okx"].includes(exchange)) return { assets: {}, fetchedAt: 0, error: "spot_quotes_unavailable" };
     if (!this.comparisonCatalogPromises.has(exchange)) {
       const pending = (async () => {
         let payload;
@@ -3445,6 +3446,7 @@ export class BoardStore {
             sourceName = "Gate official currencies";
           } else {
             try {
+              if (metadataOnly) throw new Error("quote_transport_unavailable");
               assets = normalizeComparisonCatalog(await fetchJsonWithTimeout(`https://api.coinpaprika.com/v1/exchanges/${ADDITIONAL_SPOT_SOURCES[exchange].catalog}/markets?quotes=USD`, 2500));
               sourceName = "CoinPaprika";
             } catch (_error) {
@@ -3459,14 +3461,20 @@ export class BoardStore {
                 if (exchange !== "okx" || !toPositiveNumber(prices.XDP)) throw error;
                 coins = [];
               }
-              assets = normalizeUniqueCoinCatalog(coins, prices, exchange);
+              // Identity candidates are not listing/price evidence. A browser must
+              // independently receive a current official spot quote before using them.
+              const market = metadataOnly ? await this.readMarketData() : null;
+              const candidates = metadataOnly ? new Set([...(market?.boards?.upbit || []), ...(market?.boards?.bithumb || [])]
+                .slice(0, 2000).map(row => String(row.symbol || "").toUpperCase())) : null;
+              assets = normalizeUniqueCoinCatalog(coins, prices, exchange, candidates);
               sourceName = "CoinPaprika unique assets / official listing";
             }
           }
-          payload = { assets, source: sourceName, fetchedAt: now, checkedAt: now, error: "" };
+          payload = { assets, source: sourceName, fetchedAt: now, checkedAt: now, error: "", candidatesOnly: metadataOnly };
         } catch (error) {
           payload = { assets: now - Number(stored?.fetchedAt || 0) <= 86400000 ? stored?.assets || {} : {},
-            fetchedAt: stored?.fetchedAt || 0, checkedAt: now, error: "identity_catalog_refresh_failed", errorDetail: String(error?.message || "unknown_error").slice(0, 160) };
+            fetchedAt: stored?.fetchedAt || 0, checkedAt: now, candidatesOnly: Boolean(stored?.candidatesOnly),
+            error: "identity_catalog_refresh_failed", errorDetail: String(error?.message || "unknown_error").slice(0, 160) };
         }
         await this.state.storage.put(key, payload);
         return payload;
@@ -3487,7 +3495,8 @@ export class BoardStore {
       if (this.comparisonCoinsExpiresAt && now > this.comparisonCoinsExpiresAt) this.comparisonCoinsPromise = null;
       const catalog = additional || exchange === "coinbase" ? await this.readComparisonCatalog(exchange, value?.prices || {}) : null;
       return jsonResponse({ ...value, ...(catalog ? { assets: catalog.assets, catalogAt: catalog.fetchedAt,
-        identitySource: catalog.source || "", identityError: catalog.error, identityErrorDetail: catalog.errorDetail || "" } : {}) }, Object.keys(value?.prices || {}).length ? 200 : 503, this.env);
+        identityCandidatesOnly: Boolean(catalog.candidatesOnly), identitySource: catalog.source || "",
+        identityError: catalog.error, identityErrorDetail: catalog.errorDetail || "" } : {}) }, Object.keys(value?.prices || {}).length ? 200 : 503, this.env);
     };
     if (stored && now - stored.checkedAt < (stored.error ? 15000 : 25000)) return respond(stored);
     let pending = this.comparisonQuotePromises.get(exchange);
@@ -3585,7 +3594,8 @@ export class BoardStore {
           payload = await (await this.handleComparisonQuotesRequest(new URL(`https://board-store/api/price-difference-quotes?exchange=${board}`))).json();
         }
         const rows = Object.hasOwn(ADDITIONAL_SPOT_SOURCES, board)
-          ? Object.entries(payload.assets || {}).map(([symbol, asset]) => ({ symbol, englishName: asset[0], paprikaId: asset[1],
+          ? Object.entries(payload.assets || {}).filter(([symbol]) => !payload.identityCandidatesOnly || toPositiveNumber(payload.prices?.[symbol]))
+            .map(([symbol, asset]) => ({ symbol, englishName: asset[0], paprikaId: asset[1],
             comparisonIdentity: { officialName: board === "gateio" && asset[1] === `gate-${symbol.toLowerCase()}`, contracts: asset[2] || [] } }))
           : (market?.boards?.[board] || []).map(row => {
             const item = fields(row);

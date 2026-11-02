@@ -65,6 +65,21 @@ test('Superform comparison aliases are exchange/name scoped and preserve native 
   assert.equal(identity.matches(upbit, foreign, { baseBoard: 'upbit', referenceBoard: 'gateio' }), false);
 });
 
+test('MetaDAO domestic suffix resolves only to MetaDAO, never Metadium or other suffixes', () => {
+  for (const baseBoard of ['upbit', 'bithumb']) {
+    const row = domestic('META2', 'MetaDAO');
+    assert.equal(identity.matches(row, gate('META', 'Metadao'), { baseBoard, referenceBoard: 'coinbase' }), true);
+    assert.equal(identity.matches(row, domestic('META', 'Metadium'), { baseBoard, referenceBoard: 'bithumb' }), false);
+    assert.equal(identity.symbol(domestic('META2', 'Metadium'), baseBoard), 'META2');
+    assert.equal(identity.symbol(domestic('META3', 'MetaDAO'), baseBoard), 'META3');
+  }
+  assert.equal(identity.symbol(domestic('META2', 'MetaDAO'), 'gateio'), 'META2');
+  for (const [symbol, local, foreign] of [['PCI', 'Paycoin', 'PayProtocol Paycoin'], ['DEBIT', 'Teller Finance', 'Teller']]) {
+    assert.equal(identity.matches(domestic(symbol, local), gate(symbol, foreign), { baseBoard: 'bithumb', referenceBoard: 'bitget' }), true);
+    assert.equal(identity.matches(domestic(symbol, local), gate(symbol, 'Unrelated Project'), { baseBoard: 'bithumb', referenceBoard: 'bitget' }), false);
+  }
+});
+
 test('whole-list audit spelling differences resolve without admitting unrelated project names', () => {
   const pairs = [
     ['ADA', 'Ada', 'Cardano'], ['XLM', 'Lumen', 'Stellar Lumens'], ['SKY', 'Sky Protocol', 'Sky'],

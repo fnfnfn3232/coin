@@ -79,9 +79,25 @@ async function main() {
   });
   await context.route('https://**/*', async route => {
     const url = new URL(route.request().url());
-    if (url.hostname === 'data-api.binance.vision' || url.hostname === 'www.okx.com') {
-      directCalls++;
+    if (['data-api.binance.vision', 'www.okx.com', 'api.bybit.com', 'api.bitget.com'].includes(url.hostname)) {
       assert.equal(route.request().headers().authorization, undefined);
+      assert.equal(route.request().headers().cookie, undefined);
+      if (url.pathname.endsWith('/instruments-info') || url.pathname.endsWith('/public/symbols')) {
+        const bybit = url.hostname === 'api.bybit.com';
+        const list = [{ symbol: `${bybit ? 'BYBITONLY' : 'BITGETONLY'}USDT`, baseCoin: bybit ? 'BYBITONLY' : 'BITGETONLY',
+          quoteCoin: 'USDT', status: bybit ? 'Trading' : 'online' },
+          { symbol: 'CLASHUSDT', baseCoin: 'CLASH', quoteCoin: 'USDT', status: bybit ? 'Settled' : 'halt' }];
+        return route.fulfill({ json: bybit ? { retCode: 0, result: { category: 'spot', list } } : { code: '00000', data: list } });
+      }
+      directCalls++;
+      if (url.hostname === 'api.bybit.com') return route.fulfill({ json: { retCode: 0, result: { category: 'spot', list: [
+        { symbol: 'BYBITONLYUSDT', lastPrice: '22' }, { symbol: 'BYBITONLYUSDC', lastPrice: '999' },
+        { symbol: 'CLASHUSDT', lastPrice: '999' },
+      ] } } });
+      if (url.hostname === 'api.bitget.com') return route.fulfill({ json: { code: '00000', data: [
+        { symbol: 'BITGETONLYUSDT', lastPr: '32' }, { symbol: 'BITGETONLYUSDT_UMCBL', lastPr: '999' },
+        { symbol: 'CLASHUSDT', lastPr: '999' },
+      ] } });
       if (url.hostname === 'www.okx.com') return route.fulfill({ json: { code: '0', data: [
         { instType: 'SPOT', instId: 'OKXONLY-USDT', last: '42' }, { instType: 'SWAP', instId: 'OKXONLY-USDT-SWAP', last: '999' },
       ] } });
@@ -124,8 +140,11 @@ async function main() {
     } else if (url.pathname === '/api/price-difference-quotes') {
       const exchange = url.searchParams.get('exchange');
       bulkCalls.push(exchange);
-      if (exchange === bootstrapFailureBoard && bootstrapFailure) return route.fulfill({ status: bootstrapFailure,
-        json: { error: 'quote_refresh_failed', assets: exchange === 'okx' ? { OKXONLY: ['Okx Only Asset', 'okxonly-asset'] } : {}, catalogAt: Date.now() } });
+      if (exchange === bootstrapFailureBoard && bootstrapFailure) {
+        const fixture = fallbackFixtures[exchange];
+        return route.fulfill({ status: bootstrapFailure, json: { error: 'quote_refresh_failed',
+          assets: fixture ? { [fixture.symbol]: [fixture.name, `${fixture.symbol.toLowerCase()}-asset`] } : {}, catalogAt: Date.now() } });
+      }
       result = { exchange, prices: bulkEnabled ? Object.fromEntries((snapshot.boards[exchange] || []).map(row => [row.symbol, ['upbit', 'bithumb'].includes(exchange) ? row.priceKrw : row.priceUsd])) : {}, observedAt: Date.now() };
       if (exchange === 'coinbase' && bulkEnabled) {
         result.assets = Object.fromEntries(reported.filter(item => item.foreignBoard === 'coinbase').map(item => [item.symbol, [item.foreign, `coinbase-${item.symbol.toLowerCase()}`]]));
@@ -478,6 +497,41 @@ async function main() {
     assert.equal(directCalls - beforeOkx, 1);
     assert.equal(await page.evaluate(() => priceDifferenceQuoteCache.okx.OKXONLY.price), 42);
     console.log('PASS: OKX public fallback retains verified metadata and excludes perpetual contracts');
+
+    for (const [board, symbol, expected] of [['bybit', 'BYBITONLY', 22], ['bitget', 'BITGETONLY', 32]]) {
+      bootstrapFailureBoard = board;
+      for (const status of [503, 401, 403]) {
+        bootstrapFailure = status;
+        const before = directCalls;
+        await page.evaluate(() => { clearPriceDifferenceCache(); requestPriceDifferenceQuotes(); });
+        await page.waitForFunction(board => priceDifferenceQuoteRequests.get(board)?.pending === false, board);
+        assert.equal(directCalls - before, status === 503 ? 1 : 0);
+        if (status === 503) {
+          assert.equal(await page.evaluate(({ board, symbol }) => priceDifferenceQuoteCache[board][symbol].price, { board, symbol }), expected);
+          assert.equal(await page.evaluate(board => priceDifferencePublicListings.get(board).symbols.has('CLASHUSDT'), board), false);
+          assert.equal(await page.evaluate(board => Boolean(priceDifferenceQuoteCache[board]?.CLASH), board), false);
+          await prices();
+          await page.evaluate(async symbol => {
+            data.boards.upbit.find(row => row.symbol === symbol).comparisonPriceAt = Date.now();
+            await requestPriceDifferenceFx();
+          }, symbol);
+          assert.equal(await page.evaluate(symbol => getPriceDifference(data.boards.upbit.find(row => row.symbol === symbol)).referenceBoard, symbol), board);
+        }
+      }
+    }
+    assert.deepEqual(await page.evaluate(async () => {
+      const originalFetch = window.fetch;
+      try {
+        window.fetch = async () => ({ ok: true, json: async () => ({ retCode: 0, result: { category: 'linear', list: [{ symbol: 'BTCUSDT', lastPrice: '999' }] } }) });
+        let wrongCategory = false;
+        try { await fetchPublicComparisonQuotes('bybit'); } catch (_) { wrongCategory = true; }
+        window.fetch = async () => ({ ok: true, json: async () => ({ code: '40000', data: [{ symbol: 'BTCUSDT', lastPr: '999' }] }) });
+        let failedEnvelope = false;
+        try { await fetchPublicComparisonQuotes('bitget'); } catch (_) { failedEnvelope = true; }
+        return { wrongCategory, failedEnvelope };
+      } finally { window.fetch = originalFetch; }
+    }), { wrongCategory: true, failedEnvelope: true });
+    console.log('PASS: blocked Bybit/Bitget quote transports recover through official public spot feeds with independent identities; no credentials, unknown assets, derivatives or auth bypass');
 
     snapshotBootstrap = true;
     fxSourceName = 'naver_hana';
