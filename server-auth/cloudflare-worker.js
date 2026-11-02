@@ -548,13 +548,20 @@ function normalizeCoinbaseFutureInstruments(payload) {
 
 const COMPARISON_FX_KEY = "price-difference-fx-v2";
 const COMPARISON_FX_URL = "https://currency-converter.live/api/v1/convert?from=USD&to=KRW&amount=1";
+const COMPARISON_FX_NAVER_URL = "https://api.stock.naver.com/marketindex/exchange/FX_USDKRW";
+const COMPARISON_FX_YAHOO_URL = "https://query1.finance.yahoo.com/v8/finance/chart/KRW=X?interval=1m&range=1d";
+const COMPARISON_FX_WARM_CRON = "* * * * *";
 
 function comparisonFxUsable(value, now = Date.now()) {
   const age = now - Number(value?.asOf);
-  if (value?.frequency !== "intraday" || value.source !== "currency-converter.live" || !Number.isFinite(value.rate) || value.rate < 100 || value.rate > 10000
+  if (value?.frequency !== "intraday" || !["currency-converter.live", "naver_hana", "yahoo_finance"].includes(value.source) || !Number.isFinite(value.rate) || value.rate < 100 || value.rate > 10000
     || !Number.isFinite(value.asOf) || age < -5000) return false;
+  if (age <= 300000) return true;
+  const statusAge = now - Number(value.verifiedAt ?? value.checkedAt);
+  if (value.marketStatus !== "closed" || !Number.isFinite(statusAge) || statusAge < -5000 || statusAge > 300000) return false;
+  if (value.source === "naver_hana") return age <= 72 * 3600000;
   const day = new Date(now).getUTCDay();
-  return age <= 300000 || (value.marketStatus === "closed" && (day === 0 || day === 6) && age <= 72 * 3600000);
+  return (day === 0 || day === 6) && age <= 72 * 3600000;
 }
 
 function normalizeComparisonFx(source, now = Date.now()) {
@@ -564,12 +571,37 @@ function normalizeComparisonFx(source, now = Date.now()) {
   const day = new Date(now).getUTCDay();
   const weekend = day === 0 || day === 6;
   const payload = { rate: row?.rate, asOf, date: Number.isFinite(asOf) ? new Date(asOf).toISOString().slice(0, 10) : "",
-    checkedAt: now, source: "currency-converter.live", frequency: "intraday", stale: false,
+    checkedAt: now, verifiedAt: now, source: "currency-converter.live", frequency: "intraday", stale: false,
     marketStatus: now - asOf > 300000 && weekend ? "closed" : "open" };
   if (source?.success !== true || source.source !== "currency-converter.live" || row?.from !== "USD" || row?.to !== "KRW"
     || row?.quote?.legacy === true || !Number.isFinite(sourceDate) || Math.abs(sourceDate - asOf) > 1000
     || !["live", "delayed", "stale", "closed", "market_closed"].includes(row?.quote?.status)
     || (!weekend && row?.quote?.status !== "live") || !comparisonFxUsable(payload, now)) throw new Error("invalid_comparison_fx");
+  return payload;
+}
+
+function normalizeNaverComparisonFx(source, now = Date.now()) {
+  const row = source?.exchangeInfo;
+  const rate = typeof row?.closePrice === "string" && /^\d[\d,]*(?:\.\d+)?$/.test(row.closePrice)
+    ? Number(row.closePrice.replace(/,/g, "")) : NaN;
+  const asOf = typeof row?.localTradedAt === "string" && /(?:Z|[+-]\d{2}:\d{2})$/.test(row.localTradedAt)
+    ? Date.parse(row.localTradedAt) : NaN;
+  const payload = { rate, asOf, checkedAt: now, verifiedAt: now, source: "naver_hana", basis: "bank_notice", frequency: "intraday",
+    provider: "하나은행", stale: false, marketStatus: ["CLOSE", "CLOSED"].includes(row?.marketStatus) ? "closed" : "open" };
+  if (row?.reutersCode !== "FX_USDKRW" || row.symbolCode !== "USD" || row.unit !== "KRW" || row.stockExchangeType?.code !== "HANA"
+    || row.priceDataType !== "NOTICE_ROUND" || !["OPEN", "CLOSE", "CLOSED"].includes(row.marketStatus)
+    || !comparisonFxUsable(payload, now)) throw new Error("invalid_naver_comparison_fx");
+  return payload;
+}
+
+function normalizeYahooComparisonFx(source, now = Date.now()) {
+  const row = source?.chart?.result?.[0]?.meta;
+  const asOf = typeof row?.regularMarketTime === "number" ? row.regularMarketTime * 1000 : NaN;
+  const day = new Date(now).getUTCDay();
+  const payload = { rate: row?.regularMarketPrice, asOf, checkedAt: now, verifiedAt: now, source: "yahoo_finance", frequency: "intraday",
+    stale: false, marketStatus: now - asOf > 300000 && (day === 0 || day === 6) ? "closed" : "open" };
+  if (source?.chart?.error || row?.symbol !== "KRW=X" || row.currency !== "KRW" || row.instrumentType !== "CURRENCY"
+    || ![row.longName, row.shortName].includes("USD/KRW") || !comparisonFxUsable(payload, now)) throw new Error("invalid_yahoo_comparison_fx");
   return payload;
 }
 
@@ -3336,14 +3368,22 @@ export class BoardStore {
   async readComparisonFx() {
     const now = Date.now();
     const stored = await this.state.storage.get(COMPARISON_FX_KEY);
-    if (stored && now - stored.checkedAt < (stored.refreshError ? 30000 : 60000)) return { ...stored, stale: !comparisonFxUsable(stored, now) };
+    if (stored && now >= stored.checkedAt && now - stored.checkedAt < (stored.refreshError ? 30000 : 60000)) return { ...stored, stale: !comparisonFxUsable(stored, now) };
     if (!this.comparisonFxRefreshPromise) {
       this.comparisonFxRefreshPromise = (async () => {
         let payload;
-        try {
-          payload = normalizeComparisonFx(await fetchJsonWithTimeout(COMPARISON_FX_URL, 6000));
-        } catch (_error) {
+        // These are quote observations, not a USD peg or the domestic USDT price.
+        for (const [url, normalize] of [[COMPARISON_FX_NAVER_URL, normalizeNaverComparisonFx],
+          [COMPARISON_FX_YAHOO_URL, normalizeYahooComparisonFx], [COMPARISON_FX_URL, normalizeComparisonFx]]) {
+          try {
+            const candidate = normalize(await fetchJsonWithTimeout(url, 3000), Date.now());
+            if (candidate.marketStatus === "open") { payload = candidate; break; }
+            if (!payload || candidate.asOf > payload.asOf) payload = candidate;
+          } catch (_error) { /* Invalid or unavailable sources cannot renew a quote clock. */ }
+        }
+        if (!payload) {
           payload = { ...(stored || { rate: null, asOf: 0, date: "", source: "currency-converter.live", frequency: "intraday" }),
+            verifiedAt: stored?.verifiedAt ?? stored?.checkedAt ?? 0,
             checkedAt: Date.now(), stale: !comparisonFxUsable(stored), refreshError: true };
         }
         await this.state.storage.put(COMPARISON_FX_KEY, payload);
@@ -3360,6 +3400,9 @@ export class BoardStore {
   async readComparisonBootstrap() {
     const now = Date.now();
     const fx = await this.state.storage.get(COMPARISON_FX_KEY);
+    if ((!fx || now - fx.checkedAt >= (fx.refreshError ? 30000 : 60000)) && typeof this.state.waitUntil === "function") {
+      this.state.waitUntil(this.readComparisonFx());
+    }
     const quotes = {};
     const direct = [];
     await Promise.all(["upbit", "bithumb", "binance", "coinbase", ...Object.keys(ADDITIONAL_SPOT_SOURCES)].map(async exchange => {
@@ -3507,12 +3550,12 @@ export class BoardStore {
           && component.lastSuccessAt * 1000 <= Date.now() + 5000
           && Date.now() - component.lastSuccessAt * 1000 <= (key === "apywa" ? 48 * 3600000 : 30 * 60000));
       }
-      return jsonResponse({ implementation: 6, exchange, sourceChecks }, 200, this.env);
+      return jsonResponse({ implementation: 7, exchange, sourceChecks }, 200, this.env);
     }
     if (exchange === "coinbase_futures") {
       const response = await this.handleCoinbaseFuturesRequest();
       const value = await response.json();
-      return jsonResponse({ implementation: 6, exchange, quoteCount: value.rows.filter(row => row.priceUsd > 0).length,
+      return jsonResponse({ implementation: 7, exchange, quoteCount: value.rows.filter(row => row.priceUsd > 0).length,
         error: value.error || (value.stale ? "coinbase_futures_stale" : ""), observedAt: value.observedAt,
         targets: value.rows.filter(row => ["BTC", "ETH", "SOL"].includes(row.symbol)).map(row => ({ contract: row.contractId, last: row.priceUsd, mark: row.markPrice, at: row.futuresQuoteAt })) }, 200, this.env);
     }
@@ -3554,24 +3597,24 @@ export class BoardStore {
           catalogAt: payload.catalogAt || 0, error: payload.error || payload.identityError || "" };
       }));
       const fx = await this.readComparisonFx();
-      return jsonResponse({ implementation: 6, monitorVersion: 1, exchange, elapsedMs: Date.now() - started,
+      return jsonResponse({ implementation: 7, monitorVersion: 1, exchange, elapsedMs: Date.now() - started,
         fxUsable: comparisonFxUsable(fx) && !fx.stale, local, references }, 200, this.env);
     }
     if (exchange === "fx") {
       const response = await this.handleComparisonFxRequest();
-      return jsonResponse({ implementation: 6, exchange, status: response.status, elapsedMs: Date.now() - started,
+      return jsonResponse({ implementation: 7, exchange, status: response.status, elapsedMs: Date.now() - started,
         ...(await response.json()) }, 200, this.env);
     }
     if (exchange === "bootstrap") {
       const value = await this.readComparisonBootstrap();
-      return jsonResponse({ implementation: 6, exchange, elapsedMs: Date.now() - started, fx: value.fx, direct: value.direct,
+      return jsonResponse({ implementation: 7, exchange, elapsedMs: Date.now() - started, fx: value.fx, direct: value.direct,
         counts: Object.fromEntries(Object.entries(value.quotes).map(([board, quote]) => [board, Object.keys(quote.prices || {}).length])) }, 200, this.env);
     }
     const response = await this.handleComparisonQuotesRequest(new URL(`https://board-store/api/price-difference-quotes?exchange=${encodeURIComponent(exchange)}`));
     const payload = await response.json();
     const market = await this.readMarketData();
     const symbols = ["SOON", "BEAM", "BEAMX", "FLUID", "PIEVERSE", "CC", "WAVES", "B3"];
-    return jsonResponse({ implementation: 6, exchange, status: response.status, elapsedMs: Date.now() - started,
+    return jsonResponse({ implementation: 7, exchange, status: response.status, elapsedMs: Date.now() - started,
       quoteCount: Object.keys(payload.prices || {}).length, identityCount: Object.keys(payload.assets || {}).length,
       error: payload.error || "", errorDetail: payload.errorDetail || "", identityError: payload.identityError || "",
       identityErrorDetail: payload.identityErrorDetail || "", observedAt: payload.observedAt || 0,
@@ -4934,6 +4977,11 @@ export class BoardStore {
     const url = new URL(request.url);
     const postId = decodeURIComponent(url.pathname.replace(/^\/api\/board\/posts\/?/, ""));
 
+    if (request.method === "POST" && url.hostname === "board-store" && url.pathname === "/internal/comparison-fx-warm") {
+      const fx = await this.readComparisonFx();
+      return jsonResponse({ ok: comparisonFxUsable(fx) && !fx.stale, source: fx.source, asOf: fx.asOf }, 200, this.env);
+    }
+
     if (
       request.method === "POST"
       && url.pathname === "/internal/backup"
@@ -5628,6 +5676,12 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
+    if (event?.cron === COMPARISON_FX_WARM_CRON) {
+      if (!env.BOARD_STORE) return;
+      ctx.waitUntil(env.BOARD_STORE.get(env.BOARD_STORE.idFromName("free-board")).fetch(new Request(
+        "https://board-store/internal/comparison-fx-warm", { method: "POST" })));
+      return;
+    }
     ctx.waitUntil(runScheduledBackup(env, event?.scheduledTime || Date.now()));
   },
 };

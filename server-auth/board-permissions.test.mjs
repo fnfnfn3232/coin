@@ -18,10 +18,12 @@ const {
   normalizeGateComparisonCatalog,
   normalizeUniqueCoinCatalog,
   normalizeComparisonFx,
+  normalizeNaverComparisonFx,
+  normalizeYahooComparisonFx,
   comparisonFxUsable,
   verifyMemberPassword,
 } = await import(
-  `data:text/javascript;base64,${Buffer.from(`${source}\nexport { createMemberPasswordCredentials, createSessionToken, deriveMemberPasswordHash, MEMBER_PASSWORD_ITERATIONS, normalizeMemberRecord, normalizeL2Fees, normalizeL1Fees, normalizeAdditionalSpotQuotes, normalizeComparisonCatalog, normalizeGateComparisonCatalog, normalizeUniqueCoinCatalog, normalizeComparisonFx, comparisonFxUsable, verifyMemberPassword };\n//# sourceURL=cloudflare-worker-under-test.mjs`).toString("base64")}`
+  `data:text/javascript;base64,${Buffer.from(`${source}\nexport { createMemberPasswordCredentials, createSessionToken, deriveMemberPasswordHash, MEMBER_PASSWORD_ITERATIONS, normalizeMemberRecord, normalizeL2Fees, normalizeL1Fees, normalizeAdditionalSpotQuotes, normalizeComparisonCatalog, normalizeGateComparisonCatalog, normalizeUniqueCoinCatalog, normalizeComparisonFx, normalizeNaverComparisonFx, normalizeYahooComparisonFx, comparisonFxUsable, verifyMemberPassword };\n//# sourceURL=cloudflare-worker-under-test.mjs`).toString("base64")}`
 );
 
 class MemoryStorage {
@@ -479,6 +481,82 @@ test("new uploads do not await stale-file cleanup and concurrent starts share cl
 
 const fxSource = (rate = 1333.56, at = Date.now()) => ({ success: true, source: "currency-converter.live",
   data: { from: "USD", to: "KRW", rate, quote: { ts: at, as_of: new Date(at).toISOString(), status: "live" } } });
+const naverFxSource = (at = Date.now(), status = "OPEN") => ({ exchangeInfo: { reutersCode: "FX_USDKRW", symbolCode: "USD", unit: "KRW",
+  stockExchangeType: { code: "HANA" }, closePrice: "1,333.20", localTradedAt: new Date(at).toISOString(), marketStatus: status, priceDataType: "NOTICE_ROUND" } });
+const yahooFxSource = (at = Date.now()) => ({ chart: { error: null, result: [{ meta: { symbol: "KRW=X", currency: "KRW", instrumentType: "CURRENCY",
+  longName: "USD/KRW", regularMarketPrice: 1333.38, regularMarketTime: Math.floor(at / 1000) } }] } });
+
+test("bank notices and backup FX validate the pair, source, quote time and closure status", () => {
+  const now = Date.parse('2026-11-02T00:05:00Z');
+  const bank = normalizeNaverComparisonFx(naverFxSource(now - 60000), now);
+  assert.equal(bank.rate, 1333.20); assert.equal(bank.source, 'naver_hana');
+  assert.equal(bank.basis, 'bank_notice'); assert.equal(bank.asOf, now - 60000);
+  const closed = normalizeNaverComparisonFx(naverFxSource(now - 48 * 3600000, 'CLOSE'), now);
+  assert.equal(comparisonFxUsable(closed, now), true);
+  assert.equal(comparisonFxUsable({ ...closed, checkedAt: now + 600000 }, now + 600000), false, 'a failed fetch cannot renew the market-status verification');
+  for (const fields of [{ unit: 'USD' }, { symbolCode: 'JPY' }, { reutersCode: 'FX_USDJPY' }, { closePrice: '0' },
+    { closePrice: true }, { localTradedAt: new Date(now).toISOString().replace('Z', '') },
+    { localTradedAt: new Date(now + 60000).toISOString() }, { marketStatus: 'UNKNOWN' },
+    { localTradedAt: new Date(now - 600000).toISOString() }]) {
+    const bad = naverFxSource(now); Object.assign(bad.exchangeInfo, fields);
+    assert.throws(() => normalizeNaverComparisonFx(bad, now));
+  }
+  assert.equal(normalizeYahooComparisonFx(yahooFxSource(now), now).source, 'yahoo_finance');
+  for (const fields of [{ symbol: 'JPY=X' }, { currency: 'USD' }, { regularMarketPrice: 0 },
+    { regularMarketTime: (now + 60000) / 1000 }, { regularMarketTime: (now - 600000) / 1000 }]) {
+    const bad = yahooFxSource(now); Object.assign(bad.chart.result[0].meta, fields);
+    assert.throws(() => normalizeYahooComparisonFx(bad, now));
+  }
+});
+
+test("a delayed primary FX observation switches to a fresh backup without loosening freshness", async () => {
+  const { request } = await fixture(); const previous = globalThis.fetch; const calls = [];
+  globalThis.fetch = async url => {
+    calls.push(String(url));
+    if (String(url).includes('naver.com')) return Response.json(naverFxSource(Date.now() - 7200000));
+    if (String(url).includes('yahoo.com')) return Response.json(yahooFxSource());
+    throw new Error('unexpected third provider');
+  };
+  try {
+    for (const response of await Promise.all([request('/api/price-difference-fx'), request('/api/price-difference-fx')])) {
+      assert.equal(response.status, 200); const payload = await response.json();
+      assert.equal(payload.source, 'yahoo_finance'); assert.equal(payload.stale, false);
+      assert.ok(Date.now() - payload.asOf < 5000);
+    }
+    assert.equal(calls.length, 2);
+  } finally { globalThis.fetch = previous; }
+});
+
+test("the minute cron only warms shared FX; it cannot start a daily backup or open an anonymous route", async () => {
+  const f = await fixture(), tasks = [], previous = globalThis.fetch; let calls = 0;
+  globalThis.fetch = async () => { calls++; return Response.json(naverFxSource()); };
+  Object.defineProperty(f.env, 'BACKUP_BUCKET', { get() { throw new Error('minute cron must not touch backups'); } });
+  try {
+    assert.equal((await f.request('/internal/comparison-fx-warm', 'POST', {}, '')).status, 404);
+    await worker.scheduled({ cron: '* * * * *' }, f.env, { waitUntil: task => tasks.push(task) });
+    await Promise.all(tasks);
+    assert.equal((await f.storage.get('price-difference-fx-v2')).source, 'naver_hana');
+    assert.equal(calls, 1);
+    assert.equal((await f.request('/api/price-difference-fx')).status, 200);
+    assert.equal(calls, 1, 'visitors reuse the prewarmed quote');
+  } finally { globalThis.fetch = previous; }
+});
+
+test("snapshot FX warming is nonblocking and reuses the shared refresh", async () => {
+  const f = await fixture(), previous = globalThis.fetch, tasks = []; let calls = 0, release;
+  f.store.readMarketData = async () => ({ generatedAt: 123, boards: {} });
+  f.store.state.waitUntil = task => tasks.push(task);
+  const gate = new Promise(resolve => { release = resolve; });
+  globalThis.fetch = async () => { calls++; await gate; return Response.json(naverFxSource()); };
+  try {
+    const old = normalizeNaverComparisonFx(naverFxSource()); old.checkedAt = Date.now() - 70000;
+    await f.storage.put('price-difference-fx-v2', old);
+    const response = await f.request('/api/market-data');
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).comparisonBootstrap.fx.asOf, old.asOf);
+  } finally { release(); await Promise.all(tasks); globalThis.fetch = previous; }
+  assert.equal(calls, 1);
+});
 
 test("comparison FX requires authentication, shares refreshes and preserves intraday source timestamps", async () => {
   const { request } = await fixture();
@@ -486,8 +564,8 @@ test("comparison FX requires authentication, shares refreshes and preserves intr
   const originalFetch = globalThis.fetch;
   let calls = 0;
   globalThis.fetch = async (url) => {
-    assert.equal(String(url), "https://currency-converter.live/api/v1/convert?from=USD&to=KRW&amount=1");
     calls += 1;
+    if (!String(url).startsWith("https://currency-converter.live/")) throw new Error("provider_unavailable");
     return Response.json(fxSource());
   };
   try {
@@ -501,7 +579,7 @@ test("comparison FX requires authentication, shares refreshes and preserves intr
       assert.equal(value.stale, false);
     }
     assert.equal((await request("/api/price-difference-fx")).status, 200);
-    assert.equal(calls, 1);
+    assert.equal(calls, 3);
   } finally { globalThis.fetch = originalFetch; }
 });
 
@@ -566,8 +644,9 @@ test("usable FX returns immediately during one background refresh and a failure 
       assert.equal(payload.asOf, old.asOf);
       assert.equal(payload.revalidating, true);
     }
-    assert.equal(calls, 1);
+    assert.equal(calls, 1, 'one primary request is still in flight');
   } finally { release(); await Promise.all(tasks); globalThis.fetch = originalFetch; }
+  assert.equal(calls, 3, 'each of the three sources is tried once after the gate is released');
   const preserved = await storage.get("price-difference-fx-v2");
   assert.equal(preserved.asOf, old.asOf);
   assert.equal(preserved.refreshError, true);
@@ -649,12 +728,12 @@ test("invalid or failed comparison FX is never replaced with domestic USDT or fa
   try {
     assert.equal((await request("/api/price-difference-fx")).status, 503);
     assert.equal((await request("/api/price-difference-fx")).status, 503);
-    assert.equal(calls, 1);
+    assert.equal(calls, 3);
     await storage.put("price-difference-fx-v2", { rate: 1300, asOf: Date.now() - 600000, checkedAt: 0, frequency: "intraday", source: "currency-converter.live" });
     const payload = await (await request("/api/price-difference-fx")).json();
     assert.equal(payload.rate, 1300);
     assert.equal(payload.stale, true);
-    assert.equal(calls, 2);
+    assert.equal(calls, 6);
   } finally { globalThis.fetch = originalFetch; }
 });
 

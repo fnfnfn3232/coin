@@ -47,7 +47,7 @@ jobs:
           MEMBER_REGISTRATION_ENABLED = "true"
 
           [triggers]
-          crons = ["17 18 * * *"]
+          crons = ["17 18 * * *", "* * * * *"]
 
           [[durable_objects.bindings]]
           name = "BOARD_STORE"
