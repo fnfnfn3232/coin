@@ -9,6 +9,7 @@ on:
       - "app-update.js"
       - "security-policy.cjs"
       - "test_security_ui.cjs"
+      - "test_market_chart.cjs"
       - "audit-report.js"
       - "test_audit_report.cjs"
       - "test_audit_ui.cjs"
@@ -32,6 +33,7 @@ on:
       - "app-update.js"
       - "security-policy.cjs"
       - "test_security_ui.cjs"
+      - "test_market_chart.cjs"
       - "audit-report.js"
       - "test_audit_report.cjs"
       - "test_audit_ui.cjs"
@@ -85,3 +87,4 @@ jobs:
           node test_content_cache.cjs
           node test_audit_ui.cjs
           node test_security_ui.cjs
+          node test_market_chart.cjs
