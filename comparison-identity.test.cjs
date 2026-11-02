@@ -45,6 +45,26 @@ test('domestic duplicate listings accept official shared Korean names and reject
   assert.equal(identity.matches(domestic('HUNT', 'HUNT'), domestic('HUNT', 'Hunt Town'), { baseBoard: 'upbit', referenceBoard: 'bithumb' }), true);
 });
 
+test('Superform comparison aliases are exchange/name scoped and preserve native products', () => {
+  const upbit = { ...domestic('UP2', 'Superform'), pair: 'UP2/KRW' };
+  const bithumb = { ...domestic('UP', 'Superform'), pair: 'UP/KRW' };
+  const foreign = { ...gate('SUPERFORM', 'Superform'), pair: 'SUPERFORM/USDT' };
+  const before = JSON.stringify([upbit, bithumb, foreign]);
+  assert.equal(identity.matches(upbit, foreign, { baseBoard: 'upbit', referenceBoard: 'gateio' }), true);
+  assert.equal(identity.matches(bithumb, foreign, context), true);
+  assert.equal(identity.matches(upbit, bithumb, { baseBoard: 'upbit', referenceBoard: 'bithumb' }), true);
+  assert.equal(identity.matches(bithumb, upbit, { baseBoard: 'bithumb', referenceBoard: 'upbit' }), true);
+  assert.equal(identity.matches(upbit, gate('UP', 'Unrelated Project'), { baseBoard: 'upbit', referenceBoard: 'gateio' }), false);
+  assert.equal(identity.symbol({ ...upbit, englishName: 'Other Project' }, 'upbit'), 'UP2');
+  assert.equal(identity.symbol(upbit, 'binance'), 'UP2');
+  assert.equal(identity.symbol(foreign, 'bybit'), 'SUPERFORM');
+  assert.equal(identity.symbol(domestic('UP3', 'Superform'), 'upbit'), 'UP3');
+  assert.equal(JSON.stringify([upbit, bithumb, foreign]), before);
+  upbit.comparisonIdentity = { contracts: [['BASE', '0x5b2193fdc451c1f847be09ca9d13a4bf60f8c86b']] };
+  foreign.comparisonIdentity.contracts = [['BASEEVM', '0x1111111111111111111111111111111111111111']];
+  assert.equal(identity.matches(upbit, foreign, { baseBoard: 'upbit', referenceBoard: 'gateio' }), false);
+});
+
 test('whole-list audit spelling differences resolve without admitting unrelated project names', () => {
   const pairs = [
     ['ADA', 'Ada', 'Cardano'], ['XLM', 'Lumen', 'Stellar Lumens'], ['SKY', 'Sky Protocol', 'Sky'],

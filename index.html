@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-+9sVoAlO5P/cd+LZALY10Zixz2Ol1Ku8Vj5Qw2o5pnY='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-ag6FFHdpQh/uZnutbScw7Oa04w0ZOV4pPs8nEPFPzT8='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -7477,7 +7477,7 @@
   </div>
 
   <script src="./vendor/js-md5.min.js"></script>
-  <script src="./comparison-identity.js?v=7e10af073981"></script>
+  <script src="./comparison-identity.js?v=a5fb6b63259f"></script>
   <script src="./app-update.js?v=20261031-1"></script>
   <script src="./audit-report.js?v=20261031-2"></script>
   <script>
@@ -17198,8 +17198,8 @@
 
       function priceDifferenceCandidates(row) {
         if (priceDifferenceReferences.has(row)) return priceDifferenceReferences.get(row);
-        const symbol = getComparableSymbol(row);
         const baseBoard = state.board === "triple" ? "bithumb" : state.board;
+        const symbol = comparisonIdentitySymbol(row, baseBoard);
         const domesticFallback = baseBoard === "upbit" ? "bithumb" : "upbit";
         const order = [...new Set([state.priceDifferenceBoard, "binance", "coinbase", ...PRICE_DIFFERENCE_ADDITIONAL_BOARDS, domesticFallback])].filter(board => board !== baseBoard);
         const candidates = order.flatMap(board => {
@@ -17238,8 +17238,9 @@
         if (!isDomesticComparisonBoard()) return { reason: "국내 거래소에서만 시세차이를 계산합니다." };
         const reference = priceDifferenceReference(row);
         if (!reference) {
+          const symbol = comparisonIdentitySymbol(row, state.board === "triple" ? "bithumb" : state.board);
           const listed = [state.priceDifferenceBoard, "binance", "coinbase", ...PRICE_DIFFERENCE_ADDITIONAL_BOARDS, state.board === "upbit" ? "bithumb" : "upbit"]
-            .some(board => comparisonMarketMatches(board, getComparableSymbol(row)).length > 0
+            .some(board => comparisonMarketMatches(board, symbol).length > 0
               || priceDifferenceQuoteRequests.get(board)?.symbols?.has(getComparableSymbol(row)));
           const loading = PRICE_DIFFERENCE_ADDITIONAL_BOARDS.some(board => priceDifferenceQuoteRequests.get(board)?.pending);
           return { label: loading ? "확인 중" : listed ? "자산 미확인" : "비교 없음", reason: loading ? "비교 거래소 시세 확인 중" : listed ? "같은 심볼이지만 동일 자산 확인 불가" : "조회한 해외·국내 거래소에 검증된 현물 비교 시세 없음" };

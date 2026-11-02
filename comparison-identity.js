@@ -25,6 +25,10 @@
 
   function symbol(row, board) {
     const value = String(row?.compareSymbol || row?.symbol || "").toUpperCase();
+    // Superform uses UP2 on Upbit and SUPERFORM on Gate; keep native quote IDs intact.
+    // https://www.gate.com/announcements/article/50627
+    if (nameKey(row?.englishName) === "superform"
+      && ((board === "upbit" && value === "UP2") || (board === "gateio" && value === "SUPERFORM"))) return "UP";
     // Binance's BEAMX is the gaming BEAM token, not the privacy coin BEAM.
     // https://www.binance.com/en/support/announcement/detail/c8705b752c7c47fc814a373a0f1856ee
     return value === "BEAMX" && ["binance", "gateio"].includes(board) && nameKey(row.englishName) === "beam" ? "BEAM" : value;
