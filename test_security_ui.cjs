@@ -97,8 +97,27 @@ async function main() {
     assert.equal(await page.evaluate(key => localStorage.getItem(key), tokenKey), memberToken, 'ordinary member compatibility is unchanged');
     await page.evaluate(({ token, expiresAt }) => syncServerSession({ token, expiresAt, role: 'admin' }), { token: newToken, expiresAt: expiry });
     assert.equal(await page.evaluate(key => localStorage.getItem(key), tokenKey), null, 'switching to administrator removes persistent storage');
-    await page.setViewportSize({ width: 390, height: 850 });
-    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+    assert.equal(await page.locator('.intel-ticker, #tabTriple, [data-board="triple"], option[value="triple"]').count(), 0);
+    await page.evaluate(() => { state.board = 'triple'; render(); });
+    assert.equal(await page.evaluate(() => MARKET_BOARDS.includes(state.board)), true, 'retired intersection selections return to a valid exchange');
+    for (const width of [1440, 820, 390, 320]) {
+      await page.setViewportSize({ width, height: 850 });
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await page.waitForTimeout(50);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+      const header = await page.locator('.intel-header').boundingBox();
+      const brand = await page.locator('#brandHomeButton').boundingBox();
+      const session = await page.locator('#lockTtlWrap').boundingBox();
+      assert.equal(header.y, 0, 'no gap or retired banner remains above the header');
+      if (width <= 620) {
+        assert.ok(session.y >= 0 && session.y + session.height <= brand.y, 'mobile session controls cannot overlap the brand/navigation');
+        assert.ok(session.x >= 0 && session.x + session.width <= width + 1);
+      }
+      if (process.env.HEADER_SCREENSHOT_DIR) {
+        fs.mkdirSync(process.env.HEADER_SCREENSHOT_DIR, { recursive: true });
+        await page.locator('.intel-header').screenshot({ path: path.join(process.env.HEADER_SCREENSHOT_DIR, `header-${width}.png`) });
+      }
+    }
     assert.deepEqual(errors, []);
     console.log('PASS: strict CSP blocks injected scripts/handlers/remote code/base replacement; token migration, same-tab reload, logout, password-only login, fixed expiry and mobile layout remain functional');
   } finally { await browser.close(); }

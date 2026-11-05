@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-tttSwcj5LCrDXJ2EXyfaYKoYZhlSLnvXckiFaa1AVsI='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-Dhf70kOa1lDzmMZRll5wp/Z2KtXE+uEvZemShXRZUTc='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -6040,43 +6040,6 @@
         background: #ffffff;
       }
 
-      .intel-ticker {
-        min-height: 35px;
-        background: #071525;
-        color: #dce7f6;
-        font-size: 12px;
-      }
-
-      .intel-ticker-inner {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 28px;
-        width: min(1240px, calc(100% - 40px));
-        min-height: 35px;
-        margin: 0 auto;
-        white-space: nowrap;
-      }
-
-      .intel-ticker-item {
-        display: inline-flex;
-        align-items: center;
-        gap: 7px;
-      }
-
-      .intel-ticker-item::before {
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        background: #3f73ff;
-        content: "";
-      }
-
-      .intel-ticker-item strong {
-        color: #ffffff;
-        font-weight: 750;
-      }
-
       .intel-header {
         position: sticky;
         top: 0;
@@ -6673,7 +6636,7 @@
       }
 
       .lock-ttl-wrap {
-        top: 124px;
+        top: 89px;
       }
 
       @media (max-width: 980px) {
@@ -6711,27 +6674,11 @@
         }
 
         .lock-ttl-wrap {
-          top: 148px;
+          top: 113px;
         }
       }
 
       @media (max-width: 620px) {
-        .intel-ticker {
-          overflow: hidden;
-        }
-
-        .intel-ticker-inner {
-          justify-content: flex-start;
-          gap: 22px;
-          width: calc(100% - 24px);
-          overflow-x: auto;
-          scrollbar-width: none;
-        }
-
-        .intel-ticker-inner::-webkit-scrollbar {
-          display: none;
-        }
-
         .intel-header-inner,
         .shell > .panel {
           width: calc(100% - 24px);
@@ -6852,8 +6799,8 @@
           font-size: 13px;
         }
 
-        body:not(.locked) .intel-ticker-inner {
-          visibility: hidden;
+        body:not(.locked) .intel-header-inner {
+          padding-top: 38px;
         }
 
         body.locked .lock-ttl-wrap {
@@ -6891,16 +6838,16 @@
         }
 
         .lock-ttl {
-          color: #dce7f6;
+          color: var(--muted);
         }
 
         .lock-logout-btn {
-          color: #ffb8bd;
+          color: #b23a48;
         }
 
         .lock-extend-btn,
         .lock-extend-btn:hover {
-          color: #9dbbff;
+          color: var(--accent);
         }
       }
     @media (max-width: 720px) {
@@ -6974,13 +6921,6 @@
   </style>
   </head>
   <body>
-  <div class="intel-ticker" aria-label="사이트 상태 요약">
-    <div class="intel-ticker-inner">
-      <span class="intel-ticker-item"><strong>4개 거래소</strong> 통합 시총 비교</span>
-      <span class="intel-ticker-item"><strong>10분</strong> 자동 데이터 갱신</span>
-      <span class="intel-ticker-item"><strong>24시간</strong> 로그인 세션</span>
-    </div>
-  </div>
   <header class="intel-header">
     <div class="intel-header-inner">
       <button class="intel-brand" id="brandHomeButton" type="button" aria-label="블록스코프 홈">
@@ -7093,7 +7033,6 @@
         <button class="tab" data-board="bithumb" id="tabBithumb"></button>
         <button class="tab" data-board="coinbase" id="tabCoinbase"></button>
         <button class="tab" data-board="robinhood" id="tabRobinhood"></button>
-        <button class="tab" data-board="triple" id="tabTriple"></button>
       </div>
       <div class="compare-grid">
         <div class="field">
@@ -14774,7 +14713,6 @@
       document.getElementById("tabUpbit").textContent = TEXT.tabUpbit;
       document.getElementById("tabBithumb").textContent = TEXT.tabBithumb;
       document.getElementById("tabCoinbase").textContent = TEXT.tabCoinbase;
-      document.getElementById("tabTriple").textContent = TEXT.tabTriple;
       document.getElementById("compareBaseLabel").textContent = TEXT.compareBaseLabel;
       document.getElementById("compareTargetLabel").textContent = TEXT.compareTargetLabel;
       document.getElementById("compareTargetLabel2").textContent = TEXT.compareTargetLabel2;
@@ -15489,7 +15427,7 @@
       }
 
       function ensureSelectedMarketBoard() {
-        if (state.board !== "triple" && !MARKET_BOARDS.includes(state.board)) {
+        if (!MARKET_BOARDS.includes(state.board)) {
           state.board = getDefaultMarketBoard();
         }
       }
@@ -15552,8 +15490,6 @@
           const tab = tabs?.querySelector(`[data-board="${board}"]`);
           if (tab) tabs.appendChild(tab);
         });
-        const tripleTab = tabs?.querySelector('[data-board="triple"]');
-        if (tripleTab) tabs.appendChild(tripleTab);
 
         [baseBoardSelect, compareBoardSelect, compareBoardSelect2, compareBoardSelect3].forEach(reorderBoardSelectOptions);
 
@@ -18857,6 +18793,7 @@
     }
 
       function render() {
+        ensureSelectedMarketBoard();
         const domesticComparison = isDomesticComparisonBoard();
         thPriceDifference.hidden = !domesticComparison;
         document.querySelector(".price-difference-tools").hidden = !domesticComparison;
