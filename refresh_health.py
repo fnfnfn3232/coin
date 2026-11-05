@@ -123,6 +123,9 @@ def build_refresh_health(payload, previous=None, *, now=None, maintenance=None):
         checks["upbit_asset_names"] = bool(payload.get("upbitAssetNames")) and "upbit_asset_names" not in issues
     if payload.get("upbitAuditMarket") or "upbit_audit_market" in issues:
         checks["upbit_audit_market"] = bool(payload.get("upbitAuditMarket")) and "upbit_audit_market" not in issues
+    if payload.get("upbitWalletNetworks") or "upbit_wallet_networks" in issues:
+        wallet = payload.get("upbitWalletNetworks") or {}
+        checks["upbit_wallet_networks"] = bool(wallet.get("assets")) and not wallet.get("stale") and "upbit_wallet_networks" not in issues
     if ratings or "apywa" in issues:
         checks["apywa"] = bool(ratings.get("rows")) and not ratings.get("error") and "apywa" not in issues
     components = {}
