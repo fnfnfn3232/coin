@@ -7,6 +7,16 @@ const { chromium } = require('playwright');
 async function main() {
   const root = __dirname;
   const snapshot = require('./test_market_fixture.cjs')();
+  snapshot.upbitWalletNetworks = { source: 'upbit_wallet_status', sourceUrl: 'https://upbit.com/service_center/wallet_status',
+    checkedAt: Math.floor(Date.now() / 1000), stale: false, assets: {
+      BTC: [{ netType: 'BTC', name: 'Bitcoin' }],
+      SHELL: [{ netType: 'ETH', name: 'Ethereum' }],
+      OSMO: [{ netType: 'OSMO', name: 'Osmosis' }],
+      USDT: [{ netType: 'ETH', name: 'Ethereum' }, { netType: 'TRX', name: 'Tron' }, { netType: 'APT', name: 'Aptos' }, { netType: 'KAIA', name: 'Kaia' }],
+      UP2: [{ netType: 'BASENET', name: 'Base' }],
+    } };
+  if (process.env.UPBIT_WALLET_NETWORKS_TEST_FILE) snapshot.upbitWalletNetworks =
+    JSON.parse(fs.readFileSync(process.env.UPBIT_WALLET_NETWORKS_TEST_FILE, 'utf8'));
   snapshot.upbitAssetNames = {
     SHELL: { symbol: 'SHELL', koreanName: '마이쉘', englishName: 'MyShell', source: 'upbit_market_all', active: true, markets: ['BTC-SHELL', 'USDT-SHELL'] },
     FORMER: { symbol: 'FORMER', koreanName: '이전코인', englishName: 'Former Coin', source: 'upbit_market_all', active: false, markets: ['BTC-FORMER'] },
@@ -98,6 +108,24 @@ async function main() {
     assert.equal(await page.locator('#auditComparisonSelect').inputValue(), reports[1].reportId);
     assert.equal(await page.locator('#auditReportSelect option:checked').textContent(), '2026년 3분기');
     assert.equal(await page.locator('#auditComparisonSelect option:checked').textContent(), '2026년 2분기');
+    const networkGuards = await page.evaluate(() => {
+      const previous = data.upbitWalletNetworks;
+      const result = { multi: renderUpbitWalletNetworks('USDT'), exact: renderUpbitWalletNetworks('UP2'),
+        collision: renderUpbitWalletNetworks('UP'), missing: renderUpbitWalletNetworks('UNKNOWN') };
+      try {
+        data.upbitWalletNetworks = { ...previous, stale: true };
+        result.stale = renderUpbitWalletNetworks('BTC');
+        data.upbitWalletNetworks = { ...previous, checkedAt: Math.floor(Date.now() / 1000) - 86401 };
+        result.expired = renderUpbitWalletNetworks('BTC');
+        data.upbitWalletNetworks = { ...previous, source: 'representative_chain_guess' };
+        result.untrusted = renderUpbitWalletNetworks('BTC');
+      } finally { data.upbitWalletNetworks = previous; }
+      return result;
+    });
+    for (const name of ['Ethereum', 'Tron', 'Aptos', 'Kaia']) assert.ok(networkGuards.multi.includes(name));
+    assert.ok(networkGuards.exact.includes('Base'));
+    for (const key of ['collision', 'missing', 'expired', 'untrusted']) assert.ok(networkGuards[key].includes('미확인'));
+    assert.ok(networkGuards.stale.includes('이전 확인'));
     const shownSymbols = () => page.locator('tr[data-audit-symbol]').evaluateAll(rows => rows.map(row => row.dataset.auditSymbol));
     await page.evaluate(() => { upbitAuditPage = 2; renderAuditPanel(); });
     await page.locator('#auditMarketSelect').selectOption('KRW');
@@ -112,6 +140,8 @@ async function main() {
     assert.equal(await page.locator('tr[data-audit-symbol="MULTI"]').count(), 1, 'duplicate native markets never duplicate audit assets');
     await page.locator('#auditSearchForm input').fill('마이쉘');
     assert.deepEqual(await shownSymbols(), ['SHELL']);
+    assert.match(await page.locator('[data-audit-networks="SHELL"]').innerText(), /Ethereum/);
+    assert.equal(await page.locator('[data-audit-networks="SHELL"] a').getAttribute('href'), 'https://upbit.com/service_center/wallet_status');
     await page.locator('#auditSearchForm input').fill('');
     assert.equal((await shownSymbols()).length, 3, 'clearing search restores the selected market, not every market');
     await page.locator('#auditMarketSelect').selectOption('USDT');
@@ -141,6 +171,7 @@ async function main() {
     await page.locator('[data-audit-filter="listed"]').click();
     await page.locator('#auditMarketSelect').selectOption('all');
     await page.locator('#auditSearchForm input').fill('오스모시스');
+    assert.match(await page.locator('[data-audit-networks="OSMO"]').innerText(), /Osmosis/);
     assert.match(await page.locator('[data-audit-price]').innerText(), /80원.*빗썸/s);
     const oldValue = await page.locator('[data-audit-value] strong').innerText();
     await page.evaluate(() => window.__auditSockets.filter(socket => socket.readyState === 1 && socket.url.includes('pubwss.bithumb.com')).at(-1)

@@ -34,3 +34,16 @@ Report controls use calendar audit quarters (for example, the October publicatio
 - The market selection survives navigation/reload; changing it resets the page
   but preserves the current search and report comparison. No API polling is added.
 
+## Deposit/Withdrawal Networks (2026-11-05)
+
+- `upbit_wallet_networks.py` collects the public network feed used by Upbit's
+  wallet-status page once per normal snapshot rebuild. No account API key or
+  per-coin/browser polling is introduced.
+- Only exact exchange currencies, `net_type` and `network_name` are used. All
+  supported network names are shown beneath each audit coin, independently of
+  the trading quote or external valuation reference. No chain is guessed.
+- A failed/partial refresh retains a verified cache for at most 24 hours, keeps
+  its original timestamp and marks it stale. Expired or absent records display
+  unknown. This is network metadata, not a promise that transfers are enabled.
+- Network labels link to Upbit's official wallet-status page. Refresh failures
+  enter the existing administrator-only component history and recovery checks.

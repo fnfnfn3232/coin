@@ -17,6 +17,7 @@ from apywa_ratings import collect_ratings, apply_ratings
 from robinhood_market import build_robinhood_board
 from upbit_audit import collect_reports as collect_upbit_audit_reports
 from upbit_asset_names import normalize_asset_names, merge_asset_names, suspicious_catalog_drop
+from upbit_wallet_networks import collect_wallet_networks
 from upbit_audit_market import issued_supply, collect_market_data as collect_upbit_audit_market
 
 
@@ -4841,6 +4842,14 @@ def make_payload(previous_payload: dict | None = None) -> dict:
         fetch_upbit_details, fetch_json)
     if audit_market_error:
         refresh_issues["upbit_audit_market"] = audit_market_error
+    wallet_networks, wallet_network_error = collect_wallet_networks(
+        previous_payload, lambda url: fetch_json(url, retries=2, pause=0.5, timeout=10))
+    if wallet_network_error:
+        refresh_issues["upbit_wallet_networks"] = wallet_network_error
+    print("Upbit wallet network coverage:", json.dumps({
+        "assets": len(wallet_networks["assets"]), "checkedAt": wallet_networks["checkedAt"],
+        "stale": wallet_networks["stale"], "error": wallet_network_error,
+    }, separators=(",", ":")))
     print("Upbit audit market coverage:", json.dumps({
         "assets": len(audit_market),
         "issuedSupply": sum(to_float((item.get("supply") or {}).get("value")) is not None for item in audit_market.values()),
@@ -4874,6 +4883,7 @@ def make_payload(previous_payload: dict | None = None) -> dict:
         "upbitAuditReports": upbit_audit_reports,
         "upbitAssetNames": merge_asset_names((previous_payload or {}).get("upbitAssetNames"), UPBIT_ASSET_NAMES),
         "upbitAuditMarket": audit_market,
+        "upbitWalletNetworks": wallet_networks,
         "changes": build_changes(boards, previous_payload),
         "notes": {
             "binance": "binance_exact_market_cap",
