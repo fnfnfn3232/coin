@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-Dhf70kOa1lDzmMZRll5wp/Z2KtXE+uEvZemShXRZUTc='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-PVD3xSREz1s/nwkf/XTK0owXfmu9wKqs8LRnflf/XGQ='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -6992,6 +6992,16 @@
             <div class="stat-value" id="statRobinhood">-</div>
             <span class="stat-history-hint">변경 내역 보기</span>
           </button>
+          <button class="stat" data-stat-board="bybit" type="button" aria-label="바이비트 USDT 변경 내역 보기">
+            <div class="stat-label">바이비트 USDT</div>
+            <div class="stat-value">-</div>
+            <span class="stat-history-hint">변경 내역 보기</span>
+          </button>
+          <button class="stat" data-stat-board="bitget" type="button" aria-label="비트겟 USDT 변경 내역 보기">
+            <div class="stat-label">비트겟 USDT</div>
+            <div class="stat-value">-</div>
+            <span class="stat-history-hint">변경 내역 보기</span>
+          </button>
         </div>
         <div class="auto-strip-slot summary-status-slot" id="summaryStatusSlot">
           <div class="auto-strip" id="autoStrip">
@@ -7033,6 +7043,8 @@
         <button class="tab" data-board="bithumb" id="tabBithumb"></button>
         <button class="tab" data-board="coinbase" id="tabCoinbase"></button>
         <button class="tab" data-board="robinhood" id="tabRobinhood"></button>
+        <button class="tab" data-board="bybit" type="button">바이비트 USDT</button>
+        <button class="tab" data-board="bitget" type="button">비트겟 USDT</button>
       </div>
       <div class="compare-grid">
         <div class="field">
@@ -7475,7 +7487,10 @@
     const APP_VIEW_STATE_KEY = "fdv_app_view_state_v1";
     const SCREEN_SETTINGS_KEY = "fdv_screen_settings_v1";
     const MARKET_SOURCE_VISIBLE_KEY = "fdv_market_source_visible_v1";
-    const MARKET_BOARDS = ["binance", "upbit", "bithumb", "coinbase", "robinhood"];
+    const EXTRA_SPOT_LABELS = { bybit: "바이비트 USDT", bitget: "비트겟 USDT" };
+    const EXTRA_SPOT_BOARDS = Object.keys(EXTRA_SPOT_LABELS);
+    const MARKET_BOARDS = ["binance", "upbit", "bithumb", "coinbase", "robinhood", ...EXTRA_SPOT_BOARDS];
+    const publicSpotBoards = new Map();
     const SCREEN_NAV_ITEMS = ["market", "news", "board", "resources"];
     const RESOURCE_MENU_ITEMS = ["futures", "ranking", "audit", "l2fees", "l1fees"];
     const RESOURCE_TOP_LEVEL_ITEMS = ["futures", "ranking", "audit"];
@@ -7516,7 +7531,7 @@
       navOrder: ["market", "news", "board", "resources"],
       resourceOrder: [...RESOURCE_MENU_ITEMS],
       resourceLabels: { ...RESOURCE_MENU_LABEL_DEFAULTS },
-      boardOrder: ["binance", "upbit", "bithumb", "coinbase", "robinhood"],
+      boardOrder: MARKET_BOARDS,
       statusPosition: "summary",
       visibleStats: {
         binance: true,
@@ -7524,6 +7539,8 @@
         bithumb: true,
         coinbase: true,
         robinhood: true,
+        bybit: true,
+        bitget: true,
       },
       visibleStatus: {
         auto: true,
@@ -7726,6 +7743,7 @@
       }
       safe.noticeRefresh = Object.fromEntries(Object.entries(payload.noticeRefresh || {}).map(([name, status]) => [name, status?.error ? { error: true } : {}]));
       if (payload.robinhoodRefresh) safe.robinhoodRefresh = { error: Boolean(payload.robinhoodRefresh.error) };
+      delete safe.spotMarketCatalogs;
       safe.refreshIssues = Object.fromEntries(Object.keys(payload.refreshIssues || {}).map(name => [name, "refresh_delayed"]));
       return safe;
     }
@@ -7734,7 +7752,7 @@
     let data = marketSnapshotWithoutRefreshHistory(window.BOARD_DATA || {
       generatedAt: 0,
       autoRefreshMinutes: 10,
-      boards: { binance: [], upbit: [], bithumb: [], coinbase: [], robinhood: [] },
+      boards: Object.fromEntries(MARKET_BOARDS.map(board => [board, []])),
       futures: { binance: [], coinbase: [], bybit: [] },
       coinInfo: {},
       stats: {
@@ -7797,6 +7815,8 @@
         bithumb: document.getElementById("statCardBithumb"),
         coinbase: document.getElementById("statCardCoinbase"),
         robinhood: document.getElementById("statCardRobinhood"),
+        bybit: document.querySelector('[data-stat-board="bybit"]'),
+        bitget: document.querySelector('[data-stat-board="bitget"]'),
       };
       const autoUpdatePill = document.getElementById("autoUpdatePill");
       const autoUpdateStatus = document.getElementById("autoUpdateStatus");
@@ -12701,6 +12721,7 @@
 
       const EXCHANGE_HISTORY_LABELS = {
         robinhood: "로빈후드 USD",
+        ...EXTRA_SPOT_LABELS,
         upbit: "업비트 KRW",
         bithumb: "빗썸 KRW",
         binance: "바이낸스 USDT",
@@ -13994,6 +14015,7 @@
       }
 
       function clearSiteLoginState() {
+        publicSpotBoards.clear();
         coinbaseFuturesClient.generation++;
         Object.assign(coinbaseFuturesClient, { rows: null, promise: null, checkedAt: 0, error: "" });
         clearPriceDifferenceCache();
@@ -14745,6 +14767,7 @@
       compareSwapBtn.title = "\uAE30\uC900/\uBE44\uAD50 \uAC70\uB798\uC18C \uBC14\uAFB8\uAE30";
       [baseBoardSelect, compareBoardSelect, compareBoardSelect2, compareBoardSelect3].forEach((select) => {
         select.querySelector('option[value="robinhood"]').textContent = TEXT.tabRobinhood;
+        for (const board of EXTRA_SPOT_BOARDS) select.add(new Option(EXTRA_SPOT_LABELS[board], board));
       });
       baseBoardSelect.value = state.board;
       compareBoardSelect.value = state.compareBoard;
@@ -14872,6 +14895,13 @@
           sub: formatUsdPrice(toPositiveNumber(row.priceUsd) ?? NaN, minimumUsdFractionDigits),
         };
       }
+      if (row.nativeCurrency === "USDT") {
+        const price = toPositiveNumber(row.priceUsd);
+        const krw = toPositiveNumber(row.priceKrw);
+        const stale = row.priceStale || Date.now() - Number(row.priceUpdatedAt || 0) * 1000 > 900000;
+        return { main: price === null ? "가격 미확인" : `${formatUsdPrice(price).replace(/^\$/, "")} USDT`,
+          sub: [krw !== null ? `약 ${formatKrwPrice(krw)}` : "", price !== null && stale ? "이전 시세" : ""].filter(Boolean).join(" · ") };
+      }
       return {
         main: formatUsdPrice(toPositiveNumber(row.priceUsd) ?? NaN, minimumUsdFractionDigits),
         sub: formatKrwPrice(toPositiveNumber(row.priceKrw) ?? NaN),
@@ -14940,6 +14970,8 @@
       const map = {
         robinhood_verified_reference: "동일 자산 검증 자료 (외부 시총)",
         robinhood_missing: "시총 미확인",
+        spot_verified_reference: "동일 자산 검증 자료 (외부 시총)",
+        spot_cap_missing: "시총 미확인",
         binance_exact: "\uBC14\uC774\uB0B8\uC2A4 \uC2E4\uC81C \uC2DC\uCD1D",
         upbit_cmc: "\uC5C5\uBE44\uD2B8 CMC",
         upbit_coingecko: "\uC5C5\uBE44\uD2B8 CoinGecko",
@@ -15009,6 +15041,7 @@
           bithumb_main_coinmarketcap_feed: TEXT.bithumbNote,
           coinbase_exchange_usd_pairs: TEXT.coinbaseNote,
           robinhood_us_spot: TEXT.robinhoodNote,
+          additional_usdt_spot: "USDT 현물 · 가격은 거래소 시세, 시총은 동일 자산으로 확인된 참조 자료",
         };
         return map[code] || TEXT.defaultDescription;
       }
@@ -15020,6 +15053,7 @@
           bithumb: TEXT.tabBithumb,
           coinbase: TEXT.tabCoinbase,
           robinhood: TEXT.tabRobinhood,
+          ...EXTRA_SPOT_LABELS,
           triple: TEXT.tabTriple,
         };
         return map[board] || board || "-";
@@ -15028,6 +15062,8 @@
       function boardShortLabel(board) {
         const map = {
           robinhood: "로빈후드",
+          bybit: "바이비트",
+          bitget: "비트겟",
           binance: "바이낸스",
           upbit: "업비트",
           bithumb: "빗썸",
@@ -15072,7 +15108,8 @@
         });
 
         let changed = 0;
-        Object.values(boards).forEach((rows) => {
+        Object.entries(boards).forEach(([board, rows]) => {
+          if (EXTRA_SPOT_BOARDS.includes(board)) return;
           (rows || []).forEach((row) => {
             const symbol = getComparableSymbol(row);
             const reference = (koreanRowsBySymbol.get(symbol) || []).find(candidate => marketReferenceCompatible(row, candidate)
@@ -15196,6 +15233,14 @@
       function getCoinInfo(symbol, fallbackRow = null) {
         const key = String(symbol || "").toUpperCase();
         const info = data.coinInfo?.[key] || {};
+        if (EXTRA_SPOT_BOARDS.includes(fallbackRow?.exchange)) {
+          const { exchange, pair, englishName, name } = fallbackRow;
+          const url = exchange === "bybit" ? `https://www.bybit.com/en/trade/spot/${key}/USDT`
+            : `https://www.bitget.com/spot/${key}USDT`;
+          const matches = spotNamesMatch(key, englishName, info.englishName);
+          return { symbol: key, koreanName: name, englishName, sources: matches ? info.sources || {} : {},
+            listings: { ...(matches ? info.listings : {}), [exchange]: { label: boardShortLabel(exchange), pair, url } } };
+        }
         return {
           symbol: key,
           koreanName: info.koreanName || fallbackRow?.koreanName || fallbackRow?.name || key,
@@ -15949,6 +15994,10 @@
         const health = refreshHistoryData.refreshHealth || {};
         const labels = { upbit: "업비트 시세", bithumb: "빗썸 시세", binance: "바이낸스 시세", coinbase: "코인베이스 시세",
           robinhood: "로빈후드 시세",
+          bybit_spot: "바이비트 현물",
+          bitget_spot: "비트겟 현물",
+          bybit_spot_identity: "바이비트 현물 자산 확인",
+          bitget_spot_identity: "비트겟 현물 자산 확인",
           upbit_notices: "업비트 공지", bithumb_notices: "빗썸 공지", binance_notices: "바이낸스 공지",
           binance_futures: "바이낸스 선물", coinbase_futures: "코인베이스 선물", defillama: "디파이 자료", apywa: "APYWA 등급", upbit_audit: "업비트 실사 보고서", upbit_asset_names: "업비트 공식 코인명", upbit_audit_market: "업비트 실사 시세·발행량", upbit_wallet_networks: "업비트 입출금 네트워크", pipeline: "서버 갱신" };
         const kinds = { failure: "장애 감지", recovered: "복구 완료", attention: "반복 장애", fallback: "예비 경로 전환",
@@ -17185,6 +17234,87 @@
         return { ...metadata, exchange: board, prices, observedAt, error: "", revalidating: false };
       }
 
+      function spotNamesMatch(symbol, left, right) {
+        const key = value => String(value || "").normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+        const first = key(left);
+        return Boolean(first && first !== key(symbol) && first === key(right));
+      }
+
+      function requestPublicSpotBoard(board) {
+        if (!EXTRA_SPOT_BOARDS.includes(board) || !data.spotMarketStatus?.[board]?.usePublicFeed
+          || !siteAuthConfirmed || isSiteLocked() || document.hidden || !navigator.onLine) return;
+        const owner = comparisonCacheOwner();
+        const previous = publicSpotBoards.get(board);
+        const entry = previous?.owner === owner ? previous : { owner, rows: [] };
+        if (entry.loading || Date.now() - (entry.at || 0) < (entry.error ? 60000 : 300000)) return;
+        entry.loading = true;
+        publicSpotBoards.set(board, entry);
+        const bybit = board === "bybit";
+        const endpoints = bybit
+          ? ["https://api.bybit.com/v5/market/instruments-info?category=spot", "https://api.bybit.com/v5/market/tickers?category=spot"]
+          : ["https://api.bitget.com/api/v3/market/instruments?category=SPOT", "https://api.bitget.com/api/v2/spot/market/tickers"];
+        const items = payload => {
+          const list = bybit ? payload.retCode === 0 && payload.result?.category === "spot"
+            && !payload.result.nextPageCursor && payload.result.list : payload.code === "00000" && payload.data;
+          if (!Array.isArray(list) || !list.length) throw new Error("invalid_spot_feed");
+          return list;
+        };
+        Promise.all(endpoints.map(async url => {
+          const response = await fetch(url, { credentials: "omit", signal: AbortSignal.timeout(7000) });
+          if (!response.ok) throw new Error("spot_feed_unavailable");
+          return response.json();
+        })).then(([listings, quotes]) => {
+          if (owner !== comparisonCacheOwner() || isSiteLocked()) return;
+          const now = Date.now();
+          const byProduct = new Map(items(quotes).map(row => [row.symbol, row]));
+          const refs = data.spotMarketReferences?.[board] || {};
+          const referencesFresh = now - Number(data.generatedAt || 0) * 1000 < 21600000;
+          const fx = toPositiveNumber(data.fxUsdKrw);
+          const rows = [];
+          const seen = new Set();
+          for (const item of items(listings)) {
+            if (bybit ? item.status !== "Trading" || !["", "adventure"].includes(item.symbolType ?? "")
+              : item.status !== "online" || item.category !== "SPOT" || item.symbolType !== "crypto"
+                || (item.instrumentType ?? "crypto") !== "crypto") continue;
+            const symbol = item.baseCoin;
+            if (item.quoteCoin !== "USDT" || !/^[A-Z0-9]{1,30}$/.test(symbol) || item.symbol !== `${symbol}USDT`) continue;
+            if (seen.has(symbol)) throw new Error("duplicate_spot_product");
+            seen.add(symbol);
+            const ticker = byProduct.get(item.symbol);
+            const at = Number(bybit ? quotes.time : ticker?.ts);
+            const price = at >= now - 900000 && at <= now + 60000
+              ? toPositiveNumber(bybit ? ticker?.lastPrice : ticker?.lastPr) : null;
+            const candidate = referencesFresh && Object.hasOwn(refs, symbol) ? refs[symbol] : {};
+            const refPrice = toPositiveNumber(candidate.referencePriceUsd);
+            const officialName = String(item.fullName || "").trim();
+            const matched = price !== null && refPrice !== null && price / refPrice >= 0.65 && price / refPrice <= 1.55
+              && (!officialName || spotNamesMatch(symbol, officialName, candidate.englishName));
+            const ref = matched ? candidate : {};
+            const name = officialName || ref.englishName || symbol;
+            const cap = toPositiveNumber(ref.marketCapUsd);
+            rows.push({ ...ref, exchange: board, symbol, pair: `${symbol}/USDT`, name: ref.koreanName || name,
+              englishName: name, nativeCurrency: "USDT", priceUsd: price,
+              priceKrw: price !== null && fx !== null ? price * fx : null, priceUpdatedAt: price === null ? null : Math.floor(at / 1000),
+              marketCapUsd: cap, marketCapKrw: cap !== null && fx !== null ? cap * fx : null, sortCapUsd: cap,
+              fdvKrw: ref.fdvUsd && fx ? ref.fdvUsd * fx : null, circulatingRatio: computeCirculatingRatio(ref.circulatingSupply, ref.totalSupply),
+              capSource: cap ? "spot_verified_reference" : "spot_cap_missing",
+              marketIdentityVerified: matched || Boolean(officialName), supplyIdentityVerified: matched });
+          }
+          const oldCount = Math.max(entry.rows.length, data.boards?.[board]?.length || 0);
+          if (!rows.some(row => row.priceUsd !== null) || rows.length < oldCount * 0.8) throw new Error("incomplete_spot_feed");
+          entry.rows = rows;
+          entry.generatedAt = data.generatedAt;
+          entry.error = false;
+        }).catch(() => { entry.error = true; }).finally(() => {
+          entry.at = Date.now();
+          entry.loading = false;
+          if (owner === comparisonCacheOwner() && !isSiteLocked() && state.viewMode === "market") {
+            renderSummaryStats();
+            render();
+          }
+        });
+      }
+
       function requestPriceDifferenceQuotes(prewarm = false) {
         const audit = state.viewMode === "audit";
         if ((!audit && !isDomesticComparisonBoard()) || isLocalPreview() || !hasServerAuth() || !siteAuthConfirmed || isSiteLocked() || document.hidden || !navigator.onLine || (!prewarm && state.viewMode !== "market" && !audit)) return;
@@ -17693,7 +17823,7 @@
           kind = "spot";
           exchange = state.board === "triple" ? "bithumb" : state.board;
           root = tableBody;
-          modelRows = data.boards?.[exchange] || [];
+          modelRows = getBoardRows(exchange);
         } else if (state.viewMode === "futures") {
           kind = "futures";
           exchange = futuresExchange;
@@ -17701,7 +17831,7 @@
           modelRows = getFuturesRows(exchange);
         }
 
-        if (!root || !["binance", "upbit", "bithumb", "coinbase", "bybit"].includes(exchange)) return null;
+        if (!root || !["binance", "upbit", "bithumb", "coinbase", ...EXTRA_SPOT_BOARDS].includes(exchange)) return null;
         if (kind === "futures" && !["binance", "bybit", "coinbase"].includes(exchange)) return null;
 
         const selector = `tr[data-live-price-row="${kind}"][data-live-exchange="${exchange}"]`;
@@ -17796,15 +17926,18 @@
         const numericPrice = toPositiveNumber(value);
         const entry = target?.entries.get(normalizedLiveProduct(product));
         if (numericPrice === null || !entry) return;
-        if (entry.kind === "futures" && (eventAt === null || eventAt === undefined)) return;
+        const extraSpot = entry.kind === "spot" && EXTRA_SPOT_BOARDS.includes(entry.exchange);
+        if ((entry.kind === "futures" || extraSpot) && (eventAt === null || eventAt === undefined)) return;
         if ((entry.kind === "spot" || entry.kind === "futures") && eventAt !== null && eventAt !== undefined) {
           let sourceAt = Number(eventAt);
           if (!Number.isFinite(sourceAt)) sourceAt = Date.parse(eventAt);
           if (sourceAt > 0 && sourceAt < 1e12) sourceAt *= 1000;
           if (!Number.isFinite(sourceAt) || sourceAt <= 0 || sourceAt > Date.now() + 5000
-            || Date.now() - sourceAt > PRICE_DIFFERENCE_MAX_AGE_MS || sourceAt < Math.max(entry.row.liveSourceAt || 0, entry.kind === "futures" ? entry.row.futuresQuoteAt || 0 : 0)) return;
+            || Date.now() - sourceAt > PRICE_DIFFERENCE_MAX_AGE_MS || sourceAt < Math.max(entry.row.liveSourceAt || 0,
+              entry.kind === "futures" ? entry.row.futuresQuoteAt || 0 : extraSpot ? Number(entry.row.priceUpdatedAt || 0) * 1000 : 0)) return;
           entry.row.liveSourceAt = sourceAt;
           if (entry.kind === "futures") entry.row.futuresQuoteAt = sourceAt;
+          if (extraSpot) { entry.row.priceUpdatedAt = Math.floor(sourceAt / 1000); entry.row.priceStale = false; }
         }
 
         const fx = toPositiveNumber(data.fxUsdKrw);
@@ -17817,7 +17950,7 @@
         }
         entry.row.livePriceUpdatedAt = Date.now();
         target.lastQuoteAt = entry.row.livePriceUpdatedAt;
-        if (entry.kind === "spot") {
+        if (entry.kind === "spot" && !extraSpot) {
           rememberComparisonQuote(entry.exchange, String(entry.row.symbol || "").toUpperCase(), numericPrice, entry.row.livePriceUpdatedAt);
           schedulePriceDifferenceCacheSave();
         }
@@ -17956,12 +18089,22 @@
             socket.send(JSON.stringify({ type: "subscribe", channel: "ticker", product_ids: target.products }));
             socket.send(JSON.stringify({ type: "subscribe", channel: "heartbeats", product_ids: target.products }));
           } else if (target.exchange === "bybit") {
-            socket.send(JSON.stringify({ op: "subscribe", args: target.products.map((product) => `tickers.${product}`) }));
+            const batchSize = target.kind === "spot" ? 10 : target.products.length;
+            for (let i = 0; i < target.products.length; i += batchSize) {
+              socket.send(JSON.stringify({ op: "subscribe", args: target.products.slice(i, i + batchSize).map(product => `tickers.${product}`) }));
+            }
             livePriceHeartbeatTimer = window.setInterval(() => {
               if (generation !== livePriceGeneration || socket !== livePriceSocket || socket.readyState !== WebSocket.OPEN) return;
               try { socket.send(JSON.stringify({ op: "ping" })); }
               catch (_error) { socket.close(); }
             }, 20000);
+          } else if (target.exchange === "bitget") {
+            for (let i = 0; i < target.products.length; i += 20) {
+              socket.send(JSON.stringify({ op: "subscribe", args: target.products.slice(i, i + 20).map(instId => ({ instType: "SPOT", channel: "ticker", instId })) }));
+            }
+            livePriceHeartbeatTimer = window.setInterval(() => {
+              if (socket === livePriceSocket && socket.readyState === WebSocket.OPEN) socket.send("ping");
+            }, 25000);
           }
         };
         socket.onmessage = (event) => {
@@ -18084,6 +18227,11 @@
         statBithumb.textContent = `${formatNumber(data.stats.bithumb?.total || 0, 0)} / ${formatNumber(data.stats.bithumb?.withCap || 0, 0)}`;
         statCoinbase.textContent = `${formatNumber(data.stats.coinbase?.total || 0, 0)} / ${formatNumber(data.stats.coinbase?.withCap || 0, 0)}`;
         statRobinhood.textContent = `${formatNumber(data.stats.robinhood?.total || 0, 0)} / ${formatNumber(data.stats.robinhood?.withCap || 0, 0)}`;
+        for (const board of EXTRA_SPOT_BOARDS) {
+          const rows = getBoardRows(board);
+          statCards[board].querySelector(".stat-value").textContent = rows.length
+            ? `${formatNumber(rows.length, 0)} / ${formatNumber(rows.filter(row => toPositiveNumber(row.sortCapUsd) !== null).length, 0)}` : "-";
+        }
       }
 
       function renderManualRefreshState() {
@@ -18469,6 +18617,10 @@
       }
 
       function getBoardRows(board) {
+        if (data.spotMarketStatus?.[board]?.usePublicFeed) {
+          const entry = publicSpotBoards.get(board);
+          if (entry?.rows.length && entry.owner === comparisonCacheOwner() && !isSiteLocked()) return entry.rows;
+        }
         if (board === "triple") {
           const bithumbRows = data.boards?.bithumb || [];
           const rowsByBoard = {
@@ -18578,6 +18730,7 @@
 
         normalizedListingSymbols(row).forEach((symbol) => {
           const info = data.coinInfo?.[symbol] || {};
+          if (EXTRA_SPOT_BOARDS.includes(row.exchange) && !spotNamesMatch(symbol, row.englishName, info.englishName)) return;
           const upbit = info.sources?.upbit || {};
           const bithumb = info.sources?.bithumb || {};
           values.push(
@@ -18621,11 +18774,18 @@
           const rows = getBoardRows(state.board);
           const activeCompareBoards = getActiveCompareBoards();
           const compareSets = activeCompareBoards.map((board) => getCompareSymbolSet(board));
+          const identityRows = activeCompareBoards.map(board => EXTRA_SPOT_BOARDS.includes(board) || EXTRA_SPOT_BOARDS.includes(state.board)
+            ? new Map(getBoardRows(board).map(item => [getComparableSymbol(item), item])) : null);
           const query = state.query.trim().toLowerCase();
           const compared = activeCompareBoards.length
             ? rows.filter((row) => {
                 const symbol = getComparableSymbol(row);
-                return compareSets.every((symbolSet) => symbolSet.has(symbol));
+                return compareSets.every((symbolSet, index) => {
+                  const matches = identityRows[index];
+                  if (!matches) return symbolSet.has(symbol);
+                  const other = matches.get(symbol);
+                  return other && spotNamesMatch(symbol, row.englishName, other.englishName);
+                });
               })
             : [...rows];
 
@@ -18712,7 +18872,10 @@
 
       function renderTable(rows) {
       if (!rows.length) {
-        tableBody.innerHTML = `<tr><td class="empty" colspan="9" data-label="">${TEXT.empty}</td></tr>`;
+        const direct = [state.board, ...getActiveCompareBoards()].map(board => publicSpotBoards.get(board));
+        const message = direct.some(entry => entry?.loading) ? "거래소 현물 목록을 확인하는 중입니다."
+          : direct.some(entry => entry?.error) ? "거래소 현물 목록을 받지 못했습니다." : TEXT.empty;
+        tableBody.innerHTML = `<tr><td class="empty" colspan="9" data-label="">${message}</td></tr>`;
         return;
       }
 
@@ -18804,6 +18967,7 @@
         normalizeKoreanAssetNames();
         ensureSelectedMarketBoard();
         normalizeCompareBoards();
+        if (state.viewMode === "market") [state.board, ...getActiveCompareBoards()].forEach(requestPublicSpotBoard);
         if (state.board === state.priceDifferenceBoard) state.priceDifferenceBoard = state.board === "binance" ? "coinbase" : "binance";
         priceDifferenceBoard.value = state.priceDifferenceBoard;
         Array.from(priceDifferenceBoard.options).forEach((option) => { option.disabled = option.value === state.board; });
@@ -18850,12 +19014,17 @@
         if (state.board === "robinhood" || activeCompareBoards.includes("robinhood")) {
           footerNote.textContent += ` | ${TEXT.robinhoodNote}`;
         }
+        if (EXTRA_SPOT_BOARDS.includes(state.board)) {
+          footerNote.textContent += " | USDT 현물 · 시총은 동일 자산 확인 자료 · 원화는 USDT≈USD 환산 참고값";
+        }
       }
 
       tableBody.addEventListener("click", (event) => {
         const button = event.target.closest("[data-coin-info-symbol]");
         if (!button) return;
-        openCoinInfo(button.dataset.coinInfoSymbol);
+        const row = EXTRA_SPOT_BOARDS.includes(state.board)
+          ? getBoardRows(state.board).find(item => liveSpotProductId(item, state.board) === button.closest("tr")?.dataset.liveProduct) : null;
+        openCoinInfo(button.dataset.coinInfoSymbol, row);
       });
 
       coinInfoCloseBtn.addEventListener("click", closeCoinInfo);

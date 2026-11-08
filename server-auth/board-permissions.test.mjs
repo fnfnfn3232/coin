@@ -1158,19 +1158,23 @@ test("Robinhood survives protected snapshot normalization, records listings, and
   }, f.adminToken);
   assert.equal(save.status, 200);
   const settings = await (await f.request('/api/screen-settings')).json();
-  assert.deepEqual(settings.settings.boardOrder, ['upbit', 'binance', 'bithumb', 'coinbase', 'robinhood']);
+  assert.deepEqual(settings.settings.boardOrder, ['upbit', 'binance', 'bithumb', 'coinbase', 'robinhood', 'bybit', 'bitget']);
   assert.equal((await f.rawRequest('/api/exchange-history?exchange=robinhood', 'GET', undefined, null)).status, 401);
 });
 
 test("refresh history is absent from every ordinary market response, including admin sessions", async () => {
   const f = await fixture();
   const payload = {
-    generatedAt: Math.floor(Date.now() / 1000), boards: { upbit: [{ symbol: "BTC", pair: "BTC/KRW" }] },
+    generatedAt: Math.floor(Date.now() / 1000), boards: {
+      upbit: [{ symbol: "BTC", pair: "BTC/KRW" }], bitget: [{ symbol: "BTC", pair: "BTC/USDT" }],
+    },
     refreshHealth: { state: "degraded", needsAttention: true, checkedAt: 123, components: { upbit: { state: "degraded" } },
       events: [{ title: "admin-only-journal", kind: "maintenance" }], historyStartedAt: 123 },
     noticeRefresh: { upbit: { error: "private-notice-error", source: "private-source", providers: { private: {} } } },
     refreshIssues: { upbit: "private-source-error" },
     robinhoodRefresh: { error: "private-robinhood-error", source: "private-source" },
+    spotMarketCatalogs: { bybit: { error: "private-source-error" } },
+    spotMarketStatus: { bybit: { listingsError: "private-source-error" } },
   };
   assert.equal((await f.store.writeMarketData(new Request("https://worker.example/api/market-data", { method: "POST", body: JSON.stringify(payload) }))).status, 200);
   for (const token of [f.memberToken, f.adminToken]) {
@@ -1181,6 +1185,9 @@ test("refresh history is absent from every ordinary market response, including a
     assert.deepEqual(data.noticeRefresh, { upbit: { error: true } });
     assert.deepEqual(data.refreshIssues, { upbit: "refresh_delayed" });
     assert.deepEqual(data.robinhoodRefresh, { error: true });
+    assert.deepEqual(data.spotMarketStatus, { bybit: { usePublicFeed: true }, bitget: { usePublicFeed: false } });
+    assert.equal(data.spotMarketCatalogs, undefined);
+    assert.equal(data.boards.bitget[0].pair, "BTC/USDT");
     assert.doesNotMatch(JSON.stringify(data), /admin-only-journal|private-notice-error|private-source|historyStartedAt|providers/);
     assert.equal(data.boards.upbit[0].symbol, "BTC");
     assert.equal((await f.request(`/api/market-data?since=${payload.generatedAt}`, "GET", undefined, token)).status, 200);

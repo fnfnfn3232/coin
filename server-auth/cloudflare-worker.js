@@ -57,7 +57,7 @@ const L2_FEE_CHAINS = {
 };
 const MARKET_DATA_CHUNK_PREFIX = "market-data-v1:chunk:";
 const EXCHANGE_HISTORY_KEY = "exchange-history-v1";
-const EXCHANGE_HISTORY_IDS = ["binance", "upbit", "bithumb", "coinbase", "robinhood"];
+const EXCHANGE_HISTORY_IDS = ["binance", "upbit", "bithumb", "coinbase", "robinhood", "bybit", "bitget"];
 const EXCHANGE_HISTORY_MAX_EVENTS = 3000;
 const SCREEN_SETTINGS_KEY = "screen-settings-v1";
 const LOGIN_ATTEMPT_KEY_PREFIX = "login-attempt:";
@@ -142,7 +142,7 @@ const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
 const GITHUB_OIDC_JWKS_URL = `${GITHUB_OIDC_ISSUER}/.well-known/jwks`;
 const GITHUB_OIDC_REPOSITORY = "fnfnfn3232/coin";
 const GITHUB_OIDC_AUDIENCE = "coin-board-auth-market-data";
-const SCREEN_MARKET_BOARDS = ["binance", "upbit", "bithumb", "coinbase", "robinhood"];
+const SCREEN_MARKET_BOARDS = EXCHANGE_HISTORY_IDS;
 const SCREEN_NAV_ITEMS = ["market", "news", "board", "resources"];
 const SCREEN_RESOURCE_ITEMS = ["futures", "ranking", "audit", "l2fees", "l1fees"];
 const SCREEN_RESOURCE_LABEL_DEFAULTS = {
@@ -156,7 +156,7 @@ const DEFAULT_SCREEN_SETTINGS = {
   navOrder: ["market", "news", "board", "resources"],
   resourceOrder: [...SCREEN_RESOURCE_ITEMS],
   resourceLabels: { ...SCREEN_RESOURCE_LABEL_DEFAULTS },
-  boardOrder: ["binance", "upbit", "bithumb", "coinbase", "robinhood"],
+  boardOrder: SCREEN_MARKET_BOARDS,
   statusPosition: "summary",
   visibleStats: {
     binance: true,
@@ -164,6 +164,8 @@ const DEFAULT_SCREEN_SETTINGS = {
     bithumb: true,
     coinbase: true,
     robinhood: true,
+    bybit: true,
+    bitget: true,
   },
   visibleStatus: {
     auto: true,
@@ -2488,7 +2490,7 @@ function emptyMarketDataPayload() {
     autoRefreshMinutes: 10,
     fxUsdKrw: 0,
     fxSource: "worker_protected",
-    boards: { binance: [], upbit: [], bithumb: [], coinbase: [], robinhood: [] },
+    boards: Object.fromEntries(SCREEN_MARKET_BOARDS.map(board => [board, []])),
     futures: { binance: [], coinbase: [], bybit: [] },
     coinInfo: {},
     news: {
@@ -2505,6 +2507,8 @@ function emptyMarketDataPayload() {
       bithumb: { total: 0, withCap: 0 },
       coinbase: { total: 0, withCap: 0 },
       robinhood: { total: 0, withCap: 0 },
+      bybit: { total: 0, withCap: 0 },
+      bitget: { total: 0, withCap: 0 },
     },
     futuresStats: {
       binance: { total: 0, withCap: 0 },
@@ -2530,6 +2534,8 @@ function normalizeMarketDataPayload(payload) {
       bithumb: Array.isArray(payload.boards.bithumb) ? payload.boards.bithumb : [],
       coinbase: Array.isArray(payload.boards.coinbase) ? payload.boards.coinbase : [],
       robinhood: Array.isArray(payload.boards.robinhood) ? payload.boards.robinhood : [],
+      bybit: Array.isArray(payload.boards.bybit) ? payload.boards.bybit : [],
+      bitget: Array.isArray(payload.boards.bitget) ? payload.boards.bitget : [],
     },
     futures: {
       binance: Array.isArray(payload.futures?.binance) ? payload.futures.binance : [],
@@ -2554,6 +2560,11 @@ function marketDataWithoutRefreshHistory(payload) {
   }
   safe.noticeRefresh = Object.fromEntries(Object.entries(payload.noticeRefresh || {}).map(([name, status]) => [name, status?.error ? { error: true } : {}]));
   if (payload.robinhoodRefresh) safe.robinhoodRefresh = { error: Boolean(payload.robinhoodRefresh.error) };
+  delete safe.spotMarketCatalogs;
+  safe.spotMarketStatus = Object.fromEntries(["bybit", "bitget"].map(board => {
+    const status = payload.spotMarketStatus?.[board];
+    return [board, { usePublicFeed: Boolean(status?.listingsError || status?.quotesError) }];
+  }));
   safe.refreshIssues = Object.fromEntries(Object.keys(payload.refreshIssues || {}).map(name => [name, "refresh_delayed"]));
   return safe;
 }
@@ -3112,8 +3123,8 @@ export class BoardStore {
       const batch = [];
 
       for (const [type, items] of [["listed", added], ["delisted", removed]]) {
-        // The first observed Robinhood list is a baseline, not 92 new listings.
-        if (exchange === "robinhood" && record.total === 0 && !record.events.length) continue;
+        // The first observed list is a baseline, not a mass listing event.
+        if (["robinhood", "bybit", "bitget"].includes(exchange) && record.total === 0 && !record.events.length) continue;
         for (const item of items) {
           const symbol = String(item?.symbol || "").trim();
           const pair = String(item?.pair || "").trim();
