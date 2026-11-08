@@ -2,7 +2,7 @@ import unittest
 from datetime import datetime, timezone
 from urllib.error import HTTPError
 
-from spot_market import (BITGET_COINS, CMC_LISTINGS, PAPRIKA_TICKERS, SOURCES, build_spot_board,
+from spot_market import (BITGET_COINS, CMC_LISTINGS, CMC_QUOTES, PAPRIKA_TICKERS, SOURCES, build_spot_board,
                          collect_cmc_spot_caps, collect_paprika_caps, exchange_asset_names)
 
 NOW = 1800000000
@@ -119,6 +119,41 @@ class SpotMarketTests(unittest.TestCase):
         good["quote"][0]["market_cap"] = 138e12
         rejected = collect_cmc_spot_caps(fetch, "bitget", {"CT": "Concrete"}, {}, None, NOW)
         self.assertEqual(rejected["assets"], {})
+
+    def test_kor_uses_reviewed_contract_and_reported_supply_outside_bulk_list(self):
+        item = {"id": 42772, "symbol": "KOR", "name": "Kor Protocol",
+                "platform": {"slug": "base", "token_address": "0xD3679306360705ba3580BC4130b56460FB4e6926"},
+                "circulating_supply": 0, "self_reported_circulating_supply": 2286666667,
+                "total_supply": 10000000000,
+                "quote": [{"symbol": "USD", "price": 0.0011, "market_cap": 0, "last_updated": ISO_NOW}]}
+
+        def fetch(url):
+            if url == CMC_LISTINGS:
+                return {"status": {"error_code": 0}, "data": [{"id": 1, "symbol": "BTC"}]}
+            if url == CMC_QUOTES + "?id=42772&convert=USD":
+                return {"status": {"error_code": 0}, "data": [item]}
+            if url == SOURCES["bybit"][0]:
+                raise HTTPError(url, 403, "Forbidden", None, None)
+            raise AssertionError(url)
+
+        rows, refs, cache, status = build_spot_board(fetch, "bybit", fx=1350, candidates={}, catalog={}, now=NOW)
+        self.assertTrue(status["browserSource"])
+        self.assertEqual(rows, [])
+        kor = refs["KOR"]
+        self.assertEqual(kor["verifiedListingKey"], "1331")
+        self.assertEqual(kor["capSource"], "spot_coinmarketcap_reported")
+        self.assertEqual(kor["circulatingSupply"], 2286666667)
+        self.assertAlmostEqual(kor["marketCapUsd"], 2286666667 * 0.0011)
+        self.assertEqual(cache["cmc"]["error"], "")
+
+        item["quote"][0]["market_cap"] = 2500000
+        _, refs, _, _ = build_spot_board(fetch, "bybit", fx=1350, candidates={}, catalog={}, now=NOW)
+        self.assertEqual(refs["KOR"]["capSource"], "spot_coinmarketcap_asset")
+        self.assertIsNone(refs["KOR"]["circulatingSupply"])
+
+        item["platform"]["token_address"] = "0x" + "1" * 40
+        _, refs, _, _ = build_spot_board(fetch, "bybit", fx=1350, candidates={}, catalog={}, now=NOW)
+        self.assertIsNone(refs["KOR"]["marketCapUsd"])
 
 
 if __name__ == "__main__":

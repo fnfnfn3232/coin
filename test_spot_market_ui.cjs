@@ -18,6 +18,10 @@ async function main() {
     BTC: { englishName: 'Bitcoin', koreanName: '비트코인', referencePriceUsd: 100, marketCapUsd: 1e12,
       capSource: 'spot_coinpaprika_asset', capSourceDetail: 'coinpaprika:btc-bitcoin', capUpdatedAt: Math.floor(now / 1000) },
     AI: { englishName: 'Sleepless AI', referencePriceUsd: 0.02, marketCapUsd: 1e7 },
+    KOR: { englishName: 'Kor Protocol', referencePriceUsd: 0.0011, marketCapUsd: 2515333.3337,
+      circulatingSupply: 2286666667, totalSupply: 10000000000, capSource: 'spot_coinmarketcap_reported',
+      verifiedListingKey: '1331', capUpdatedAt: Math.floor(now / 1000) },
+    REUSED: { englishName: 'Previous project', referencePriceUsd: 100, marketCapUsd: 1e7, verifiedListingKey: '42' },
   } };
   data.coinInfo.AI = { englishName: 'Gensyn', koreanName: '젠신', sources: {}, listings: {} };
   const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME_PATH
@@ -57,9 +61,11 @@ async function main() {
         assert.equal(route.request().headers().authorization, undefined);
         requests.push(url.pathname);
         const list = url.pathname.endsWith('instruments-info')
-          ? ['BTC', 'AI', 'AAPLX', 'HALT'].map(baseCoin => ({ baseCoin, quoteCoin: 'USDT', symbol: baseCoin + 'USDT',
+          ? ['BTC', 'AI', 'KOR', 'REUSED', 'AAPLX', 'HALT'].map(baseCoin => ({ baseCoin, quoteCoin: 'USDT', symbol: baseCoin + 'USDT',
+              symbolId: baseCoin === 'KOR' ? 1331 : 1332,
               symbolType: baseCoin === 'AAPLX' ? 'xstocks' : '', status: baseCoin === 'HALT' ? 'Closed' : 'Trading' }))
-          : ['BTC', 'AI', 'AAPLX', 'HALT'].map(symbol => ({ symbol: symbol + 'USDT', lastPrice: symbol === 'AI' ? '0.02' : '100' }));
+          : ['BTC', 'AI', 'KOR', 'REUSED', 'AAPLX', 'HALT'].map(symbol => ({ symbol: symbol + 'USDT',
+              lastPrice: ({ AI: '0.02', KOR: '0.001107' })[symbol] || '100' }));
         return route.fulfill({ json: { retCode: 0, time: Date.now(), result: { category: 'spot', list } }, headers });
       }
       return route.fulfill({ json: {}, headers });
@@ -71,12 +77,16 @@ async function main() {
     await page.waitForFunction(() => siteAuthConfirmed && data.spotMarketStatus);
     assert.equal(requests.length, 0, 'no extra spot REST fetch before selection');
     await page.locator('.tab[data-board="bybit"]').click();
-    await page.waitForFunction(() => getBoardRows('bybit').length === 2);
+    await page.waitForFunction(() => getBoardRows('bybit').length === 4);
     assert.equal(requests.length, 2);
-    assert.deepEqual(await page.evaluate(() => getBoardRows('bybit').map(row => row.symbol)), ['BTC', 'AI']);
+    assert.deepEqual(await page.evaluate(() => getBoardRows('bybit').map(row => row.symbol)), ['BTC', 'AI', 'KOR', 'REUSED']);
     assert.equal(await page.evaluate(() => getBoardRows('bybit')[0].marketCapUsd), 1e12);
     assert.equal(await page.evaluate(() => getBoardRows('bybit')[0].capSource), 'spot_coinpaprika_asset');
-    assert.match(await page.locator('#statusText').textContent(), /USDT 현물 2개/);
+    assert.match(await page.locator('#statusText').textContent(), /USDT 현물 4개/);
+    const kor = page.locator('tr[data-live-product="KORUSDT"]');
+    assert.match(await kor.locator('.cap-sub').textContent(), /참고 시총/);
+    assert.match(await kor.locator('.supply-main').textContent(), /신고 유통량/);
+    assert.equal(await page.evaluate(() => getBoardRows('bybit').find(row => row.symbol === 'REUSED').marketCapUsd), null);
     await page.getByRole('button', { name: 'Sleepless AI 코인 정보 보기' }).click();
     assert.match(await page.locator('#coinInfoTitle').textContent(), /Sleepless AI/);
     await page.locator('#coinInfoCloseBtn').click();
