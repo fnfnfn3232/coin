@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-tFJ0ceWkACnn+drgVHi3osC3I0THbP66kKxjfNJIaBk='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-1Qyo7GDq4PspTvXd2KIb+n1xNGoiMQIdni+jTD4LRIE='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -3909,6 +3909,21 @@
       .free-board-media img {
         height: auto;
         max-height: none;
+      }
+
+      .free-board-attachment-videos {
+        grid-template-columns: minmax(0, 1fr);
+        max-width: 760px;
+      }
+
+      .free-board-attachment-video {
+        margin: 0;
+        min-width: 0;
+      }
+
+      .free-board-media .free-board-attachment-video video {
+        display: block;
+        max-height: min(60vh, 520px);
       }
 
       .free-board-youtube {
@@ -8433,6 +8448,10 @@
 
       async function hydrateProtectedBoardMedia(root = document) {
         const scope = root instanceof Element || root instanceof Document ? root : document;
+        const showVideoError = (node) => {
+          const status = node.closest(".free-board-attachment-video")?.querySelector("[role=status]");
+          if (status) status.hidden = false;
+        };
         const waitForProtectedImageDecode = async (node) => {
           if (!(node instanceof HTMLImageElement)) return;
           if (typeof node.decode === "function") {
@@ -8495,6 +8514,7 @@
             console.error("protected board media load failed", error);
             node.dataset[errorKey] = "1";
             node.setAttribute("title", "Failed to load attached media. Please refresh and try again.");
+            if (node instanceof HTMLVideoElement) showVideoError(node);
           } finally {
             delete node.dataset[loadingKey];
           }
@@ -8508,6 +8528,10 @@
               loadedNode.parentElement.load();
             }
           });
+        });
+
+        scope.querySelectorAll(".free-board-attachment-video video").forEach((node) => {
+          node.addEventListener("error", () => showVideoError(node), { once: true });
         });
 
         scope.querySelectorAll("video[poster]").forEach((node) => {
@@ -10522,10 +10546,11 @@
         renderFreeBoardComposeAttachments();
         const preview = document.getElementById("freeBoardComposePreview");
         if (!preview) return;
-        const tokens = freeBoardComposeMediaTokens.filter((token) => token.actualKind !== "file");
+        const tokens = freeBoardComposeMediaTokens;
         const items = tokens
-          .map((token) => renderMediaTag(token.url, token.requestedKind, token.meta))
+          .map((token) => token.actualKind === "file" ? "" : renderMediaTag(token.url, token.requestedKind, token.meta))
           .filter(Boolean);
+        items.push(...renderFreeBoardAttachmentVideos(tokens));
         if (!items.length) {
           preview.hidden = true;
           preview.innerHTML = "";
@@ -10587,6 +10612,27 @@
             <div class="free-board-media-size-list">${items.join("")}</div>
           </div>
         `;
+      }
+
+      function renderFreeBoardAttachmentVideos(tokens) {
+        const seen = new Set();
+        const items = [];
+        for (const token of tokens || []) {
+          const name = String(token.meta?.name || "").trim();
+          if (token.requestedKind !== "file" || token.actualKind !== "file" || !/\.(mp4|webm|ogv)$/i.test(name)
+            || !isSafeAttachmentUrl(token.url)) continue;
+          const path = getProtectedBoardMediaPath(token.url);
+          const local = isLocalPreview() && /^blob:/i.test(token.url);
+          if (!path && !local) continue;
+          const key = path || token.url;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          items.push(`<figure class="free-board-attachment-video">
+            <video ${path ? "data-protected-board-media-src" : "src"}="${escapeAttr(token.url)}" aria-label="${escapeAttr(name)}" controls preload="metadata" playsinline referrerpolicy="no-referrer"></video>
+            <p role="status" hidden>동영상을 재생할 수 없습니다.</p>
+          </figure>`);
+        }
+        return items;
       }
 
       function renderFreeBoardAttachments(tokens) {
@@ -11431,6 +11477,7 @@
         if (freeBoardMode === "read" && selectedPost) {
           const draft = captureFreeBoardCommentDraft();
           const embeddedMediaTokens = validateEmbeddedMediaTokens(selectedPost.body).tokens;
+          const attachedVideos = renderFreeBoardAttachmentVideos(embeddedMediaTokens);
           newsPanel.innerHTML = `
             <div class="free-board-shell">
               <section class="free-board-card free-board-read-card">
@@ -11451,6 +11498,7 @@
                   <div class="free-board-read-body">
                     <div class="free-board-body">${renderSafePostBody(selectedPost.body, selectedPost.htmlEnabled)}</div>
                     ${renderFreeBoardMedia(selectedPost.mediaUrls)}
+                    ${attachedVideos.length ? `<div class="free-board-media free-board-attachment-videos">${attachedVideos.join("")}</div>` : ""}
                   </div>
                   ${renderFreeBoardAttachments(embeddedMediaTokens)}
                 </article>
