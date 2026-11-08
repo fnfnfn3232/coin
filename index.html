@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-1Qyo7GDq4PspTvXd2KIb+n1xNGoiMQIdni+jTD4LRIE='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-McZOGCVftiV8fAxuZPumQyldx2N2oDFcTvji5LCFlUI='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -3926,6 +3926,43 @@
         max-height: min(60vh, 520px);
       }
 
+      .free-board-video-play {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 9px;
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        max-height: min(60vh, 360px);
+        min-height: 96px;
+        padding: 12px;
+        border: 1px solid rgba(151, 183, 198, 0.26);
+        border-radius: 8px;
+        background: #101719;
+        color: #e2eef3;
+        font: inherit;
+        cursor: pointer;
+      }
+
+      .free-board-video-play::before {
+        content: "";
+        border-block: 6px solid transparent;
+        border-left: 9px solid currentColor;
+      }
+
+      .free-board-video-play:hover:not(:disabled) {
+        background: #19282e;
+      }
+
+      .free-board-video-play:disabled {
+        cursor: progress;
+      }
+
+      .free-board-attachment-video .free-board-video-play[hidden],
+      .free-board-media .free-board-attachment-video video[hidden] {
+        display: none;
+      }
+
       .free-board-youtube {
         display: block;
         aspect-ratio: 16 / 9;
@@ -7786,6 +7823,7 @@
     });
     if (window.BOARD_DATA) window.BOARD_DATA = data;
     const protectedBoardMediaCache = new Map();
+    const protectedBoardVideoRequests = new Map();
     let marketDataLoaded = isValidBoardPayload(window.BOARD_DATA);
     let marketDataLoadedFromServer = false;
     let marketDataLoadPromise = null;
@@ -8448,10 +8486,6 @@
 
       async function hydrateProtectedBoardMedia(root = document) {
         const scope = root instanceof Element || root instanceof Document ? root : document;
-        const showVideoError = (node) => {
-          const status = node.closest(".free-board-attachment-video")?.querySelector("[role=status]");
-          if (status) status.hidden = false;
-        };
         const waitForProtectedImageDecode = async (node) => {
           if (!(node instanceof HTMLImageElement)) return;
           if (typeof node.decode === "function") {
@@ -8514,7 +8548,6 @@
             console.error("protected board media load failed", error);
             node.dataset[errorKey] = "1";
             node.setAttribute("title", "Failed to load attached media. Please refresh and try again.");
-            if (node instanceof HTMLVideoElement) showVideoError(node);
           } finally {
             delete node.dataset[loadingKey];
           }
@@ -8530,14 +8563,71 @@
           });
         });
 
-        scope.querySelectorAll(".free-board-attachment-video video").forEach((node) => {
-          node.addEventListener("error", () => showVideoError(node), { once: true });
-        });
-
         scope.querySelectorAll("video[poster]").forEach((node) => {
           const originalUrl = node.dataset.protectedBoardPosterSrc || node.getAttribute("poster") || "";
           loadProtectedMediaUrl(node, "poster", "protectedBoardPoster", originalUrl);
         });
+      }
+
+      function loadProtectedBoardVideo(path) {
+        const cached = protectedBoardMediaCache.get(path);
+        if (cached) return Promise.resolve(cached);
+        const pending = protectedBoardVideoRequests.get(path);
+        if (pending) return pending;
+        const request = fetchServerAuthBlob(path, { method: "GET", timeoutMs: 30000 }).then(blob => {
+          if (protectedBoardVideoRequests.get(path) !== request || !siteAuthConfirmed || !canAccessFreeBoard() || isSiteLocked()) {
+            throw new Error("board_video_session_changed");
+          }
+          const source = URL.createObjectURL(blob);
+          protectedBoardMediaCache.set(path, source);
+          return source;
+        }).finally(() => {
+          if (protectedBoardVideoRequests.get(path) === request) protectedBoardVideoRequests.delete(path);
+        });
+        protectedBoardVideoRequests.set(path, request);
+        return request;
+      }
+
+      async function playFreeBoardAttachmentVideo(button) {
+        const wrapper = button.closest(".free-board-attachment-video");
+        const video = wrapper?.querySelector("video");
+        const status = wrapper?.querySelector("[role=status]");
+        if (!video || !status || button.disabled || !canAccessFreeBoard() || isSiteLocked()) return;
+        const url = button.dataset.freeBoardVideoPlay || "";
+        if (!isSafeAttachmentUrl(url)) return;
+        const path = getProtectedBoardMediaPath(url);
+        if (path ? !siteAuthConfirmed : !isLocalPreview() || !/^blob:/i.test(url)) return;
+        const generation = freeBoardCacheGeneration;
+        const hadFocus = document.activeElement === button;
+        button.disabled = true;
+        button.textContent = "동영상 불러오는 중";
+        status.hidden = true;
+        let source = "";
+        try {
+          source = path ? await loadProtectedBoardVideo(path) : url;
+          if (!button.isConnected || generation !== freeBoardCacheGeneration || isSiteLocked() || !canAccessFreeBoard()) return;
+          video.src = source;
+          video.hidden = false;
+          button.hidden = true;
+          if (hadFocus) video.focus({ preventScroll: true });
+          await video.play();
+        } catch (error) {
+          if (!button.isConnected || generation !== freeBoardCacheGeneration || isSiteLocked() || !canAccessFreeBoard()) return;
+          // A browser can require a second gesture after the authenticated fetch.
+          if (error?.name === "NotAllowedError" && source) return;
+          if (path && source && protectedBoardMediaCache.get(path) === source) {
+            protectedBoardMediaCache.delete(path);
+            URL.revokeObjectURL(source);
+          }
+          video.hidden = true;
+          video.removeAttribute("src");
+          video.load();
+          button.hidden = false;
+          status.hidden = false;
+        } finally {
+          button.disabled = false;
+          button.textContent = status.hidden ? "동영상 재생" : "다시 시도";
+        }
       }
 
       async function downloadProtectedBoardAttachment(url, fileName = "attachment") {
@@ -8577,6 +8667,7 @@
       }
 
       function clearProtectedBoardMediaCache() {
+        protectedBoardVideoRequests.clear();
         protectedBoardMediaCache.forEach((objectUrl) => {
           try {
             URL.revokeObjectURL(objectUrl);
@@ -10628,7 +10719,8 @@
           if (seen.has(key)) continue;
           seen.add(key);
           items.push(`<figure class="free-board-attachment-video">
-            <video ${path ? "data-protected-board-media-src" : "src"}="${escapeAttr(token.url)}" aria-label="${escapeAttr(name)}" controls preload="metadata" playsinline referrerpolicy="no-referrer"></video>
+            <button class="free-board-video-play" type="button" data-free-board-video-play="${escapeAttr(token.url)}" aria-label="${escapeAttr(`${name} 재생`)}">동영상 재생</button>
+            <video aria-label="${escapeAttr(name)}" controls preload="none" playsinline referrerpolicy="no-referrer" hidden></video>
             <p role="status" hidden>동영상을 재생할 수 없습니다.</p>
           </figure>`);
         }
@@ -19644,6 +19736,12 @@
         if (richActionButton) {
           event.preventDefault();
           if (richActionButton.dataset.freeBoardRichAction === "link") insertFreeBoardRichEditorLink();
+          return;
+        }
+
+        const videoPlayButton = clickTarget.closest("[data-free-board-video-play]");
+        if (videoPlayButton) {
+          await playFreeBoardAttachmentVideo(videoPlayButton);
           return;
         }
 
