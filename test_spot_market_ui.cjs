@@ -15,7 +15,8 @@ async function main() {
   data.boards.bitget = [{ ...data.boards.binance[0], ...base, exchange: 'bitget' }];
   data.spotMarketStatus = { bybit: { usePublicFeed: true }, bitget: { usePublicFeed: false } };
   data.spotMarketReferences = { bybit: {
-    BTC: { englishName: 'Bitcoin', koreanName: '비트코인', referencePriceUsd: 100, marketCapUsd: 1e12 },
+    BTC: { englishName: 'Bitcoin', koreanName: '비트코인', referencePriceUsd: 100, marketCapUsd: 1e12,
+      capSource: 'spot_coinpaprika_asset', capSourceDetail: 'coinpaprika:btc-bitcoin', capUpdatedAt: Math.floor(now / 1000) },
     AI: { englishName: 'Sleepless AI', referencePriceUsd: 0.02, marketCapUsd: 1e7 },
   } };
   data.coinInfo.AI = { englishName: 'Gensyn', koreanName: '젠신', sources: {}, listings: {} };
@@ -74,6 +75,8 @@ async function main() {
     assert.equal(requests.length, 2);
     assert.deepEqual(await page.evaluate(() => getBoardRows('bybit').map(row => row.symbol)), ['BTC', 'AI']);
     assert.equal(await page.evaluate(() => getBoardRows('bybit')[0].marketCapUsd), 1e12);
+    assert.equal(await page.evaluate(() => getBoardRows('bybit')[0].capSource), 'spot_coinpaprika_asset');
+    assert.match(await page.locator('#statusText').textContent(), /USDT 현물 2개/);
     await page.getByRole('button', { name: 'Sleepless AI 코인 정보 보기' }).click();
     assert.match(await page.locator('#coinInfoTitle').textContent(), /Sleepless AI/);
     await page.locator('#coinInfoCloseBtn').click();

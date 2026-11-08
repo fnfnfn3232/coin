@@ -114,6 +114,7 @@ def build_refresh_health(payload, previous=None, *, now=None, maintenance=None):
             checks[key] = bool((payload.get("boards") or {}).get(exchange)) and key not in issues
         identity_key = f"{key}_identity"
         checks[identity_key] = identity_key not in issues
+        checks[f"{key}_cap"] = f"{key}_cap" not in issues
     for exchange in ("upbit", "bithumb", "binance"):
         status = notices.get(exchange) or {}
         checks[f"{exchange}_notices"] = bool(status.get("checkedAt")) and not status.get("error") and f"{exchange}_notices" not in issues

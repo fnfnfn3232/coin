@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-8APbD3Z3ky3mP6hvRgs877Kd/nCL4KG1sMbgPQwO4dA='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-tnMnSCdOCTcLhqaQT/6Xj/w3t+V/cJu63X7LG6Ybdzk='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -14971,6 +14971,8 @@
         robinhood_verified_reference: "동일 자산 검증 자료 (외부 시총)",
         robinhood_missing: "시총 미확인",
         spot_verified_reference: "동일 자산 검증 자료 (외부 시총)",
+        spot_coinmarketcap_asset: "CoinMarketCap · 동일 자산 확인",
+        spot_coinpaprika_asset: "CoinPaprika · 거래쌍 자산 ID 확인",
         spot_cap_missing: "시총 미확인",
         binance_exact: "\uBC14\uC774\uB0B8\uC2A4 \uC2E4\uC81C \uC2DC\uCD1D",
         upbit_cmc: "\uC5C5\uBE44\uD2B8 CMC",
@@ -16001,6 +16003,8 @@
           bitget_spot: "비트겟 현물",
           bybit_spot_identity: "바이비트 현물 자산 확인",
           bitget_spot_identity: "비트겟 현물 자산 확인",
+          bybit_spot_cap: "바이비트 현물 시총",
+          bitget_spot_cap: "비트겟 현물 시총",
           upbit_notices: "업비트 공지", bithumb_notices: "빗썸 공지", binance_notices: "바이낸스 공지",
           binance_futures: "바이낸스 선물", coinbase_futures: "코인베이스 선물", defillama: "디파이 자료", apywa: "APYWA 등급", upbit_audit: "업비트 실사 보고서", upbit_asset_names: "업비트 공식 코인명", upbit_audit_market: "업비트 실사 시세·발행량", upbit_wallet_networks: "업비트 입출금 네트워크", pipeline: "서버 갱신" };
         const kinds = { failure: "장애 감지", recovered: "복구 완료", attention: "반복 장애", fallback: "예비 경로 전환",
@@ -17291,7 +17295,8 @@
             const refPrice = toPositiveNumber(candidate.referencePriceUsd);
             const officialName = String(item.fullName || "").trim();
             const matched = price !== null && refPrice !== null && price / refPrice >= 0.65 && price / refPrice <= 1.55
-              && (!officialName || spotNamesMatch(symbol, officialName, candidate.englishName));
+              && (!candidate.capUpdatedAt || now - candidate.capUpdatedAt * 1000 <= 21600000)
+              && (!officialName || officialName === candidate.spotListingName || spotNamesMatch(symbol, officialName, candidate.englishName));
             const ref = matched ? candidate : {};
             const name = officialName || ref.englishName || symbol;
             const cap = toPositiveNumber(ref.marketCapUsd);
@@ -17300,7 +17305,7 @@
               priceKrw: price !== null && fx !== null ? price * fx : null, priceUpdatedAt: price === null ? null : Math.floor(at / 1000),
               marketCapUsd: cap, marketCapKrw: cap !== null && fx !== null ? cap * fx : null, sortCapUsd: cap,
               fdvKrw: ref.fdvUsd && fx ? ref.fdvUsd * fx : null, circulatingRatio: computeCirculatingRatio(ref.circulatingSupply, ref.totalSupply),
-              capSource: cap ? "spot_verified_reference" : "spot_cap_missing",
+              capSource: cap ? (ref.capSource || "spot_verified_reference") : "spot_cap_missing",
               marketIdentityVerified: matched || Boolean(officialName), supplyIdentityVerified: matched });
           }
           const oldCount = Math.max(entry.rows.length, data.boards?.[board]?.length || 0);
@@ -18787,6 +18792,8 @@
                   const matches = identityRows[index];
                   if (!matches) return symbolSet.has(symbol);
                   const other = matches.get(symbol);
+                  if (symbol === "XRP" && other && [row, other].some(item => item.spotAssetId === "52" || item.capSourceDetail === "coinpaprika:xrp-xrp")
+                    && [row, other].every(item => item.englishName === "XRP" && item.marketIdentityVerified !== false)) return true;
                   return other && spotNamesMatch(symbol, row.englishName, other.englishName);
                 });
               })
@@ -19004,7 +19011,7 @@
         ).length;
         const totalLabel = state.board === "triple"
           ? `4개 동시상장 ${formatNumber(rows.length, 0)}개`
-          : `총 ${formatNumber(rows.length, 0)}개`;
+          : `${EXTRA_SPOT_BOARDS.includes(state.board) ? "USDT 현물" : "총"} ${formatNumber(rows.length, 0)}개`;
         const activeCompareBoards = getActiveCompareBoards();
         statusText.textContent = activeCompareBoards.length
           ? `\uACF5\uD1B5 \uC0C1\uC7A5 ${formatNumber(rows.length, 0)}\uAC1C | \uAE30\uC900 ${boardLabel(state.board)} | \uBE44\uAD50 ${activeCompareBoards.map((board) => boardLabel(board)).join(" + ")} | \uC2DC\uCD1D \uD655\uC778 ${formatNumber(withCapCount, 0)}\uAC1C | \uAC00\uACA9 \uD655\uC778 ${formatNumber(withPriceCount, 0)}\uAC1C | \uC720\uD1B5 \uC815\uBCF4 \uD655\uC778 ${formatNumber(withSupplyCount, 0)}\uAC1C | ${state.page} / ${totalPages} \uD398\uC774\uC9C0`
@@ -19018,7 +19025,16 @@
           footerNote.textContent += ` | ${TEXT.robinhoodNote}`;
         }
         if (EXTRA_SPOT_BOARDS.includes(state.board)) {
-          footerNote.textContent += " | USDT 현물 · 시총은 동일 자산 확인 자료 · 원화는 USDT≈USD 환산 참고값";
+          footerNote.append(" | 거래 중인 USDT 암호화폐 현물만 표시 · 시총 자료: ");
+          [["CoinPaprika", "https://coinpaprika.com/"], ["CoinMarketCap", "https://coinmarketcap.com/"]].forEach(([label, url], index) => {
+            const link = document.createElement("a");
+            link.textContent = label;
+            link.href = url;
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            footerNote.append(index ? " · " : "", link);
+          });
+          footerNote.append(" · 원화는 USDT≈USD 환산 참고값");
         }
       }
 
