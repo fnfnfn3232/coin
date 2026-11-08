@@ -4861,6 +4861,8 @@ def make_payload(previous_payload: dict | None = None) -> dict:
             "identityCatalog": len(catalog.get("names") or {}), "referenceCaps": sum(bool(ref["marketCapUsd"]) for ref in references.values()),
             "coinMarketCap": sum(bool(ref.get("spotAssetId")) for ref in references.values()),
             "coinPaprika": sum(ref.get("capSource") == "spot_coinpaprika_asset" for ref in references.values()),
+            "reviewedCaps": {base: {"source": ref["capSource"], "usd": ref["marketCapUsd"]}
+                             for base, ref in references.items() if ref.get("verifiedListingKey")},
             "capError": (catalog.get("cmc") or {}).get("error"),
             "paprikaCapError": paprika_caps.get("error"),
             "identityError": catalog.get("error"), **status,

@@ -22,9 +22,20 @@ REFERENCE_INTERVAL = 3600
 REFERENCE_MAX_AGE = 6 * REFERENCE_INTERVAL
 BASE = re.compile(r"[A-Z0-9]{1,30}")
 CMC_LISTINGS = "https://pro-api.coinmarketcap.com/public-api/v3/cryptocurrency/listings/latest?start=1&limit=1500&convert=USD"
+CMC_QUOTES = "https://pro-api.coinmarketcap.com/public-api/v3/cryptocurrency/quotes/latest"
 BITGET_COINS = "https://api.bitget.com/api/v2/spot/public/coins"
 PAPRIKA_TICKERS = "https://api.coinpaprika.com/v1/tickers"
 CMC_REFRESH_INTERVAL = 1800
+REVIEWED_SPOT_ASSETS = {
+    # Both spot listing notices identify this Base contract.
+    "KOR": {
+        "name": "KOR Protocol",
+        "id": "42772",
+        "platform": "base",
+        "address": "0xd3679306360705ba3580bc4130b56460fb4e6926",
+        "listingKeys": {"bybit": "1331", "bitget": "1793800800000"},
+    },
+}
 
 
 def spot_items(exchange, payload):
@@ -169,7 +180,7 @@ def collect_paprika_caps(fetch, catalogs, previous, now):
         return {"checkedAt": now, "assets": assets, "error": f"{type(error).__name__}:{str(error)[:100]}"}
 
 
-def cmc_quote_reference(item, now):
+def cmc_quote_reference(item, now, *, allow_reported=False):
     if item.get("is_active", 1) != 1 or not item.get("name"):
         return None
     quote = item.get("quote")
@@ -180,7 +191,16 @@ def cmc_quote_reference(item, now):
     at = source_timestamp(usd.get("last_updated"))
     price, cap = positive(usd.get("price")), positive(usd.get("market_cap"))
     supply = positive(item.get("circulating_supply"))
-    if not price or not cap or not -60 <= now - at <= REFERENCE_MAX_AGE:
+    total = positive(item.get("total_supply"))
+    if not price or not -60 <= now - at <= REFERENCE_MAX_AGE:
+        return None
+    source = "spot_coinmarketcap_asset"
+    if not cap and not supply and allow_reported:
+        reported = positive(item.get("self_reported_circulating_supply"))
+        if reported and total and reported <= total:
+            supply, cap = reported, reported * price
+            source = "spot_coinmarketcap_reported"
+    if not cap:
         return None
     if supply and not 0.75 <= cap / (supply * price) <= 1.25:
         return None
@@ -188,18 +208,22 @@ def cmc_quote_reference(item, now):
     return {
         "englishName": item["name"], "referencePriceUsd": price,
         "marketCapUsd": cap, "capUpdatedAt": at, "spotAssetId": asset_id,
-        "capSource": "spot_coinmarketcap_asset",
-        "circulatingSupply": supply, "totalSupply": positive(item.get("total_supply")),
+        "capSource": source,
+        "circulatingSupply": supply, "totalSupply": total,
         "fdvUsd": positive(usd.get("fully_diluted_market_cap")),
         "capSourceDetail": f"coinmarketcap_quotes:{asset_id}",
         "logo": f"https://s2.coinmarketcap.com/static/img/coins/64x64/{asset_id}.png",
     }
 
 
-def collect_cmc_spot_caps(fetch, exchange, names, existing, previous, now):
+def collect_cmc_spot_caps(fetch, exchange, names, existing, previous, now, *, reviewed=None):
     previous = previous or {}
+    reviewed = reviewed or {}
     targets = {base for base, name in names.items() if name and (existing.get(base) or {}).get("capSource") != "spot_coinpaprika_asset"}
-    if not targets or now - int(previous.get("checkedAt") or 0) < CMC_REFRESH_INTERVAL:
+    reviewed = {base: asset for base, asset in reviewed.items() if base in targets}
+    reviewed_ids = sorted(asset["id"] for asset in reviewed.values())
+    if not targets or (previous.get("reviewedIds", []) == reviewed_ids
+                       and now - int(previous.get("checkedAt") or 0) < CMC_REFRESH_INTERVAL):
         return previous
     refs = {base: ref for base, ref in (previous.get("assets") or {}).items()
             if base in targets and names[base] == ref.get("spotListingName")
@@ -219,7 +243,7 @@ def collect_cmc_spot_caps(fetch, exchange, names, existing, previous, now):
         for item in items:
             base = str(item.get("symbol") or "").upper()
             asset_id = str(item.get("id") or "")
-            if base not in targets or not re.fullmatch(r"[1-9][0-9]{0,9}", asset_id):
+            if base not in targets or base in reviewed or not re.fullmatch(r"[1-9][0-9]{0,9}", asset_id):
                 continue
             address = contract_key((item.get("platform") or {}).get("token_address"))
             known_addresses = contracts.get(base) or set()
@@ -229,7 +253,7 @@ def collect_cmc_spot_caps(fetch, exchange, names, existing, previous, now):
                 # XRP's verified project name is also its ticker. Don't generalize that to other tickers.
                 if name_key(names[base]) != name_key(base) or (base == "XRP" and asset_id == "52"):
                     by_name.setdefault(base, {})[asset_id] = item
-        for base in targets:
+        for base in targets - reviewed.keys():
             matches = by_contract.get(base) or by_name.get(base) or {}
             ref = cmc_quote_reference(next(iter(matches.values())), now) if len(matches) == 1 else None
             if ref is not None:
@@ -238,7 +262,28 @@ def collect_cmc_spot_caps(fetch, exchange, names, existing, previous, now):
                 refs.pop(base, None)
     except Exception as error:
         errors.append(f"quotes:{type(error).__name__}:{str(error)[:100]}")
-    return {"checkedAt": now, "assets": refs, "error": "; ".join(errors)}
+    if reviewed_ids:
+        try:
+            items = cmc_data(fetch(f"{CMC_QUOTES}?id={','.join(reviewed_ids)}&convert=USD"))
+            if not isinstance(items, list):
+                raise ValueError("invalid_cmc_reviewed_quotes")
+            for base, asset in reviewed.items():
+                matches = [item for item in items if str(item.get("id")) == asset["id"] and item.get("symbol") == base]
+                refs.pop(base, None)
+                if len(matches) != 1:
+                    continue
+                item = matches[0]
+                platform = item.get("platform") or {}
+                if (platform.get("slug") != asset["platform"]
+                        or contract_key(platform.get("token_address")) != asset["address"]
+                        or not same_name(base, asset["name"], item.get("name"))):
+                    continue
+                ref = cmc_quote_reference(item, now, allow_reported=True)
+                if ref:
+                    refs[base] = {**ref, "spotListingName": names[base], "verifiedListingKey": asset["listingKeys"][exchange]}
+        except Exception as error:
+            errors.append(f"reviewed_quotes:{type(error).__name__}:{str(error)[:100]}")
+    return {"checkedAt": now, "assets": refs, "reviewedIds": reviewed_ids, "error": "; ".join(errors)}
 
 
 def build_references(names, candidates):
@@ -291,6 +336,16 @@ def build_spot_board(fetch, exchange, previous=None, *, fx, candidates, catalog=
     names = catalog.get("names", {}) if catalog_fresh else {}
     if pairs is not None:
         names = {base: name or names.get(base) for base, (name, _) in pairs.items()}
+    reviewed = {}
+    names = dict(names)
+    for base, asset in REVIEWED_SPOT_ASSETS.items():
+        key = asset["listingKeys"].get(exchange)
+        if not key or (pairs is not None and pairs.get(base, ("", ""))[1] != key):
+            continue
+        if names.get(base) and not same_name(base, names[base], asset["name"]):
+            continue
+        names[base] = asset["name"]
+        reviewed[base] = asset
     assets = build_references(names, candidates)
     for base, asset_id in (catalog.get("ids") or {}).items() if catalog_fresh else ():
         ref = (paprika_caps or {}).get(asset_id)
@@ -298,7 +353,7 @@ def build_spot_board(fetch, exchange, previous=None, *, fx, candidates, catalog=
         if ref and same_name(base, names.get(base), ref["englishName"]):
             assets[base] = {**ref, "spotListingName": names[base],
                             "koreanName": existing.get("koreanName") or "", "logo": existing.get("logo")}
-    cmc = collect_cmc_spot_caps(fetch, exchange, names, assets, (old_catalog or {}).get("cmc"), now)
+    cmc = collect_cmc_spot_caps(fetch, exchange, names, assets, (old_catalog or {}).get("cmc"), now, reviewed=reviewed)
     catalog = {**catalog, "cmc": cmc}
     for base, ref in (cmc.get("assets") or {}).items():
         existing = assets.get(base) or {}
@@ -331,7 +386,8 @@ def build_spot_board(fetch, exchange, previous=None, *, fx, candidates, catalog=
         ref_price = positive(ref.get("referencePriceUsd"))
         # A recycled ticker must not inherit the old project's cap on a stale mapping.
         name_matches = not name or name == ref.get("spotListingName") or same_name(base, name, ref.get("englishName"))
-        if not name_matches or not (price and ref_price and 0.65 <= price / ref_price <= 1.55):
+        listing_matches = not ref.get("verifiedListingKey") or ref["verifiedListingKey"] == listing_key
+        if not listing_matches or not name_matches or not (price and ref_price and 0.65 <= price / ref_price <= 1.55):
             ref = {}
         if (not name and as_of < now - 300 and old and listing_key
                 and (old.get("spotListingKey"), old.get("spotListingName")) != (listing_key, name)):
