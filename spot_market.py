@@ -2,6 +2,7 @@
 
 import re
 import time
+from datetime import datetime
 
 from robinhood_market import name_key, positive, same_name
 
@@ -20,6 +21,10 @@ SOURCES = {
 REFERENCE_INTERVAL = 3600
 REFERENCE_MAX_AGE = 6 * REFERENCE_INTERVAL
 BASE = re.compile(r"[A-Z0-9]{1,30}")
+CMC_LISTINGS = "https://pro-api.coinmarketcap.com/public-api/v3/cryptocurrency/listings/latest?start=1&limit=1500&convert=USD"
+BITGET_COINS = "https://api.bitget.com/api/v2/spot/public/coins"
+PAPRIKA_TICKERS = "https://api.coinpaprika.com/v1/tickers"
+CMC_REFRESH_INTERVAL = 1800
 
 
 def spot_items(exchange, payload):
@@ -72,7 +77,7 @@ def spot_quotes(exchange, payload, now):
     return quotes
 
 
-def exchange_asset_names(fetch, exchange_id):
+def exchange_asset_names(fetch, exchange_id, *, include_ids=False):
     tickers = fetch(f"https://api.coinpaprika.com/v1/exchanges/{exchange_id}/markets?quotes=USD")
     if not isinstance(tickers, list) or not tickers:
         raise ValueError("invalid_exchange_tickers")
@@ -84,20 +89,156 @@ def exchange_asset_names(fetch, exchange_id):
                 or not BASE.fullmatch(base) or not asset_id or not name):
             continue
         mappings.setdefault(base, set()).add((asset_id, name))
-    return {base: next(iter(identities))[1] for base, identities in mappings.items() if len(identities) == 1}
+    verified = {base: next(iter(identities)) for base, identities in mappings.items() if len(identities) == 1}
+    return verified if include_ids else {base: entry[1] for base, entry in verified.items()}
 
 
 def collect_names(fetch, exchange, previous, now):
     previous = previous or {}
-    if now - int(previous.get("checkedAt") or 0) < REFERENCE_INTERVAL:
+    if ("ids" in previous or previous.get("error")) and now - int(previous.get("checkedAt") or 0) < REFERENCE_INTERVAL:
         return previous
     try:
-        names = exchange_asset_names(fetch, SOURCES[exchange][2])
-        if not names:
+        identities = exchange_asset_names(fetch, SOURCES[exchange][2], include_ids=True)
+        if not identities:
             raise ValueError("empty_exchange_asset_names")
-        return {"checkedAt": now, "asOf": now, "names": names}
+        return {"checkedAt": now, "asOf": now, "names": {base: entry[1] for base, entry in identities.items()},
+                "ids": {base: entry[0] for base, entry in identities.items()}}
     except Exception as error:
         return {**previous, "checkedAt": now, "error": f"{type(error).__name__}:{str(error)[:120]}"}
+
+
+def cmc_data(payload):
+    if not isinstance(payload, dict) or str((payload.get("status") or {}).get("error_code")) != "0":
+        raise ValueError("invalid_cmc_response")
+    return payload.get("data")
+
+
+def contract_key(value):
+    key = str(value or "").strip()
+    return key.lower() if re.fullmatch(r"0x[0-9a-fA-F]{40}", key) else key
+
+
+def bitget_spot_contracts(fetch):
+    payload = fetch(BITGET_COINS)
+    return {
+        row["coin"]: {key for chain in row.get("chains") or []
+                      if (key := contract_key(chain.get("contractAddress")))}
+        for row in spot_items("bitget", payload) if BASE.fullmatch(str(row.get("coin") or ""))
+    }
+
+
+def source_timestamp(value):
+    try:
+        return int(datetime.fromisoformat(str(value or "").replace("Z", "+00:00")).timestamp())
+    except (ValueError, OverflowError):
+        return 0
+
+
+def collect_paprika_caps(fetch, catalogs, previous, now):
+    previous = previous or {}
+    ids = {asset_id for catalog in catalogs.values()
+           if 0 <= now - int(catalog.get("asOf") or 0) <= REFERENCE_MAX_AGE
+           for asset_id in (catalog.get("ids") or {}).values()}
+    assets = {asset_id: ref for asset_id, ref in (previous.get("assets") or {}).items()
+              if asset_id in ids and now - ref["capUpdatedAt"] <= REFERENCE_MAX_AGE}
+    if not ids or now - int(previous.get("checkedAt") or 0) < CMC_REFRESH_INTERVAL:
+        return {**previous, "assets": assets}
+    try:
+        rows = fetch(PAPRIKA_TICKERS)
+        if not isinstance(rows, list) or not rows:
+            raise ValueError("invalid_paprika_tickers")
+        current = {}
+        for row in rows:
+            asset_id = row.get("id")
+            if asset_id not in ids or not row.get("name"):
+                continue
+            usd = (row.get("quotes") or {}).get("USD") or {}
+            price, cap = positive(usd.get("price")), positive(usd.get("market_cap"))
+            at = source_timestamp(row.get("last_updated"))
+            if not price or not cap or not -60 <= now - at <= REFERENCE_MAX_AGE:
+                continue
+            current[asset_id] = {
+                "englishName": row["name"], "referencePriceUsd": price, "marketCapUsd": cap, "capUpdatedAt": at,
+                "circulatingSupply": positive(row.get("circulating_supply")), "totalSupply": positive(row.get("total_supply")),
+                "capSource": "spot_coinpaprika_asset", "capSourceDetail": f"coinpaprika:{asset_id}",
+            }
+        if not current or len(current) < len(assets) * 0.8:
+            raise ValueError("incomplete_paprika_tickers")
+        return {"checkedAt": now, "assets": current}
+    except Exception as error:
+        return {"checkedAt": now, "assets": assets, "error": f"{type(error).__name__}:{str(error)[:100]}"}
+
+
+def cmc_quote_reference(item, now):
+    if item.get("is_active", 1) != 1 or not item.get("name"):
+        return None
+    quote = item.get("quote")
+    usd = quote.get("USD") if isinstance(quote, dict) else next(
+        (entry for entry in quote or [] if entry.get("symbol") == "USD"), None)
+    if not isinstance(usd, dict):
+        return None
+    at = source_timestamp(usd.get("last_updated"))
+    price, cap = positive(usd.get("price")), positive(usd.get("market_cap"))
+    supply = positive(item.get("circulating_supply"))
+    if not price or not cap or not -60 <= now - at <= REFERENCE_MAX_AGE:
+        return None
+    if supply and not 0.75 <= cap / (supply * price) <= 1.25:
+        return None
+    asset_id = str(item["id"])
+    return {
+        "englishName": item["name"], "referencePriceUsd": price,
+        "marketCapUsd": cap, "capUpdatedAt": at, "spotAssetId": asset_id,
+        "capSource": "spot_coinmarketcap_asset",
+        "circulatingSupply": supply, "totalSupply": positive(item.get("total_supply")),
+        "fdvUsd": positive(usd.get("fully_diluted_market_cap")),
+        "capSourceDetail": f"coinmarketcap_quotes:{asset_id}",
+        "logo": f"https://s2.coinmarketcap.com/static/img/coins/64x64/{asset_id}.png",
+    }
+
+
+def collect_cmc_spot_caps(fetch, exchange, names, existing, previous, now):
+    previous = previous or {}
+    targets = {base for base, name in names.items() if name and (existing.get(base) or {}).get("capSource") != "spot_coinpaprika_asset"}
+    if not targets or now - int(previous.get("checkedAt") or 0) < CMC_REFRESH_INTERVAL:
+        return previous
+    refs = {base: ref for base, ref in (previous.get("assets") or {}).items()
+            if base in targets and names[base] == ref.get("spotListingName")
+            and now - int(ref.get("capUpdatedAt") or 0) <= REFERENCE_MAX_AGE}
+    errors = []
+    contracts = {}
+    if exchange == "bitget":
+        try:
+            contracts = bitget_spot_contracts(fetch)
+        except Exception as error:
+            errors.append(f"contracts:{type(error).__name__}:{str(error)[:100]}")
+    try:
+        items = cmc_data(fetch(CMC_LISTINGS))
+        if not isinstance(items, list) or not items:
+            raise ValueError("invalid_cmc_spot_quotes")
+        by_name, by_contract = {}, {}
+        for item in items:
+            base = str(item.get("symbol") or "").upper()
+            asset_id = str(item.get("id") or "")
+            if base not in targets or not re.fullmatch(r"[1-9][0-9]{0,9}", asset_id):
+                continue
+            address = contract_key((item.get("platform") or {}).get("token_address"))
+            known_addresses = contracts.get(base) or set()
+            if address and address in known_addresses:
+                by_contract.setdefault(base, {})[asset_id] = item
+            elif (not address or not known_addresses) and same_name(base, names[base], item.get("name")):
+                # XRP's verified project name is also its ticker. Don't generalize that to other tickers.
+                if name_key(names[base]) != name_key(base) or (base == "XRP" and asset_id == "52"):
+                    by_name.setdefault(base, {})[asset_id] = item
+        for base in targets:
+            matches = by_contract.get(base) or by_name.get(base) or {}
+            ref = cmc_quote_reference(next(iter(matches.values())), now) if len(matches) == 1 else None
+            if ref is not None:
+                refs[base] = {**ref, "spotListingName": names[base]}
+            else:
+                refs.pop(base, None)
+    except Exception as error:
+        errors.append(f"quotes:{type(error).__name__}:{str(error)[:100]}")
+    return {"checkedAt": now, "assets": refs, "error": "; ".join(errors)}
 
 
 def build_references(names, candidates):
@@ -128,7 +269,7 @@ def build_references(names, candidates):
     return assets
 
 
-def build_spot_board(fetch, exchange, previous=None, *, fx, candidates, now=None):
+def build_spot_board(fetch, exchange, previous=None, *, fx, candidates, catalog=None, paprika_caps=None, now=None):
     now = int(time.time()) if now is None else now
     previous = previous or {}
     old_rows = previous.get("boards", {}).get(exchange) or []
@@ -144,12 +285,27 @@ def build_spot_board(fetch, exchange, previous=None, *, fx, candidates, now=None
     except Exception as error:
         status["listingsError"] = f"{type(error).__name__}:{str(error)[:120]}"
         status["browserSource"] = getattr(error, "code", None) in (403, 451)
-    catalog = collect_names(fetch, exchange, old_catalog, now)
+    catalog = catalog if catalog is not None else collect_names(fetch, exchange, old_catalog, now)
     as_of = int(catalog.get("asOf") or 0)
-    names = catalog.get("names", {}) if 0 <= now - as_of <= REFERENCE_MAX_AGE else {}
+    catalog_fresh = 0 <= now - as_of <= REFERENCE_MAX_AGE
+    names = catalog.get("names", {}) if catalog_fresh else {}
     if pairs is not None:
         names = {base: name or names.get(base) for base, (name, _) in pairs.items()}
     assets = build_references(names, candidates)
+    for base, asset_id in (catalog.get("ids") or {}).items() if catalog_fresh else ():
+        ref = (paprika_caps or {}).get(asset_id)
+        existing = assets.get(base) or {}
+        if ref and same_name(base, names.get(base), ref["englishName"]):
+            assets[base] = {**ref, "spotListingName": names[base],
+                            "koreanName": existing.get("koreanName") or "", "logo": existing.get("logo")}
+    cmc = collect_cmc_spot_caps(fetch, exchange, names, assets, (old_catalog or {}).get("cmc"), now)
+    catalog = {**catalog, "cmc": cmc}
+    for base, ref in (cmc.get("assets") or {}).items():
+        existing = assets.get(base) or {}
+        if (existing.get("capSource") == "spot_coinpaprika_asset" or not names.get(base) or names[base] != ref["spotListingName"]
+                or now - ref["capUpdatedAt"] > REFERENCE_MAX_AGE):
+            continue
+        assets[base] = {**ref, "koreanName": existing.get("koreanName") or ""}
     if pairs is None:
         rows = [{**row, "priceStale": True} for row in old_rows]
         for row in rows:
@@ -174,7 +330,7 @@ def build_spot_board(fetch, exchange, previous=None, *, fx, candidates, now=None
         ref = assets.get(base) or {}
         ref_price = positive(ref.get("referencePriceUsd"))
         # A recycled ticker must not inherit the old project's cap on a stale mapping.
-        name_matches = not name or name_key(name) == name_key(base) or same_name(base, name, ref.get("englishName"))
+        name_matches = not name or name == ref.get("spotListingName") or same_name(base, name, ref.get("englishName"))
         if not name_matches or not (price and ref_price and 0.65 <= price / ref_price <= 1.55):
             ref = {}
         if (not name and as_of < now - 300 and old and listing_key
@@ -183,7 +339,7 @@ def build_spot_board(fetch, exchange, previous=None, *, fx, candidates, now=None
         cap = ref.get("marketCapUsd")
         display_name = name or ref.get("englishName") or base
         rows.append({
-            **{key: ref.get(key) for key in ("logo", "circulatingSupply", "totalSupply", "fdvUsd")},
+            **{key: ref.get(key) for key in ("logo", "circulatingSupply", "totalSupply", "fdvUsd", "spotAssetId")},
             "exchange": exchange, "symbol": base, "pair": f"{base}/USDT",
             "name": ref.get("koreanName") or display_name, "englishName": display_name,
             "koreanName": ref.get("koreanName") or "", "nativeCurrency": "USDT",
@@ -191,9 +347,9 @@ def build_spot_board(fetch, exchange, previous=None, *, fx, candidates, now=None
             "priceUsd": price, "priceKrw": price * fx if price else None,
             "priceSource": f"{exchange}_spot_ticker", "priceUpdatedAt": at, "priceStale": quote is None,
             "marketCapUsd": cap, "marketCapKrw": cap * fx if cap else None, "sortCapUsd": cap,
-            "capSource": "spot_verified_reference" if cap else "spot_cap_missing",
+            "capSource": (ref.get("capSource") or "spot_verified_reference") if cap else "spot_cap_missing",
             "capSourceDetail": ref.get("capSourceDetail") or "",
-            "capUpdatedAt": now if cap else None, "marketIdentityVerified": bool(ref) or bool(name),
+            "capUpdatedAt": (ref.get("capUpdatedAt") or now) if cap else None, "marketIdentityVerified": bool(ref) or bool(name),
             "supplyIdentityVerified": bool(ref), "status": "ok" if cap else "missing",
         })
     status.update(total=len(rows), freshQuotes=sum(not row["priceStale"] for row in rows))

@@ -10,12 +10,13 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
+from functools import cache
 from html.parser import HTMLParser
 from pathlib import Path
 from refresh_health import build_refresh_health, call_notice_provider
 from apywa_ratings import collect_ratings, apply_ratings
 from robinhood_market import build_robinhood_board
-from spot_market import SOURCES as SPOT_BOARD_SOURCES, build_spot_board
+from spot_market import SOURCES as SPOT_BOARD_SOURCES, build_spot_board, collect_names, collect_paprika_caps
 from upbit_audit import collect_reports as collect_upbit_audit_reports
 from upbit_asset_names import normalize_asset_names, merge_asset_names, suspicious_catalog_drop
 from upbit_wallet_networks import collect_wallet_networks
@@ -4827,11 +4828,21 @@ def make_payload(previous_payload: dict | None = None) -> dict:
     for candidates in (coingecko_supply_candidates, futures_coinmarketcap_candidates):
         for symbol, rows in candidates.items():
             spot_candidates.setdefault(symbol, []).extend(rows)
-    spot_references, spot_catalogs, spot_status = {}, {}, {}
+    spot_now = int(time.time())
+
+    @cache
+    def fetch_spot(url):
+        return fetch_json(url, retries=1, timeout=10)
+
+    prior_spot_catalogs = (previous_payload or {}).get("spotMarketCatalogs") or {}
+    names = {exchange: collect_names(fetch_spot, exchange, prior_spot_catalogs.get(exchange), spot_now)
+             for exchange in SPOT_BOARD_SOURCES}
+    paprika_caps = collect_paprika_caps(fetch_spot, names, prior_spot_catalogs.get("_paprika_caps"), spot_now)
+    spot_references, spot_catalogs, spot_status = {}, {"_paprika_caps": paprika_caps}, {}
     for exchange in SPOT_BOARD_SOURCES:
         rows, references, catalog, status = build_spot_board(
-            lambda url: fetch_json(url, retries=1, timeout=10), exchange, previous_payload,
-            fx=FX_USD_KRW, candidates=spot_candidates,
+            fetch_spot, exchange, previous_payload, fx=FX_USD_KRW, candidates=spot_candidates,
+            catalog=names[exchange], paprika_caps=paprika_caps["assets"],
         )
         boards[exchange] = finalize_rows(rows)
         spot_catalogs[exchange] = catalog
@@ -4842,9 +4853,16 @@ def make_payload(previous_payload: dict | None = None) -> dict:
             refresh_issues[f"{exchange}_spot"] = status.get("listingsError") or status["quotesError"]
         if catalog.get("error"):
             refresh_issues[f"{exchange}_spot_identity"] = catalog["error"]
+        cap_error = (catalog.get("cmc") or {}).get("error") or paprika_caps.get("error")
+        if cap_error:
+            refresh_issues[f"{exchange}_spot_cap"] = cap_error
         print("Spot board audit:", json.dumps({
             "exchange": exchange, "listed": len(rows), "withCap": sum(bool(row["marketCapUsd"]) for row in rows),
             "identityCatalog": len(catalog.get("names") or {}), "referenceCaps": sum(bool(ref["marketCapUsd"]) for ref in references.values()),
+            "coinMarketCap": sum(bool(ref.get("spotAssetId")) for ref in references.values()),
+            "coinPaprika": sum(ref.get("capSource") == "spot_coinpaprika_asset" for ref in references.values()),
+            "capError": (catalog.get("cmc") or {}).get("error"),
+            "paprikaCapError": paprika_caps.get("error"),
             "identityError": catalog.get("error"), **status,
         }, ensure_ascii=False))
     for rows in boards.values():

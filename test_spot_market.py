@@ -1,9 +1,12 @@
 import unittest
+from datetime import datetime, timezone
 from urllib.error import HTTPError
 
-from spot_market import SOURCES, build_spot_board, exchange_asset_names
+from spot_market import (BITGET_COINS, CMC_LISTINGS, PAPRIKA_TICKERS, SOURCES, build_spot_board,
+                         collect_cmc_spot_caps, collect_paprika_caps, exchange_asset_names)
 
 NOW = 1800000000
+ISO_NOW = datetime.fromtimestamp(NOW, timezone.utc).isoformat()
 
 
 class SpotMarketTests(unittest.TestCase):
@@ -71,6 +74,51 @@ class SpotMarketTests(unittest.TestCase):
         tickers = [{**base, "base_currency_id": asset, "base_currency_name": name}
                    for asset, name in (("ai-sleepless-ai", "Sleepless AI"), ("ai-gensyn", "Gensyn"))]
         self.assertEqual(exchange_asset_names(lambda _: tickers, "bybit-spot"), {})
+
+    def test_paprika_uses_asset_id_not_symbol_and_does_not_invent_supply(self):
+        def ticker(asset_id, cap, updated=ISO_NOW):
+            return {"id": asset_id, "name": "XRP", "symbol": "XRP", "last_updated": updated,
+                    "quotes": {"USD": {"price": 2, "market_cap": cap}}}
+
+        catalog = {"asOf": NOW, "ids": {"XRP": "xrp-xrp", "OLD": "old-coin"}, "names": {"XRP": "XRP"}}
+        payload = [ticker("xrp-xrp", 70e9), ticker("xrp-fake", 138e12), ticker("old-coin", 3, "2020-01-01T00:00:00Z")]
+        cache = collect_paprika_caps(lambda url: payload if url == PAPRIKA_TICKERS else None, {"bybit": catalog}, None, NOW)
+        self.assertEqual(set(cache["assets"]), {"xrp-xrp"})
+        ref = cache["assets"]["xrp-xrp"]
+        self.assertEqual(ref["marketCapUsd"], 70e9)
+        self.assertIsNone(ref["circulatingSupply"])
+        self.assertEqual(ref["capUpdatedAt"], NOW)
+
+        def unavailable(url):
+            raise HTTPError(url, 429, "Too Many Requests", None, None)
+
+        fallback = collect_paprika_caps(unavailable, {"bybit": catalog}, cache, NOW + 1900)
+        self.assertEqual(fallback["assets"]["xrp-xrp"]["capUpdatedAt"], NOW)
+        self.assertIn("429", fallback["error"])
+
+    def test_cmc_uses_bitget_contract_for_shared_ticker_and_rejects_bad_cap(self):
+        correct_address = "0x" + "1" * 40
+
+        def candidate(asset_id, address, cap):
+            return {"id": asset_id, "symbol": "CT", "name": "Concrete", "circulating_supply": 10,
+                    "platform": {"token_address": address},
+                    "quote": [{"symbol": "USD", "price": 2, "market_cap": cap, "last_updated": ISO_NOW}]}
+
+        good = candidate(42253, correct_address, 20)
+        wrong = candidate(1, "0x" + "2" * 40, 138e12)
+
+        def fetch(url):
+            if url == BITGET_COINS:
+                return {"code": "00000", "data": [{"coin": "CT", "chains": [{"contractAddress": correct_address}]}]}
+            self.assertEqual(url, CMC_LISTINGS)
+            return {"status": {"error_code": 0}, "data": [wrong, good]}
+
+        result = collect_cmc_spot_caps(fetch, "bitget", {"CT": "Concrete"}, {}, None, NOW)
+        self.assertEqual(result["assets"]["CT"]["spotAssetId"], "42253")
+        self.assertEqual(result["assets"]["CT"]["marketCapUsd"], 20)
+        good["quote"][0]["market_cap"] = 138e12
+        rejected = collect_cmc_spot_caps(fetch, "bitget", {"CT": "Concrete"}, {}, None, NOW)
+        self.assertEqual(rejected["assets"], {})
 
 
 if __name__ == "__main__":
