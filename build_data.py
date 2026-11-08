@@ -15,6 +15,7 @@ from pathlib import Path
 from refresh_health import build_refresh_health, call_notice_provider
 from apywa_ratings import collect_ratings, apply_ratings
 from robinhood_market import build_robinhood_board
+from spot_market import SOURCES as SPOT_BOARD_SOURCES, build_spot_board
 from upbit_audit import collect_reports as collect_upbit_audit_reports
 from upbit_asset_names import normalize_asset_names, merge_asset_names, suspicious_catalog_drop
 from upbit_wallet_networks import collect_wallet_networks
@@ -4037,7 +4038,7 @@ def build_change_block(current_rows: list[dict], previous_rows: list[dict]) -> d
 def build_changes(boards: dict[str, list[dict]], previous_payload: dict | None) -> dict[str, dict]:
     previous_boards = (previous_payload or {}).get("boards") or {}
     return {
-        board_name: build_change_block(rows, rows if board_name == "robinhood" and not previous_boards.get(board_name)
+        board_name: build_change_block(rows, rows if board_name in {"robinhood", *SPOT_BOARD_SOURCES} and not previous_boards.get(board_name)
                                       else previous_boards.get(board_name) or [])
         for board_name, rows in boards.items()
     }
@@ -4764,6 +4765,7 @@ def make_payload(previous_payload: dict | None = None) -> dict:
         for row in rows
         if str(row.get("symbol") or "").strip()
     }
+    futures_coinmarketcap_candidates = {}
     if futures_symbols:
         try:
             futures_coinmarketcap_candidates = fetch_coinmarketcap_market_candidates(
@@ -4817,6 +4819,34 @@ def make_payload(previous_payload: dict | None = None) -> dict:
         previous_payload,
         refresh_issues,
     )
+    # Keep the legacy symbol-keyed metadata separate from the new exchange rows.
+    spot_candidates = {}
+    for rows in boards.values():
+        for row in rows:
+            spot_candidates.setdefault(str(row.get("symbol") or "").upper(), []).append(row)
+    for candidates in (coingecko_supply_candidates, futures_coinmarketcap_candidates):
+        for symbol, rows in candidates.items():
+            spot_candidates.setdefault(symbol, []).extend(rows)
+    spot_references, spot_catalogs, spot_status = {}, {}, {}
+    for exchange in SPOT_BOARD_SOURCES:
+        rows, references, catalog, status = build_spot_board(
+            lambda url: fetch_json(url, retries=1, timeout=10), exchange, previous_payload,
+            fx=FX_USD_KRW, candidates=spot_candidates,
+        )
+        boards[exchange] = finalize_rows(rows)
+        spot_catalogs[exchange] = catalog
+        spot_status[exchange] = status
+        if status.get("listingsError") or status.get("quotesError"):
+            spot_references[exchange] = references
+        if (status.get("listingsError") and not status.get("browserSource")) or status.get("quotesError"):
+            refresh_issues[f"{exchange}_spot"] = status.get("listingsError") or status["quotesError"]
+        if catalog.get("error"):
+            refresh_issues[f"{exchange}_spot_identity"] = catalog["error"]
+        print("Spot board audit:", json.dumps({
+            "exchange": exchange, "listed": len(rows), "withCap": sum(bool(row["marketCapUsd"]) for row in rows),
+            "identityCatalog": len(catalog.get("names") or {}), "referenceCaps": sum(bool(ref["marketCapUsd"]) for ref in references.values()),
+            "identityError": catalog.get("error"), **status,
+        }, ensure_ascii=False))
     for rows in boards.values():
         for row in rows:
             row.pop("info", None)
@@ -4871,6 +4901,9 @@ def make_payload(previous_payload: dict | None = None) -> dict:
         "boards": boards,
         "apywaRatings": apywa_ratings,
         "robinhoodRefresh": robinhood_status,
+        "spotMarketReferences": spot_references,
+        "spotMarketCatalogs": spot_catalogs,
+        "spotMarketStatus": spot_status,
         "futures": futures,
         "coinInfo": coin_info,
         "defillamaRankings": defillama_rankings,
@@ -4891,6 +4924,8 @@ def make_payload(previous_payload: dict | None = None) -> dict:
             "bithumb": "bithumb_main_coinmarketcap_feed",
             "coinbase": "coinbase_exchange_usd_pairs",
             "robinhood": "robinhood_us_spot",
+            "bybit": "additional_usdt_spot",
+            "bitget": "additional_usdt_spot",
         },
         "refreshIssues": refresh_issues,
     }
