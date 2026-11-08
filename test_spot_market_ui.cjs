@@ -18,9 +18,9 @@ async function main() {
     BTC: { englishName: 'Bitcoin', koreanName: '비트코인', referencePriceUsd: 100, marketCapUsd: 1e12,
       capSource: 'spot_coinpaprika_asset', capSourceDetail: 'coinpaprika:btc-bitcoin', capUpdatedAt: Math.floor(now / 1000) },
     AI: { englishName: 'Sleepless AI', referencePriceUsd: 0.02, marketCapUsd: 1e7 },
-    KOR: { englishName: 'Kor Protocol', referencePriceUsd: 0.0011, marketCapUsd: 2515333.3337,
-      circulatingSupply: 2286666667, totalSupply: 10000000000, capSource: 'spot_coinmarketcap_reported',
-      verifiedListingKey: '1331', capUpdatedAt: Math.floor(now / 1000) },
+    KOR: { englishName: 'Kor Protocol', circulatingSupply: 2286666667, totalSupply: 10000000000,
+      capSource: 'spot_launch_supply_estimate', verifiedListingKey: '1331',
+      launchSupplyAt: Math.floor(now / 1000) - 86400, launchSupplyUntil: Math.floor(now / 1000) + 86400 },
     REUSED: { englishName: 'Previous project', referencePriceUsd: 100, marketCapUsd: 1e7, verifiedListingKey: '42' },
   } };
   data.coinInfo.AI = { englishName: 'Gensyn', koreanName: '젠신', sources: {}, listings: {} };
@@ -85,7 +85,8 @@ async function main() {
     assert.match(await page.locator('#statusText').textContent(), /USDT 현물 4개/);
     const kor = page.locator('tr[data-live-product="KORUSDT"]');
     assert.match(await kor.locator('.cap-sub').textContent(), /참고 시총/);
-    assert.match(await kor.locator('.supply-main').textContent(), /신고 유통량/);
+    assert.match(await kor.locator('.supply-main').textContent(), /발행 시점 유통량/);
+    assert.equal(await page.evaluate(() => getBoardRows('bybit').find(row => row.symbol === 'KOR').marketCapUsd), 2286666667 * 0.001107);
     assert.equal(await page.evaluate(() => getBoardRows('bybit').find(row => row.symbol === 'REUSED').marketCapUsd), null);
     await page.getByRole('button', { name: 'Sleepless AI 코인 정보 보기' }).click();
     assert.match(await page.locator('#coinInfoTitle').textContent(), /Sleepless AI/);
