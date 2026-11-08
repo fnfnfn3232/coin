@@ -34,6 +34,11 @@ REVIEWED_SPOT_ASSETS = {
         "platform": "base",
         "address": "0xd3679306360705ba3580bc4130b56460fb4e6926",
         "listingKeys": {"bybit": "1331", "bitget": "1793800800000"},
+        "launchSupply": 2_286_666_667,
+        "totalSupply": 10_000_000_000,
+        "launchAt": "2026-11-04T14:00:00Z",
+        "launchSupplyUntil": "2026-12-04T14:00:00Z",
+        "supplySource": "https://www.gate.com/learn/articles/kor-tokenomics-utility-unlocks-and-fee-discounts",
     },
 }
 
@@ -361,10 +366,26 @@ def build_spot_board(fetch, exchange, previous=None, *, fx, candidates, catalog=
                 or now - ref["capUpdatedAt"] > REFERENCE_MAX_AGE):
             continue
         assets[base] = {**ref, "koreanName": existing.get("koreanName") or ""}
+    for base, asset in reviewed.items():
+        existing = assets.get(base) or {}
+        launch_at = source_timestamp(asset.get("launchAt"))
+        expires_at = source_timestamp(asset.get("launchSupplyUntil"))
+        if existing.get("marketCapUsd") or not launch_at <= now < expires_at:
+            continue
+        assets[base] = {
+            **existing, "englishName": asset["name"], "marketCapUsd": None,
+            "spotListingName": names[base], "verifiedListingKey": asset["listingKeys"][exchange],
+            "logo": f"https://s2.coinmarketcap.com/static/img/coins/64x64/{asset['id']}.png",
+            "circulatingSupply": asset["launchSupply"], "totalSupply": asset["totalSupply"],
+            "launchSupplyAt": launch_at, "launchSupplyUntil": expires_at,
+            "capSource": "spot_launch_supply_estimate", "capSourceDetail": asset["supplySource"],
+        }
     if pairs is None:
         rows = [{**row, "priceStale": True} for row in old_rows]
         for row in rows:
-            if now - int(row.get("capUpdatedAt") or 0) > REFERENCE_MAX_AGE:
+            if now - int(row.get("capUpdatedAt") or 0) > REFERENCE_MAX_AGE or (
+                row.get("launchSupplyUntil") and now >= row["launchSupplyUntil"]
+            ):
                 for key in ("marketCapUsd", "marketCapKrw", "sortCapUsd", "circulatingSupply", "totalSupply", "fdvUsd", "fdvKrw"):
                     row[key] = None
                 row.update(capSource="spot_cap_missing", status="missing", supplyIdentityVerified=False)
@@ -387,15 +408,17 @@ def build_spot_board(fetch, exchange, previous=None, *, fx, candidates, catalog=
         # A recycled ticker must not inherit the old project's cap on a stale mapping.
         name_matches = not name or name == ref.get("spotListingName") or same_name(base, name, ref.get("englishName"))
         listing_matches = not ref.get("verifiedListingKey") or ref["verifiedListingKey"] == listing_key
-        if not listing_matches or not name_matches or not (price and ref_price and 0.65 <= price / ref_price <= 1.55):
+        launch_estimate = ref.get("capSource") == "spot_launch_supply_estimate"
+        compatible_quote = bool(quote) if launch_estimate else (price and ref_price and 0.65 <= price / ref_price <= 1.55)
+        if not listing_matches or not name_matches or not compatible_quote:
             ref = {}
         if (not name and as_of < now - 300 and old and listing_key
                 and (old.get("spotListingKey"), old.get("spotListingName")) != (listing_key, name)):
             ref = {}
-        cap = ref.get("marketCapUsd")
+        cap = price * ref["circulatingSupply"] if ref and launch_estimate else ref.get("marketCapUsd")
         display_name = name or ref.get("englishName") or base
         rows.append({
-            **{key: ref.get(key) for key in ("logo", "circulatingSupply", "totalSupply", "fdvUsd", "spotAssetId")},
+            **{key: ref.get(key) for key in ("logo", "circulatingSupply", "totalSupply", "fdvUsd", "spotAssetId", "launchSupplyAt", "launchSupplyUntil")},
             "exchange": exchange, "symbol": base, "pair": f"{base}/USDT",
             "name": ref.get("koreanName") or display_name, "englishName": display_name,
             "koreanName": ref.get("koreanName") or "", "nativeCurrency": "USDT",
@@ -405,7 +428,8 @@ def build_spot_board(fetch, exchange, previous=None, *, fx, candidates, catalog=
             "marketCapUsd": cap, "marketCapKrw": cap * fx if cap else None, "sortCapUsd": cap,
             "capSource": (ref.get("capSource") or "spot_verified_reference") if cap else "spot_cap_missing",
             "capSourceDetail": ref.get("capSourceDetail") or "",
-            "capUpdatedAt": (ref.get("capUpdatedAt") or now) if cap else None, "marketIdentityVerified": bool(ref) or bool(name),
+            "capUpdatedAt": (at if launch_estimate else ref.get("capUpdatedAt") or now) if cap else None,
+            "marketIdentityVerified": bool(ref) or bool(name),
             "supplyIdentityVerified": bool(ref), "status": "ok" if cap else "missing",
         })
     status.update(total=len(rows), freshQuotes=sum(not row["priceStale"] for row in rows))

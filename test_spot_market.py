@@ -155,6 +155,37 @@ class SpotMarketTests(unittest.TestCase):
         _, refs, _, _ = build_spot_board(fetch, "bybit", fx=1350, candidates={}, catalog={}, now=NOW)
         self.assertIsNone(refs["KOR"]["marketCapUsd"])
 
+    def test_kor_launch_supply_fallback_survives_cmc_rate_limit_and_expires(self):
+        now = 1794142256
+        instrument = {"symbol": "KORUSDT", "baseCoin": "KOR", "quoteCoin": "USDT", "status": "online",
+                      "category": "SPOT", "symbolType": "crypto", "fullName": "KOR Protocol", "launchTime": "1793800800000"}
+
+        def fetch(url):
+            if url == SOURCES["bitget"][0]:
+                return {"code": "00000", "data": [instrument]}
+            if url == SOURCES["bitget"][1]:
+                return {"code": "00000", "data": [{"symbol": "KORUSDT", "ts": now * 1000, "lastPr": "0.0011"}]}
+            if url == BITGET_COINS:
+                return {"code": "00000", "data": [{"coin": "KOR", "chains": []}]}
+            if url == SOURCES["bybit"][0]:
+                raise HTTPError(url, 403, "Forbidden", None, None)
+            raise HTTPError(url, 429, "Too Many Requests", None, None)
+
+        rows, _, _, _ = build_spot_board(fetch, "bitget", fx=1350, candidates={}, catalog={}, now=now)
+        self.assertEqual(rows[0]["capSource"], "spot_launch_supply_estimate")
+        self.assertAlmostEqual(rows[0]["marketCapUsd"], 2286666667 * 0.0011)
+        self.assertEqual(rows[0]["capUpdatedAt"], now)
+        _, refs, _, _ = build_spot_board(fetch, "bybit", fx=1350, candidates={}, catalog={}, now=now)
+        self.assertEqual(refs["KOR"]["verifiedListingKey"], "1331")
+        self.assertEqual(refs["KOR"]["circulatingSupply"], 2286666667)
+        self.assertIsNone(refs["KOR"]["marketCapUsd"])
+        _, refs, _, _ = build_spot_board(fetch, "bybit", fx=1350, candidates={}, catalog={}, now=NOW)
+        self.assertIsNone(refs["KOR"]["circulatingSupply"])
+
+        instrument["launchTime"] = "1794000000000"
+        rows, _, _, _ = build_spot_board(fetch, "bitget", fx=1350, candidates={}, catalog={}, now=now)
+        self.assertIsNone(rows[0]["marketCapUsd"])
+
 
 if __name__ == "__main__":
     unittest.main()

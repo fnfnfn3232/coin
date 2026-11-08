@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-5ddiOT0bcQRUgZ1AOMc7E0Qw7kxgYvtzP7ZYmdI4LMU='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-tFJ0ceWkACnn+drgVHi3osC3I0THbP66kKxjfNJIaBk='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -14842,7 +14842,8 @@
     }
 
     function capDisplay(row) {
-      if (row.capSource === "spot_coinmarketcap_reported" && toPositiveNumber(row.marketCapUsd) !== null) {
+      if (["spot_coinmarketcap_reported", "spot_launch_supply_estimate"].includes(row.capSource)
+        && toPositiveNumber(row.marketCapUsd) !== null) {
         return {
           main: `약 ${formatUsdShort(row.marketCapUsd)}`,
           sub: `${formatKrwShort(toPositiveNumber(row.marketCapKrw) ?? Number.NaN)} · 참고 시총`,
@@ -14964,7 +14965,7 @@
       const ratioText = ratio !== null ? `${formatNumber(ratio * 100, 2)}%` : "-";
       const mainText = circulating === null && total === null
         ? TEXT.noSupply
-        : `${row.capSource === "spot_coinmarketcap_reported" ? "신고 유통량" : "유통량"} ${circulatingText} · 총발행량 ${totalText} · 유통비율 ${ratioText}`;
+        : `${row.capSource === "spot_coinmarketcap_reported" ? "신고 유통량" : row.capSource === "spot_launch_supply_estimate" ? "발행 시점 유통량" : "유통량"} ${circulatingText} · 총발행량 ${totalText} · 유통비율 ${ratioText}`;
 
       return {
         main: mainText,
@@ -14979,6 +14980,7 @@
         spot_verified_reference: "동일 자산 검증 자료 (외부 시총)",
         spot_coinmarketcap_asset: "CoinMarketCap · 동일 자산 확인",
         spot_coinmarketcap_reported: "CoinMarketCap · 프로젝트 신고 유통량 × 기준 가격",
+        spot_launch_supply_estimate: "발행 시점 공개 유통량 × 현물 가격 (참고)",
         spot_coinpaprika_asset: "CoinPaprika · 거래쌍 자산 ID 확인",
         spot_cap_missing: "시총 미확인",
         binance_exact: "\uBC14\uC774\uB0B8\uC2A4 \uC2E4\uC81C \uC2DC\uCD1D",
@@ -17302,18 +17304,26 @@
             const refPrice = toPositiveNumber(candidate.referencePriceUsd);
             const officialName = String(item.fullName || "").trim();
             const listingKey = String((bybit ? item.symbolId : item.launchTime) || "");
-            const matched = price !== null && refPrice !== null && price / refPrice >= 0.65 && price / refPrice <= 1.55
+            const launchEstimate = candidate.capSource === "spot_launch_supply_estimate";
+            const launchSupply = toPositiveNumber(candidate.circulatingSupply);
+            const totalSupply = toPositiveNumber(candidate.totalSupply);
+            const compatibleQuote = launchEstimate
+              ? Boolean(candidate.verifiedListingKey && launchSupply && totalSupply >= launchSupply
+                && now >= candidate.launchSupplyAt * 1000 && now < candidate.launchSupplyUntil * 1000)
+              : refPrice !== null && price / refPrice >= 0.65 && price / refPrice <= 1.55;
+            const matched = price !== null && compatibleQuote
               && (!candidate.capUpdatedAt || now - candidate.capUpdatedAt * 1000 <= 21600000)
               && (!candidate.verifiedListingKey || candidate.verifiedListingKey === listingKey)
               && (!officialName || officialName === candidate.spotListingName || spotNamesMatch(symbol, officialName, candidate.englishName));
             const ref = matched ? candidate : {};
             const name = officialName || ref.englishName || symbol;
-            const cap = toPositiveNumber(ref.marketCapUsd);
+            const cap = matched && launchEstimate ? price * launchSupply : toPositiveNumber(ref.marketCapUsd);
+            const fdv = matched && launchEstimate ? price * totalSupply : ref.fdvUsd;
             rows.push({ ...ref, exchange: board, symbol, pair: `${symbol}/USDT`, name: ref.koreanName || name,
               englishName: name, nativeCurrency: "USDT", priceUsd: price,
               priceKrw: price !== null && fx !== null ? price * fx : null, priceUpdatedAt: price === null ? null : Math.floor(at / 1000),
               marketCapUsd: cap, marketCapKrw: cap !== null && fx !== null ? cap * fx : null, sortCapUsd: cap,
-              fdvKrw: ref.fdvUsd && fx ? ref.fdvUsd * fx : null, circulatingRatio: computeCirculatingRatio(ref.circulatingSupply, ref.totalSupply),
+              fdvUsd: fdv, fdvKrw: fdv && fx ? fdv * fx : null, circulatingRatio: computeCirculatingRatio(ref.circulatingSupply, ref.totalSupply),
               capSource: cap ? (ref.capSource || "spot_verified_reference") : "spot_cap_missing",
               marketIdentityVerified: matched || Boolean(officialName), supplyIdentityVerified: matched });
           }
@@ -18955,7 +18965,7 @@
                 <div class="price-sub" data-live-price-sub>${escapeHtml(price.sub || TEXT.noPrice)}</div>
               </td>
               ${isDomesticComparisonBoard() ? `<td class="price-difference-cell" data-label="시세차이" data-price-difference>${renderPriceDifference(row)}</td>` : '<td class="price-difference-cell" hidden></td>'}
-              <td data-label="${TEXT.thCap}"${row.capSource === "spot_coinmarketcap_reported" ? ' title="프로젝트 자체 신고 유통량에 CoinMarketCap 기준 가격을 곱한 참고값"' : ""}>
+              <td data-label="${TEXT.thCap}"${row.capSource === "spot_coinmarketcap_reported" ? ' title="프로젝트 자체 신고 유통량에 CoinMarketCap 기준 가격을 곱한 참고값"' : row.capSource === "spot_launch_supply_estimate" ? ' title="토큰 발행 시점 공개 유통량에 현물 가격을 곱한 참고값"' : ""}>
                 <div class="cap-main">${escapeHtml(cap.main || TEXT.unknown)}</div>
                 <div class="cap-sub">${escapeHtml(cap.sub || TEXT.noCap)}</div>
               </td>
