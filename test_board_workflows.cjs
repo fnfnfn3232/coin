@@ -35,6 +35,12 @@ async function main() {
       const method = route.request().method(), key = `${method} ${url.pathname}`;
       calls.push(key);
       if (held.has(key)) await new Promise(resolve => waiters.push({ key, resolve }));
+      if (method === 'GET' && options.media?.has(url.pathname)) {
+        assert.equal(route.request().headers().authorization, 'Bearer workflow-session');
+        return route.fulfill({ ...options.media.get(url.pathname), headers: {
+          'Access-Control-Allow-Origin': 'https://fnfnfn3232.github.io', 'Access-Control-Allow-Credentials': 'true',
+        } });
+      }
       let result = {}, status = 200;
       if (url.pathname === '/api/session') {
         result = { authenticated: true, role: options.member ? 'member' : 'admin', subject: 'writer', boardReadApproved: true, boardWriteApproved: options.write !== false,
@@ -130,6 +136,62 @@ async function main() {
     finally { for (const key of held) release(key); await context.close(); }
   }
   try {
+    const mediaOrigin = 'https://coin-board-auth.dlatl20000.workers.dev';
+    const videoPath = '/api/board/media/test-video';
+    const brokenPath = '/api/board/media/test-broken-video';
+    const media = new Map();
+    const videoPost = { id: 'workflow-post', title: 'Video attachment', body: '', htmlEnabled: true,
+      author: 'Tester', authorMemberId: 'writer', category: 'free', createdAt: Date.now(), comments: [] };
+    await test('already attached videos play inside a post and retain the download link', async ({ page, read, setPosts, count }) => {
+      const clip = await page.evaluate(async () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 64;
+        canvas.height = 48;
+        const ctx = canvas.getContext('2d');
+        const stream = canvas.captureStream(30);
+        const mimeType = MediaRecorder.isTypeSupported('video/mp4;codecs=avc1.42001f')
+          ? 'video/mp4;codecs=avc1.42001f' : 'video/webm;codecs=vp8';
+        const recorder = new MediaRecorder(stream, { mimeType });
+        const chunks = [];
+        recorder.ondataavailable = event => chunks.push(event.data);
+        const stopped = new Promise(resolve => { recorder.onstop = resolve; });
+        recorder.start();
+        for (let i = 0; i < 10; i++) {
+          ctx.fillStyle = i % 2 ? '#0000ff' : '#ff0000';
+          ctx.fillRect(0, 0, 64, 48);
+          await new Promise(resolve => setTimeout(resolve, 45));
+        }
+        recorder.stop();
+        await stopped;
+        stream.getTracks().forEach(track => track.stop());
+        return { mime: mimeType.split(';')[0], bytes: Array.from(new Uint8Array(await new Blob(chunks).arrayBuffer())) };
+      });
+      const body = Buffer.from(clip.bytes);
+      const name = clip.mime === 'video/mp4' ? 'attached.MP4' : 'attached.webm';
+      media.set(videoPath, { contentType: clip.mime, body });
+      media.set(brokenPath, { contentType: 'video/mp4', body: Buffer.from('invalid video') });
+      const updated = { ...videoPost, body: [
+        `[file:${mediaOrigin}${videoPath}|bytes=${body.length}|name=${name}]`,
+        `[file:${mediaOrigin}${brokenPath}|name=broken.mp4]`,
+        '[file:https://untrusted.example/not-a-board-file.mp4|name=remote.mp4]',
+        `[file:${mediaOrigin}/api/board/media/test-zip|name=archive.zip]`,
+      ].join('\n') };
+      setPosts([updated]);
+      await page.evaluate(async () => { await requestFreeBoardPostsRefresh(true); });
+      await read();
+      const player = page.getByLabel(name, { exact: true });
+      assert.equal(await page.locator('.free-board-attachment-video video').count(), 2);
+      assert.equal(await page.locator('.free-board-attachments button', { hasText: name }).isVisible(), true);
+      await player.evaluate(node => { node.muted = true; return node.play(); });
+      await page.waitForFunction(() => Array.from(document.querySelectorAll('video')).some(node => node.currentTime > 0 && node.videoWidth === 64));
+      await page.locator('.free-board-attachment-video').filter({ has: page.getByLabel('broken.mp4') }).getByRole('status').waitFor({ state: 'visible' });
+      assert.ok(count(`GET ${videoPath}`) >= 1);
+      assert.equal(count('GET /api/board/media/test-zip'), 0);
+      await page.setViewportSize({ width: 390, height: 844 });
+      const playerBox = await player.boundingBox();
+      assert.ok(playerBox.width > 0 && playerBox.x >= 0 && playerBox.x + playerBox.width <= 391);
+    }, { posts: [videoPost], media });
+
     await test('post delete uses restrained red while edit keeps its existing blue', async ({ page, read }) => {
       await read();
       const remove = page.locator('[data-free-board-delete="workflow-post"]');
