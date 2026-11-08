@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-PVD3xSREz1s/nwkf/XTK0owXfmu9wKqs8LRnflf/XGQ='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-8APbD3Z3ky3mP6hvRgs877Kd/nCL4KG1sMbgPQwO4dA='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -15075,6 +15075,8 @@
       function getComparableSymbol(row) {
         const compareSymbol = String(row?.compareSymbol || "").toUpperCase();
         if (compareSymbol) return compareSymbol;
+        if (EXTRA_SPOT_BOARDS.includes(row?.exchange) && row.symbol === GENSYN_SYMBOL
+          && spotNamesMatch(GENSYN_SYMBOL, row.englishName, "Gensyn")) return GENSYN_BINANCE_SYMBOL;
         return String(row?.symbol || "").toUpperCase();
       }
 
@@ -15235,8 +15237,9 @@
         const info = data.coinInfo?.[key] || {};
         if (EXTRA_SPOT_BOARDS.includes(fallbackRow?.exchange)) {
           const { exchange, pair, englishName, name } = fallbackRow;
-          const url = exchange === "bybit" ? `https://www.bybit.com/en/trade/spot/${key}/USDT`
-            : `https://www.bitget.com/spot/${key}USDT`;
+          const base = encodeURIComponent(fallbackRow.symbol);
+          const url = exchange === "bybit" ? `https://www.bybit.com/en/trade/spot/${base}/USDT`
+            : `https://www.bitget.com/spot/${base}USDT`;
           const matches = spotNamesMatch(key, englishName, info.englishName);
           return { symbol: key, koreanName: name, englishName, sources: matches ? info.sources || {} : {},
             listings: { ...(matches ? info.listings : {}), [exchange]: { label: boardShortLabel(exchange), pair, url } } };
@@ -17926,7 +17929,7 @@
         const numericPrice = toPositiveNumber(value);
         const entry = target?.entries.get(normalizedLiveProduct(product));
         if (numericPrice === null || !entry) return;
-        const extraSpot = entry.kind === "spot" && EXTRA_SPOT_BOARDS.includes(entry.exchange);
+        const extraSpot = entry.kind === "spot" && Boolean(entry.element) && EXTRA_SPOT_BOARDS.includes(entry.exchange);
         if ((entry.kind === "futures" || extraSpot) && (eventAt === null || eventAt === undefined)) return;
         if ((entry.kind === "spot" || entry.kind === "futures") && eventAt !== null && eventAt !== undefined) {
           let sourceAt = Number(eventAt);
