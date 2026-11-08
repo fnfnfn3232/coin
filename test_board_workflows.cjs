@@ -142,7 +142,7 @@ async function main() {
     const media = new Map();
     const videoPost = { id: 'workflow-post', title: 'Video attachment', body: '', htmlEnabled: true,
       author: 'Tester', authorMemberId: 'writer', category: 'free', createdAt: Date.now(), comments: [] };
-    await test('already attached videos play inside a post and retain the download link', async ({ page, read, setPosts, count }) => {
+    await test('attached videos make no media request until played and reuse the loaded file', async ({ page, read, setPosts, count, held, release }) => {
       const clip = await page.evaluate(async () => {
         const canvas = document.createElement('canvas');
         canvas.width = 64;
@@ -180,17 +180,51 @@ async function main() {
       await page.evaluate(async () => { await requestFreeBoardPostsRefresh(true); });
       await read();
       const player = page.getByLabel(name, { exact: true });
+      const play = page.getByRole('button', { name: `${name} 재생`, exact: true });
       assert.equal(await page.locator('.free-board-attachment-video video').count(), 2);
       assert.equal(await page.locator('.free-board-attachments button', { hasText: name }).isVisible(), true);
-      await player.evaluate(node => { node.muted = true; return node.play(); });
+      assert.equal(await play.isVisible(), true);
+      assert.equal(await player.isHidden(), true);
+      assert.equal(await player.getAttribute('src'), null);
+      assert.equal(count(`GET ${videoPath}`), 0);
+      assert.equal(count(`GET ${brokenPath}`), 0);
+      held.add(`GET ${videoPath}`);
+      await player.evaluate(node => { node.muted = true; });
+      await play.click();
+      await page.waitForFunction(() => document.querySelector('.free-board-video-play')?.disabled);
+      await play.dispatchEvent('click');
+      release(`GET ${videoPath}`);
       await page.waitForFunction(() => Array.from(document.querySelectorAll('video')).some(node => node.currentTime > 0 && node.videoWidth === 64));
+      assert.equal(count(`GET ${videoPath}`), 1);
+      assert.equal(count(`GET ${brokenPath}`), 0);
+      await player.evaluate(node => { node.currentTime = 0; return node.play(); });
+      assert.equal(count(`GET ${videoPath}`), 1);
+      await page.evaluate(() => renderFreeBoard());
+      assert.equal(await player.isHidden(), true);
+      await player.evaluate(node => { node.muted = true; });
+      await play.click();
+      await player.waitFor({ state: 'visible' });
+      assert.equal(count(`GET ${videoPath}`), 1);
+      await page.getByRole('button', { name: 'broken.mp4 재생' }).click();
       await page.locator('.free-board-attachment-video').filter({ has: page.getByLabel('broken.mp4') }).getByRole('status').waitFor({ state: 'visible' });
-      assert.ok(count(`GET ${videoPath}`) >= 1);
+      assert.equal(count(`GET ${brokenPath}`), 1);
       assert.equal(count('GET /api/board/media/test-zip'), 0);
       await page.setViewportSize({ width: 390, height: 844 });
       const playerBox = await player.boundingBox();
       assert.ok(playerBox.width > 0 && playerBox.x >= 0 && playerBox.x + playerBox.width <= 391);
     }, { posts: [videoPost], media });
+
+    await test('late video response cannot repopulate the private media cache after logout', async ({ page, read, release }) => {
+      await read();
+      await page.getByRole('button', { name: 'pending.mp4 재생' }).click();
+      await page.waitForFunction(path => protectedBoardVideoRequests.has(path), videoPath);
+      await page.locator('#lockLogoutBtn').evaluate(button => button.click());
+      await page.waitForFunction(() => document.body.classList.contains('locked'));
+      release(`GET ${videoPath}`);
+      await page.waitForTimeout(150);
+      assert.equal(await page.evaluate(() => protectedBoardMediaCache.size + protectedBoardVideoRequests.size), 0);
+    }, { held: [`GET ${videoPath}`], media, posts: [{ ...videoPost,
+      body: `[file:${mediaOrigin}${videoPath}|name=pending.mp4]` }] });
 
     await test('post delete uses restrained red while edit keeps its existing blue', async ({ page, read }) => {
       await read();
