@@ -20,6 +20,8 @@ on:
       - "test_robinhood_market.py"
       - "spot_market.py"
       - "test_spot_market.py"
+      - "spot_listing_notices.py"
+      - "test_spot_listing_notices.py"
       - "test_apywa_ratings.py"
       - "mapping.json"
       - "test_coin_logos.py"
@@ -95,7 +97,7 @@ jobs:
           fi
 
       - name: Verify coin logos and USDT futures
-        run: python -m unittest test_upbit_wallet_networks.py test_upbit_audit_market.py test_upbit_asset_names.py test_upbit_audit.py test_coinbase_futures.py test_coin_logos.py test_binance_futures.py test_bybit_futures.py test_market_identity.py test_exchange_notices.py test_refresh_health.py test_apywa_ratings.py test_robinhood_market.py test_spot_market.py
+        run: python -m unittest test_upbit_wallet_networks.py test_upbit_audit_market.py test_upbit_asset_names.py test_upbit_audit.py test_coinbase_futures.py test_coin_logos.py test_binance_futures.py test_bybit_futures.py test_market_identity.py test_exchange_notices.py test_refresh_health.py test_apywa_ratings.py test_robinhood_market.py test_spot_market.py test_spot_listing_notices.py
 
       - name: Rebuild data (retry)
         run: |

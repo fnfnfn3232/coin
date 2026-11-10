@@ -230,7 +230,7 @@ async function main() {
     assert.ok(await page.locator('#tableBody tr').count() > 0);
     await page.locator('#searchInput').fill('');
     assert.deepEqual(await page.locator('#marketTable thead th').allTextContents(),
-      ['순번', '코인', '심볼', '가격', '시세차이', '시총 ↓', '등급', '유통 정보', '시총 출처']);
+      ['순번', '코인', '심볼', '가격', '시세차이', '시총 ↓', '등급', '상장일', '유통 정보', '시총 출처']);
     assert.equal(await page.locator('#tableBody tr').first().locator('.rating-cell').innerText(), 'A+');
     assert.equal(await page.locator('#tableBody tr').first().locator('.coin-rating').getAttribute('href'),
       'https://www.apywa.io/en/cryptocurrencies/bitcoin');

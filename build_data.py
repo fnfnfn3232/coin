@@ -17,6 +17,7 @@ from refresh_health import build_refresh_health, call_notice_provider
 from apywa_ratings import collect_ratings, apply_ratings
 from robinhood_market import build_robinhood_board
 from spot_market import SOURCES as SPOT_BOARD_SOURCES, build_spot_board, collect_names, collect_paprika_caps
+from spot_listing_notices import collect_listing_notices
 from upbit_audit import collect_reports as collect_upbit_audit_reports
 from upbit_asset_names import normalize_asset_names, merge_asset_names, suspicious_catalog_drop
 from upbit_wallet_networks import collect_wallet_networks
@@ -4867,6 +4868,19 @@ def make_payload(previous_payload: dict | None = None) -> dict:
             "paprikaCapError": paprika_caps.get("error"),
             "identityError": catalog.get("error"), **status,
         }, ensure_ascii=False))
+    listing_state, spot_listings, spot_trading_ends, spot_special_treatment = collect_listing_notices(
+        fetch_spot, fetch_notice_channel_html, prior_spot_catalogs.get("_listing_notices") or {}, spot_now,
+    )
+    spot_catalogs["_listing_notices"] = listing_state
+    for name, result in listing_state.items():
+        if result.get("error"):
+            refresh_issues[f"{name}_spot_notice"] = result["error"]
+    print("Spot listing notice coverage:", json.dumps({
+        "dates": {key: len(entries) for key, entries in spot_listings.items()},
+        "scheduled": {key: len(entries) for key, entries in spot_trading_ends.items()},
+        "specialTreatment": {key: len(entry["pairs"]) for key, entry in spot_special_treatment.items()},
+        "bitgetDates": sum(bool(row.get("spotListingDate")) for row in boards["bitget"]),
+    }, separators=(",", ":")))
     for rows in boards.values():
         for row in rows:
             row.pop("info", None)
@@ -4924,6 +4938,9 @@ def make_payload(previous_payload: dict | None = None) -> dict:
         "spotMarketReferences": spot_references,
         "spotMarketCatalogs": spot_catalogs,
         "spotMarketStatus": spot_status,
+        "spotListings": spot_listings,
+        "spotTradingEnds": spot_trading_ends,
+        "spotSpecialTreatment": spot_special_treatment,
         "futures": futures,
         "coinInfo": coin_info,
         "defillamaRankings": defillama_rankings,

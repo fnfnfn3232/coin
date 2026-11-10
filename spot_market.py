@@ -5,6 +5,7 @@ import time
 from datetime import datetime
 
 from robinhood_market import name_key, positive, same_name
+from spot_listing_notices import kst_date, ms_timestamp
 
 SOURCES = {
     "bybit": (
@@ -328,7 +329,8 @@ def build_spot_board(fetch, exchange, previous=None, *, fx, candidates, catalog=
     status = {}
     pairs = None
     try:
-        pairs = spot_pairs(exchange, fetch(SOURCES[exchange][0]))
+        instruments = fetch(SOURCES[exchange][0])
+        pairs = spot_pairs(exchange, instruments)
         if old_rows and len(pairs) < len(old_rows) * 0.8:
             pairs = None
             raise ValueError("suspicious_spot_listing_drop")
@@ -396,8 +398,14 @@ def build_spot_board(fetch, exchange, previous=None, *, fx, candidates, catalog=
     except Exception as error:
         quotes = {}
         status["quotesError"] = f"{type(error).__name__}:{str(error)[:120]}"
+    instruments_by_symbol = {item["symbol"]: item for item in spot_items(exchange, instruments)
+                             if exchange == "bybit" and item.get("status") == "Trading"
+                             and item.get("symbolType") in ("", "adventure", None)
+                             and isinstance(item.get("symbol"), str)}
     rows = []
     for base, (name, listing_key) in pairs.items():
+        instrument = instruments_by_symbol.get(base + "USDT") or {}
+        listed_at = ms_timestamp(listing_key) if exchange == "bitget" else None
         quote = quotes.get(base + "USDT")
         old = old_by_symbol.get(base) or {}
         price, at = quote or (None, None)
@@ -423,6 +431,8 @@ def build_spot_board(fetch, exchange, previous=None, *, fx, candidates, catalog=
             "name": ref.get("koreanName") or display_name, "englishName": display_name,
             "koreanName": ref.get("koreanName") or "", "nativeCurrency": "USDT",
             "spotListingKey": listing_key, "spotListingName": name,
+            "spotListingDate": kst_date(listed_at) if listed_at and listed_at <= now else None,
+            "spotSpecialTreatmentAt": now if str(instrument.get("stTag")) == "1" else None,
             "priceUsd": price, "priceKrw": price * fx if price else None,
             "priceSource": f"{exchange}_spot_ticker", "priceUpdatedAt": at, "priceStale": quote is None,
             "marketCapUsd": cap, "marketCapKrw": cap * fx if cap else None, "sortCapUsd": cap,
