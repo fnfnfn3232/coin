@@ -11,6 +11,7 @@ PAIR = r"[A-Z0-9]{1,30}"
 BYBIT = "https://announcements.bybit.com"
 BINANCE_CMS = "https://www.binance.com/bapi/composite/v1/public/cms/article"
 UPBIT = "https://pub-info.upbit.com/api/v1/announcements"
+UPBIT_BACKUP = "https://api-manager.upbit.com/api/v1/announcements"
 COINBASE = "https://status.exchange.coinbase.com/api/v2/incidents.json"
 BITGET_SYMBOLS = "https://api.bitget.com/api/v2/spot/public/symbols"
 BITGET_LABELS = "https://www.bitget.com/v1/mix/symbol/getAllSymbolV2?languageType=0&md5="
@@ -31,6 +32,22 @@ REVIEWED_DATES = {
         ("2018-07-12", "https://robinhood.com/newsroom/litecoin-and-bitcoin-cash-now-on-robinhood-crypto/", ("LTC/USD", "BCH/USD")),
     ),
 }
+
+# Initial coverage verified against the trading-start table in each official notice.
+UPBIT_REVIEWED_STARTS = (
+    (6758, 1794290400, "HYPE", "KRW BTC USDT"),
+    (6739, 1793863800, "CARDS", "KRW BTC USDT"),
+    (6687, 1792587600, "AXIS", "KRW BTC USDT"),
+    (6675, 1792400400, "CT", "KRW BTC USDT"),
+    (6645, 1791538200, "KAIA", "KRW BTC USDT"),
+    (6644, 1791435600, "PONS", "KRW BTC USDT"),
+    (6635, 1790924400, "POD", "KRW BTC USDT"),
+    (6618, 1790582400, "CASHCAT", "KRW BTC USDT"),
+    (6580, 1789614000, "PYUSD JPYC", "KRW BTC USDT"),
+    (6560, 1789020000, "REZ", "USDT"),
+    (6558, 1788870600, "HEMI USELESS", "BTC USDT"),
+    (6555, 1788845400, "CP", "KRW BTC USDT"),
+)
 
 
 def ms_timestamp(value):
@@ -201,16 +218,28 @@ def parse_upbit_listing(body, published, url):
 
 
 def upbit_dates(fetch):
+    last_error = None
+    for endpoint in (UPBIT, UPBIT_BACKUP):
+        try:
+            return upbit_dates_from_endpoint(fetch, endpoint)
+        except Exception as error:
+            last_error = error
+    raise last_error
+
+
+def upbit_dates_from_endpoint(fetch, endpoint):
     notices = []
     for page in (1, 2, 3):
-        notices.extend(fetch(f"{UPBIT}?os=web&page={page}&per_page=20&category=trade")["data"]["notices"])
+        notices.extend(fetch(f"{endpoint}?os=web&page={page}&per_page=20&category=trade")["data"]["notices"])
+    if not notices:
+        raise ValueError("empty_upbit_listing_feed")
     output = {}
     eligible = [item for item in notices if "신규 거래지원" in item.get("title", "")]
     for item in eligible[:12]:
         id_ = str(item.get("id") or "")
         if not id_.isdigit() or not (at := iso_timestamp(item.get("listed_at"))):
             continue
-        detail = fetch(f"{UPBIT}/{id_}?os=web")["data"]
+        detail = fetch(f"{endpoint}/{id_}?os=web")["data"]
         url = f"https://www.upbit.com/service_center/notice?id={id_}"
         for pair, entry in parse_upbit_listing(detail.get("body") or "", datetime.fromtimestamp(at, KST), url).items():
             output.setdefault(pair, entry)
@@ -374,6 +403,12 @@ def collect_listing_notices(fetch, fetch_html, previous, now):
     with ThreadPoolExecutor(max_workers=5) as pool:
         state = dict(pool.map(lambda job: refresh(job[0], *job[1]), jobs.items()))
     listings = {name: entry["items"] for name, entry in state.items() if "_" not in name}
+    reviewed_upbit = {
+        f"{symbol}/{quote}": trading_date(at, f"https://www.upbit.com/service_center/notice?id={notice}")
+        for notice, at, symbols, quotes in UPBIT_REVIEWED_STARTS
+        for symbol in symbols.split() for quote in quotes.split()
+    }
+    listings["upbit"] = {**reviewed_upbit, **listings["upbit"]}
     for exchange, seeds in REVIEWED_DATES.items():
         reviewed = {pair: {"date": day, "url": url} for day, url, pairs in seeds for pair in pairs}
         listings[exchange] = {**reviewed, **listings.get(exchange, {})}
