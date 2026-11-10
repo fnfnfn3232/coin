@@ -12,7 +12,12 @@ async function main() {
   const token = `v3.${Math.floor(expiresAt / 1000)}.spot-test.admin.owner.0.test-signature`;
   const base = { pair: 'BTC/USDT', nativeCurrency: 'USDT', priceUpdatedAt: Math.floor(now / 1000) };
   data.boards.bybit = [];
-  data.boards.bitget = [{ ...data.boards.binance[0], ...base, exchange: 'bitget' }];
+  data.boards.bitget = [{ ...data.boards.binance[0], ...base, exchange: 'bitget', spotListingDate: '2018-07-24' }];
+  data.spotListings = { bybit: { 'BTC/USDT': { date: '2021-07-15' }, 'KOR/USDT': { date: '2026-11-04' } },
+    upbit: { 'BTC/KRW': { date: '2017-10-24' } } };
+  data.spotTradingEnds = { bybit: { 'KOR/USDT': { at: Math.floor(now / 1000) + 86400, url: 'https://announcements.bybit.com/' },
+    'BTC/USDC': { at: Math.floor(now / 1000) + 86400 }, 'REUSED/USDT': { at: Math.floor(now / 1000) - 1 } } };
+  data.spotSpecialTreatment = { bitget: { pairs: ['BTC/USDT'], observedAt: Math.floor(now / 1000) } };
   data.spotMarketStatus = { bybit: { usePublicFeed: true }, bitget: { usePublicFeed: false } };
   data.spotMarketReferences = { bybit: {
     BTC: { englishName: 'Bitcoin', koreanName: '비트코인', referencePriceUsd: 100, marketCapUsd: 1e12,
@@ -63,6 +68,7 @@ async function main() {
         const list = url.pathname.endsWith('instruments-info')
           ? ['BTC', 'AI', 'KOR', 'REUSED', 'AAPLX', 'HALT'].map(baseCoin => ({ baseCoin, quoteCoin: 'USDT', symbol: baseCoin + 'USDT',
               symbolId: baseCoin === 'KOR' ? 1331 : 1332,
+              stTag: baseCoin === 'AI' ? '1' : '0',
               symbolType: baseCoin === 'AAPLX' ? 'xstocks' : '', status: baseCoin === 'HALT' ? 'Closed' : 'Trading' }))
           : ['BTC', 'AI', 'KOR', 'REUSED', 'AAPLX', 'HALT'].map(symbol => ({ symbol: symbol + 'USDT',
               lastPrice: ({ AI: '0.02', KOR: '0.001107' })[symbol] || '100' }));
@@ -84,6 +90,18 @@ async function main() {
     assert.equal(await page.evaluate(() => getBoardRows('bybit')[0].capSource), 'spot_coinpaprika_asset');
     assert.match(await page.locator('#statusText').textContent(), /USDT 현물 4개/);
     const kor = page.locator('tr[data-live-product="KORUSDT"]');
+    const btc = page.locator('tr[data-live-product="BTCUSDT"]');
+    assert.equal(await kor.locator('.asset-risk-badge.delisting').textContent(), '상폐예정');
+    assert.equal(await page.locator('tr[data-live-product="AIUSDT"] .asset-risk-badge.warning').textContent(), '유의(ST)');
+    assert.equal(await btc.locator('.asset-risk-badge.delisting').count(), 0, 'a USDC notice cannot affect USDT');
+    assert.equal(await page.locator('tr[data-live-product="REUSEDUSDT"] .asset-risk-badge.delisting').count(), 0);
+    const listingHeader = page.locator('#thListingDate');
+    await listingHeader.click();
+    assert.equal(await listingHeader.getAttribute('aria-sort'), 'descending');
+    assert.deepEqual(await page.evaluate(() => getRows().map(row => row.symbol)), ['KOR', 'BTC', 'AI', 'REUSED']);
+    await listingHeader.press('Enter');
+    assert.equal(await listingHeader.getAttribute('aria-sort'), 'ascending');
+    assert.deepEqual(await page.evaluate(() => getRows().map(row => row.symbol)), ['BTC', 'KOR', 'AI', 'REUSED']);
     assert.match(await kor.locator('.cap-sub').textContent(), /참고 시총/);
     assert.match(await kor.locator('.supply-main').textContent(), /발행 시점 유통량/);
     assert.equal(await page.evaluate(() => getBoardRows('bybit').find(row => row.symbol === 'KOR').marketCapUsd), 2286666667 * 0.001107);
@@ -93,9 +111,12 @@ async function main() {
     await page.locator('#coinInfoCloseBtn').click();
     await page.locator('#compareBoardSelect').selectOption('upbit');
     assert.deepEqual(await page.evaluate(() => getRows().map(row => row.symbol)), ['BTC']);
+    assert.deepEqual(await btc.locator('td[data-label="상장일"] time').allTextContents(), ['2021-07-15', '2017-10-24']);
     await page.locator('.tab[data-board="bitget"]').click();
     await page.waitForFunction(() => window.__sockets.some(socket => socket.url.includes('ws.bitget.com') && socket.sent.length));
     assert.equal(await page.locator('#thPriceDifference').isVisible(), false);
+    assert.equal(await btc.locator('.asset-risk-badge.warning').textContent(), '비트겟 유의(ST)');
+    assert.deepEqual(await btc.locator('td[data-label="상장일"] time').allTextContents(), ['2018-07-24', '2017-10-24']);
     await page.evaluate(() => {
       const socket = window.__sockets.findLast(socket => socket.url.includes('ws.bitget.com'));
       socket.onmessage({ data: JSON.stringify({ arg: { instType: 'SPOT', channel: 'ticker', instId: 'BTCUSDT' },
@@ -104,6 +125,8 @@ async function main() {
     await page.waitForFunction(() => document.querySelector('[data-live-exchange="bitget"] [data-live-price-main]')?.textContent === '123.45 USDT');
     assert.equal(await page.evaluate(() => getBoardRows('bitget')[0].marketCapUsd), 1e12);
     await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator('#marketListingSort').click();
+    assert.equal(await listingHeader.getAttribute('aria-sort'), 'descending');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     assert.deepEqual(errors, []);
     console.log('PASS: Bybit official fallback, identity-safe comparison, Bitget spot stream, and mobile layout');

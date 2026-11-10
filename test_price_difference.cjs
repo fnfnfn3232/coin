@@ -238,7 +238,7 @@ async function main() {
     await page.waitForTimeout(50);
     await prices();
     await page.waitForFunction(() => document.querySelector('tr[data-live-product="KRW-BTC"] [data-price-difference]').textContent.includes('3.846%'));
-    assert.equal(await page.locator('#tableBody tr').first().locator('td').count(), 9);
+    assert.equal(await page.locator('#tableBody tr').first().locator('td').count(), 10);
     const headers = await page.locator('#marketTable th').allTextContents();
     assert.equal(headers[4].replace(/[ ↑↓]/g, ''), '시세차이');
     await page.locator('#thCap').click();

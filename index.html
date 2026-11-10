@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-McZOGCVftiV8fAxuZPumQyldx2N2oDFcTvji5LCFlUI='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-5/wgNrfpgopkJHof6I4Pkw4WoJ+8q9dBxWLJkHso3kE='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -4237,6 +4237,10 @@
     #marketTable .supply-main { font-size: 14px; }
 
     #marketTable .rating-cell { width: 48px; min-width: 48px; white-space: nowrap; }
+    #marketTable .spot-listing-cell { white-space: nowrap; font-size: 13px; font-variant-numeric: tabular-nums; }
+    .spot-listing-cell a { color: var(--text); text-decoration-color: var(--muted); }
+    .spot-listing-cell .spot-listing-other { margin-top: 3px; font-size: 12px; }
+    #marketListingSort { display: none; }
     #marketTable .price-difference-cell { min-width: 96px; white-space: nowrap; font-variant-numeric: tabular-nums; }
     .price-difference-value { font-size: 15px; font-weight: 700; }
     .price-difference-state { font-size: 12px; font-weight: 400; color: var(--muted); }
@@ -5645,6 +5649,8 @@
         }
 
         #marketTable .rating-cell { width: auto; min-width: 0; }
+        #marketListingSort { display: inline-flex; }
+        #marketTable .spot-listing-values { grid-column: 2; }
         #marketTable .price-difference-cell { min-width: 0; }
         #marketTable .price-difference-value,
         #marketTable .price-difference-sub,
@@ -7152,6 +7158,7 @@
           </div>
           <div class="row market-meta-right">
             <div class="status" id="statusText"></div>
+            <button class="market-source-toggle" id="marketListingSort" type="button">상장일</button>
             <button class="market-source-toggle" id="marketSourceToggleBtn" type="button" aria-pressed="false">시총 출처 보기</button>
           </div>
         </div>
@@ -7183,6 +7190,7 @@
             <th id="thPriceDifference">시세차이</th>
             <th id="thCap"></th>
             <th class="rating-cell" title="APYWA" id="thRating">등급</th>
+            <th class="spot-listing-cell" id="thListingDate" scope="col">상장일</th>
             <th id="thFdv"></th>
             <th class="market-source-cell" id="thSource"></th>
           </tr>
@@ -7897,6 +7905,8 @@
       const priceDifferenceBoard = document.getElementById("priceDifferenceBoard");
       const priceDifferenceFxStatus = document.getElementById("priceDifferenceFxStatus");
       const thCap = document.getElementById("thCap");
+      const thListingDate = document.getElementById("thListingDate");
+      const marketListingSort = document.getElementById("marketListingSort");
       const thRating = document.getElementById("thRating");
       const thFdv = document.getElementById("thFdv");
       const baseBoardSelect = document.getElementById("baseBoardSelect");
@@ -14920,6 +14930,14 @@
       document.getElementById("thSymbol").textContent = TEXT.thSymbol;
       thFdv.textContent = TEXT.thFdv;
       function renderCapHeader() {
+        const dateSort = state.sortKey === "listingDate";
+        const dateSortLabel = `상장일${dateSort ? (state.sortDirection === "asc" ? " ↑" : " ↓") : ""}`;
+        thListingDate.classList.add("sortable-th");
+        thListingDate.textContent = marketListingSort.textContent = dateSortLabel;
+        thListingDate.tabIndex = 0;
+        thListingDate.title = marketListingSort.title = "기준 거래소 현물 거래 시작일 · 한국시간";
+        thListingDate.setAttribute("aria-sort", dateSort ? (state.sortDirection === "asc" ? "ascending" : "descending") : "none");
+        marketListingSort.setAttribute("aria-label", dateSort && state.sortDirection === "desc" ? "상장일 오래된 순으로 정렬" : "상장일 최신순으로 정렬");
         thPriceDifference.classList.add("sortable-th");
         thPriceDifference.innerHTML = `<span class="sort-label">시세차이${state.sortKey === "difference" ? (state.sortDirection === "asc" ? " ↑" : " ↓") : ""}</span>`;
         thPriceDifference.title = "기준 거래소 대비 가격 차이율 · 클릭하여 정렬";
@@ -17444,6 +17462,7 @@
             const refPrice = toPositiveNumber(candidate.referencePriceUsd);
             const officialName = String(item.fullName || "").trim();
             const listingKey = String((bybit ? item.symbolId : item.launchTime) || "");
+            const listedAt = /^1[0-9]{12}$/.test(listingKey) && !bybit ? Number(listingKey) : null;
             const launchEstimate = candidate.capSource === "spot_launch_supply_estimate";
             const launchSupply = toPositiveNumber(candidate.circulatingSupply);
             const totalSupply = toPositiveNumber(candidate.totalSupply);
@@ -17461,6 +17480,8 @@
             const fdv = matched && launchEstimate ? price * totalSupply : ref.fdvUsd;
             rows.push({ ...ref, exchange: board, symbol, pair: `${symbol}/USDT`, name: ref.koreanName || name,
               englishName: name, nativeCurrency: "USDT", priceUsd: price,
+              spotListingDate: listedAt && listedAt <= now ? new Date(listedAt + 32400000).toISOString().slice(0, 10) : null,
+              spotSpecialTreatmentAt: bybit && String(item.stTag) === "1" ? Math.floor(now / 1000) : null,
               priceKrw: price !== null && fx !== null ? price * fx : null, priceUpdatedAt: price === null ? null : Math.floor(at / 1000),
               marketCapUsd: cap, marketCapKrw: cap !== null && fx !== null ? cap * fx : null, sortCapUsd: cap,
               fdvUsd: fdv, fdvKrw: fdv && fx ? fdv * fx : null, circulatingRatio: computeCirculatingRatio(ref.circulatingSupply, ref.totalSupply),
@@ -18963,16 +18984,19 @@
             : compared.filter((row) => matchesMarketSearch(row, query));
 
         return filtered.sort((a, b) => {
-          if (query) {
+          if (query && state.sortKey !== "listingDate") {
             const aPriority = getQueryPriority(a, query);
             const bPriority = getQueryPriority(b, query);
             if (aPriority !== bPriority) return aPriority - bPriority;
           }
 
-          const aValue = state.sortKey === "rating" ? getRowRatingSortValue(a)
+          const dateBoard = state.board === "triple" ? "bithumb" : state.board;
+          const aValue = state.sortKey === "listingDate" ? listingDateSortValue(a, dateBoard)
+            : state.sortKey === "rating" ? getRowRatingSortValue(a)
             : state.sortKey === "difference" ? getPriceDifference(a).percent ?? null
             : state.sortKey === "price" ? getRowPriceSortUsd(a) : toPositiveNumber(a.sortCapUsd);
-          const bValue = state.sortKey === "rating" ? getRowRatingSortValue(b)
+          const bValue = state.sortKey === "listingDate" ? listingDateSortValue(b, dateBoard)
+            : state.sortKey === "rating" ? getRowRatingSortValue(b)
             : state.sortKey === "difference" ? getPriceDifference(b).percent ?? null
             : state.sortKey === "price" ? getRowPriceSortUsd(b) : toPositiveNumber(b.sortCapUsd);
           const aMissing = aValue === null;
@@ -19013,8 +19037,43 @@
       }
     }
 
+      function spotListingDate(row, board) {
+        if (!row) return null;
+        const entry = row.spotListingDate ? { date: row.spotListingDate,
+          url: "https://www.bitget.com/docs/catalog/market-market-data/market-instruments" } : data.spotListings?.[board]?.[row.pair];
+        const date = String(entry?.date || "");
+        if (!/^20\d{2}-\d{2}-\d{2}$/.test(date) || Number(entry.at || 0) * 1000 > Date.now()) return null;
+        return entry;
+      }
+
+      function listingDateSortValue(row, board) {
+        const entry = spotListingDate(row, board);
+        return entry ? Number(entry.date.replaceAll("-", "")) : null;
+      }
+
+      function renderSpotListingDate(row, board, showBoard) {
+        const entry = spotListingDate(row, board);
+        const prefix = showBoard ? `${escapeHtml(boardShortLabel(board))} ` : "";
+        if (!entry) return `${prefix}<span class="muted" title="공식 거래 시작일 미확인">-</span>`;
+        const date = `<time datetime="${entry.date}">${entry.date}</time>`;
+        const url = String(entry.url || "");
+        return prefix + (/^https:\/\//.test(url) ? `<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer" title="거래소 공식 출처 · 한국시간">${date}</a>` : date);
+      }
+
       function getAssetRiskFlags(row, exchange) {
+        if (!row) return [];
         const existing = Array.isArray(row?.riskFlags) ? row.riskFlags : [];
+        const end = data.spotTradingEnds?.[exchange]?.[row.pair];
+        if (Number(end?.at) * 1000 > Date.now()) {
+          return [{ type: "delisting", label: "상폐예정", url: end.url,
+            detail: `현물 거래지원 종료 · ${new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", dateStyle: "medium", timeStyle: "short" }).format(end.at * 1000)} (한국시간)` }];
+        }
+        const flags = data.spotSpecialTreatment?.[exchange];
+        const recent = at => at && Date.now() - at * 1000 < 3600000;
+        if (recent(row.spotSpecialTreatmentAt) || (recent(flags?.observedAt) && flags.pairs.includes(row.pair))) {
+          return [...existing, { type: "warning", label: "유의(ST)", detail: "거래소 현물 거래유의(ST) 지정",
+            url: exchange === "bitget" ? "https://www.bitget.com/support/articles/12560603813392" : "" }];
+        }
         const notices = data.scheduledDelistings?.[exchange];
         if (!notices || typeof notices !== "object") return existing;
         const entry = notices[String(row?.symbol || "").toUpperCase()];
@@ -19044,7 +19103,7 @@
         const direct = [state.board, ...getActiveCompareBoards()].map(board => publicSpotBoards.get(board));
         const message = direct.some(entry => entry?.loading) ? "거래소 현물 목록을 확인하는 중입니다."
           : direct.some(entry => entry?.error) ? "거래소 현물 목록을 받지 못했습니다." : TEXT.empty;
-        tableBody.innerHTML = `<tr><td class="empty" colspan="9" data-label="">${message}</td></tr>`;
+        tableBody.innerHTML = `<tr><td class="empty" colspan="10" data-label="">${message}</td></tr>`;
         return;
       }
 
@@ -19110,6 +19169,10 @@
                 <div class="cap-sub">${escapeHtml(cap.sub || TEXT.noCap)}</div>
               </td>
               <td class="rating-cell" data-label="등급">${renderCoinRating(row)}</td>
+              <td class="spot-listing-cell" data-label="상장일"><div class="spot-listing-values">
+                <div>${renderSpotListingDate(row, liveExchange, showRiskExchange)}</div>
+                ${riskBoards.filter(board => board !== liveExchange).map(board => `<div class="spot-listing-other">${renderSpotListingDate(riskRowsByBoard.get(board)?.get(coinSymbol), board, true)}</div>`).join("")}
+              </div></td>
               <td data-label="${TEXT.thFdv}">
                 <div class="supply-main">${escapeHtml(supply.main || TEXT.unknown)}</div>
                 <div class="supply-sub">${escapeHtml(supply.sub || TEXT.noSupply)}</div>
@@ -19313,6 +19376,17 @@
         event.preventDefault();
         thRating.click();
       });
+      thListingDate.addEventListener("click", () => {
+        state.sortDirection = state.sortKey === "listingDate" && state.sortDirection === "desc" ? "asc" : "desc";
+        state.sortKey = "listingDate";
+        state.page = 1;
+        renderCapHeader();
+        render();
+      });
+      thListingDate.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); thListingDate.click(); }
+      });
+      marketListingSort.addEventListener("click", () => thListingDate.click());
 
       newsPanel.addEventListener("keydown", (event) => {
         if (event.key !== "Enter" || event.isComposing) return;
