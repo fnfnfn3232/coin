@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from spot_listing_notices import (
     BITGET_LABELS, BITGET_SYMBOLS, NoticeBlocks, bitget_ends, bitget_special_treatment,
     collect_listing_notices, parse_bithumb_listing, parse_bybit_delisting, parse_bybit_listing,
-    parse_upbit_listing,
+    parse_upbit_listing, upbit_dates, UPBIT, UPBIT_BACKUP,
 )
 
 
@@ -73,8 +73,23 @@ class SpotListingNoticeTests(unittest.TestCase):
         state, dates, ends, st = collect_listing_notices(unavailable, unavailable, previous, now)
         self.assertEqual(state["upbit"]["error"], "TimeoutError")
         self.assertEqual(dates["upbit"]["AAA/KRW"]["date"], "2026-10-01")
+        self.assertEqual(dates["upbit"]["HYPE/KRW"]["date"], "2026-11-10")
+        self.assertNotIn("REZ/KRW", dates["upbit"])
         self.assertEqual(list(ends["bybit"]), ["BBB/USDT"])
         self.assertEqual(st, {})
+
+    def test_upbit_secondary_official_endpoint(self):
+        title = "예시(AAA) 신규 거래지원 안내 (KRW 마켓)"
+        body = "<tr><td>예시(AAA)</td><td>KRW</td><td>Base</td><td>12월 1일 10시</td><td>12월 1일 13시</td></tr>"
+        def fetch(url):
+            if url.startswith(UPBIT):
+                raise PermissionError("403")
+            self.assertTrue(url.startswith(UPBIT_BACKUP))
+            data = {"body": body} if "/123?" in url else {"notices": [
+                {"id": 123, "title": title, "listed_at": "2025-12-01T09:00:00+09:00"}
+            ]}
+            return {"data": data}
+        self.assertEqual(upbit_dates(fetch)["AAA/KRW"]["date"], "2025-12-01")
 
 
 if __name__ == "__main__":
