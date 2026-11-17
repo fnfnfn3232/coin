@@ -1,11 +1,19 @@
 import copy
 import unittest
 from pathlib import Path
+from datetime import datetime
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
 import build_data as market
 from refresh_health import HISTORY_MAX_EVENTS, HISTORY_RETENTION_SECONDS, ProviderCoolingDown, build_refresh_health, call_notice_provider, incident_report
+
+
+class FrozenNoticeDatetime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        value = cls(2026, 10, 17, 12, tzinfo=market.SEOUL_TIMEZONE)
+        return value.astimezone(tz) if tz else value.replace(tzinfo=None)
 
 
 class RefreshHealthTests(unittest.TestCase):
@@ -48,7 +56,8 @@ class RefreshHealthTests(unittest.TestCase):
 
     def test_fallback_success_does_not_hide_per_source_failures_and_survives_next_run(self):
         notice = {'title': '[거래] 소폰(SOPH) 거래지원 종료 (11/16 15:00)', 'uuid': '1383330097', 'listed_at': '2026-10-15T07:00:00+00:00', 'channel': True}
-        with patch.object(market, 'NOTICE_REFRESH_STATUS', {}), \
+        with patch.object(market, 'datetime', FrozenNoticeDatetime), \
+             patch.object(market, 'NOTICE_REFRESH_STATUS', {}), \
              patch.object(market, 'ACTIVE_SCHEDULED_DELISTINGS', {}), \
              patch.object(market, 'fetch_json', side_effect=HTTPError('official', 403, 'Forbidden', {}, None)) as fetch, \
              patch.object(market, 'fetch_upbit_official_channel_notices', side_effect=lambda: ([notice], {'source': market.UPBIT_OFFICIAL_CHANNEL_URL, 'checkedAt': 10000})), \
