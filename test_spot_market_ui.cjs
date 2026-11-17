@@ -109,6 +109,28 @@ async function main() {
     await page.getByRole('button', { name: 'Sleepless AI 코인 정보 보기' }).click();
     assert.match(await page.locator('#coinInfoTitle').textContent(), /Sleepless AI/);
     await page.locator('#coinInfoCloseBtn').click();
+    const freshSnapshot = await page.evaluate(() => data.generatedAt);
+    await page.evaluate(() => {
+      data.generatedAt -= 86400;
+      render();
+    });
+    await page.waitForFunction(() => getBoardRows('bybit')[0].marketCapUsd === null
+      && !publicSpotBoards.get('bybit').loading);
+    assert.equal(await btc.locator('.price-main').textContent(), '100 USDT', 'live price survives stale cap data');
+    assert.match(await page.locator('#marketReferenceStatus').textContent(), /시총·유통량 갱신 지연/);
+    assert.equal(await page.locator('#marketReferenceStatus').isVisible(), true);
+    const beforeRecovery = requests.length;
+    await page.evaluate(at => {
+      data.generatedAt = at;
+      render();
+    }, freshSnapshot);
+    await page.waitForFunction(() => getBoardRows('bybit')[0].marketCapUsd === 1e12
+      && !publicSpotBoards.get('bybit').loading);
+    assert.equal(requests.length, beforeRecovery + 2, 'a new snapshot refreshes caps without waiting five minutes or reloading');
+    assert.equal(await page.locator('#marketReferenceStatus').isVisible(), false);
+    const beforeRenders = requests.length;
+    await page.evaluate(() => { render(); render(); render(); });
+    assert.equal(requests.length, beforeRenders, 'unchanged snapshots keep the bulk request cooldown');
     await page.locator('#compareBoardSelect').selectOption('upbit');
     assert.deepEqual(await page.evaluate(() => getRows().map(row => row.symbol)), ['BTC']);
     assert.deepEqual(await btc.locator('td[data-label="상장일"] time').allTextContents(), ['2021-07-15', '2017-10-24']);
@@ -129,7 +151,7 @@ async function main() {
     assert.equal(await listingHeader.getAttribute('aria-sort'), 'descending');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     assert.deepEqual(errors, []);
-    console.log('PASS: Bybit official fallback, identity-safe comparison, Bitget spot stream, and mobile layout');
+    console.log('PASS: Bybit official fallback, identity-safe comparison, stale-cap warning, snapshot recovery without reload, Bitget spot stream, and mobile layout');
   } finally { await browser.close(); }
 }
 

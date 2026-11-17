@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-5/wgNrfpgopkJHof6I4Pkw4WoJ+8q9dBxWLJkHso3kE='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-numIEuORgao4Rd+S7nrq6h+hlhDIk50PT9ehzBNAXXQ='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -7158,6 +7158,7 @@
           </div>
           <div class="row market-meta-right">
             <div class="status" id="statusText"></div>
+            <span class="status" id="marketReferenceStatus" role="status" hidden></span>
             <button class="market-source-toggle" id="marketListingSort" type="button">상장일</button>
             <button class="market-source-toggle" id="marketSourceToggleBtn" type="button" aria-pressed="false">시총 출처 보기</button>
           </div>
@@ -17420,8 +17421,11 @@
         const owner = comparisonCacheOwner();
         const previous = publicSpotBoards.get(board);
         const entry = previous?.owner === owner ? previous : { owner, rows: [] };
-        if (entry.loading || Date.now() - (entry.at || 0) < (entry.error ? 60000 : 300000)) return;
+        const requestedSnapshot = Number(data.generatedAt || 0);
+        if (entry.loading || (entry.requestedSnapshot === requestedSnapshot
+          && Date.now() - (entry.at || 0) < (entry.error ? 60000 : 300000))) return;
         entry.loading = true;
+        entry.requestedSnapshot = requestedSnapshot;
         publicSpotBoards.set(board, entry);
         const bybit = board === "bybit";
         const endpoints = bybit
@@ -17438,7 +17442,7 @@
           if (!response.ok) throw new Error("spot_feed_unavailable");
           return response.json();
         })).then(([listings, quotes]) => {
-          if (owner !== comparisonCacheOwner() || isSiteLocked()) return;
+          if (owner !== comparisonCacheOwner() || isSiteLocked() || requestedSnapshot !== Number(data.generatedAt || 0)) return;
           const now = Date.now();
           const byProduct = new Map(items(quotes).map(row => [row.symbol, row]));
           const refs = data.spotMarketReferences?.[board] || {};
@@ -19238,6 +19242,12 @@
         statusText.textContent = activeCompareBoards.length
           ? `\uACF5\uD1B5 \uC0C1\uC7A5 ${formatNumber(rows.length, 0)}\uAC1C | \uAE30\uC900 ${boardLabel(state.board)} | \uBE44\uAD50 ${activeCompareBoards.map((board) => boardLabel(board)).join(" + ")} | \uC2DC\uCD1D \uD655\uC778 ${formatNumber(withCapCount, 0)}\uAC1C | \uAC00\uACA9 \uD655\uC778 ${formatNumber(withPriceCount, 0)}\uAC1C | \uC720\uD1B5 \uC815\uBCF4 \uD655\uC778 ${formatNumber(withSupplyCount, 0)}\uAC1C | ${state.page} / ${totalPages} \uD398\uC774\uC9C0`
           : `${totalLabel} | \uC2DC\uCD1D \uD655\uC778 ${formatNumber(withCapCount, 0)}\uAC1C | \uAC00\uACA9 \uD655\uC778 ${formatNumber(withPriceCount, 0)}\uAC1C | \uC720\uD1B5 \uC815\uBCF4 \uD655\uC778 ${formatNumber(withSupplyCount, 0)}\uAC1C | ${state.page} / ${totalPages} \uD398\uC774\uC9C0`;
+        const referenceStatus = document.getElementById("marketReferenceStatus");
+        const referenceAge = Date.now() - Number(data.generatedAt || 0) * 1000;
+        referenceStatus.hidden = ![state.board, ...activeCompareBoards].some(board => EXTRA_SPOT_BOARDS.includes(board))
+          || !data.generatedAt || referenceAge < 21600000;
+        referenceStatus.textContent = referenceStatus.hidden ? "" :
+          `시총·유통량 갱신 지연 · 마지막 자료 ${new Date(data.generatedAt * 1000).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })}`;
 
         const generatedAt = data.generatedAt
           ? new Date(data.generatedAt * 1000).toLocaleString("ko-KR")
