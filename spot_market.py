@@ -320,7 +320,8 @@ def build_references(names, candidates):
         matching.sort(key=lambda row: REFERENCE_EXCHANGES.index(row["referenceExchange"])
                       if row.get("referenceExchange") in REFERENCE_EXCHANGES else len(REFERENCE_EXCHANGES))
         direct = [row for row in matching if row.get("referenceExchange") in REFERENCE_EXCHANGES]
-        with_cap = [row for row in direct or matching if positive(row.get("marketCapUsd"))]
+        with_cap = ([row for row in direct if positive(row.get("marketCapUsd"))]
+                    or [row for row in matching if positive(row.get("marketCapUsd"))])
         cap_conflict = False
         if with_cap:
             # Don't pick between materially inconsistent same-name candidates.
@@ -333,6 +334,7 @@ def build_references(names, candidates):
             "koreanName": ref.get("koreanName") or "",
             "referencePriceUsd": positive(ref.get("priceUsd")),
             "marketCapUsd": None if cap_conflict else positive(ref.get("marketCapUsd")),
+            "referenceConflict": cap_conflict,
             "circulatingSupply": positive(ref.get("circulatingSupply")) if ref.get("supplyIdentityVerified") is not False else None,
             "totalSupply": positive(ref.get("totalSupply")) if ref.get("supplyIdentityVerified") is not False else None,
             "fdvUsd": positive(ref.get("fdvUsd")),
@@ -424,7 +426,7 @@ def build_spot_board(fetch, exchange, previous=None, *, fx, candidates, catalog=
     for base, asset_id in (catalog.get("ids") or {}).items() if catalog_fresh else ():
         ref = (paprika_caps or {}).get(asset_id)
         existing = assets.get(base) or {}
-        if ref and same_name(base, names.get(base), ref["englishName"]):
+        if ref and not existing.get("referenceConflict") and same_name(base, names.get(base), ref["englishName"]):
             assets[base] = merge_reference(existing, {**ref, "spotListingName": names[base]})
     cmc = collect_cmc_spot_caps(fetch, exchange, names, assets, (old_catalog or {}).get("cmc"), now, reviewed=reviewed)
     catalog = {**catalog, "cmc": cmc}
@@ -433,10 +435,11 @@ def build_spot_board(fetch, exchange, previous=None, *, fx, candidates, catalog=
         if (not names.get(base) or names[base] != ref["spotListingName"]
                 or now - ref["capUpdatedAt"] > REFERENCE_MAX_AGE):
             continue
-        if existing.get("referenceExchange") in REFERENCE_EXCHANGES and positive(existing.get("marketCapUsd")):
+        if existing.get("capSource") == "spot_verified_reference" and positive(existing.get("marketCapUsd")):
             assets[base] = merge_reference(existing, ref)
         else:
-            assets[base] = merge_reference({**ref, "koreanName": existing.get("koreanName") or ""}, existing)
+            assets[base] = {**merge_reference({**ref, "koreanName": existing.get("koreanName") or ""}, existing),
+                            "referenceExchange": None, "referenceConflict": False}
     for base, asset in reviewed.items():
         existing = assets.get(base) or {}
         launch_at = source_timestamp(asset.get("launchAt"))

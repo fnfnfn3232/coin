@@ -80,6 +80,37 @@ class SpotMarketTests(unittest.TestCase):
         self.assertEqual(result["assets"]["AAA"]["totalSupply"], 100)
         self.assertIsNone(result["assets"]["AAA"]["marketCapUsd"])
 
+    def test_conflicting_exchange_caps_are_rechecked_by_cmc_not_replaced_with_paprika(self):
+        instrument = {"symbol": "SCRUSDT", "baseCoin": "SCR", "quoteCoin": "USDT", "status": "online",
+                      "category": "SPOT", "symbolType": "crypto", "fullName": "Scroll"}
+        candidates = {"SCR": [
+            {"referenceExchange": "bithumb", "englishName": "Scroll", "priceUsd": 1, "marketCapUsd": 19,
+             "circulatingSupply": 19, "totalSupply": 100},
+            {"referenceExchange": "binance", "englishName": "Scroll", "priceUsd": 1, "marketCapUsd": 56,
+             "circulatingSupply": 56, "totalSupply": 100},
+        ]}
+        paprika = {"scr-scroll": {"englishName": "Scroll", "referencePriceUsd": 1, "marketCapUsd": 19,
+                                   "circulatingSupply": None, "totalSupply": 100,
+                                   "capSource": "spot_coinpaprika_asset", "capUpdatedAt": NOW}}
+        cmc = {"id": 26998, "symbol": "SCR", "name": "Scroll", "circulating_supply": 56, "total_supply": 100,
+               "quote": {"USD": {"price": 1, "market_cap": 56, "last_updated": ISO_NOW}}}
+        def fetch(url):
+            if url == SOURCES["bitget"][0]:
+                return {"code": "00000", "data": [instrument]}
+            if url == SOURCES["bitget"][1]:
+                return {"code": "00000", "data": [{"symbol": "SCRUSDT", "ts": NOW * 1000, "lastPr": "1"}]}
+            if url == BITGET_COINS:
+                return {"code": "00000", "data": [{"coin": "SCR", "chains": []}]}
+            self.assertEqual(url, CMC_LISTINGS)
+            return {"status": {"error_code": 0}, "data": [cmc]}
+        catalog = {"asOf": NOW, "names": {"SCR": "Scroll"}, "ids": {"SCR": "scr-scroll"}}
+        rows, _, _, _ = build_spot_board(fetch, "bitget", fx=1300, candidates=candidates,
+                                         catalog=catalog, paprika_caps=paprika, now=NOW)
+        self.assertEqual(rows[0]["marketCapUsd"], 56)
+        self.assertEqual(rows[0]["circulatingSupply"], 56)
+        self.assertEqual(rows[0]["totalSupply"], 100)
+        self.assertEqual(rows[0]["capSource"], "spot_coinmarketcap_asset")
+
     def test_supply_merge_never_builds_over_100_percent_from_different_snapshots(self):
         merged = merge_reference({"totalSupply": 10}, {"circulatingSupply": 20})
         self.assertIsNone(merged["circulatingSupply"])
