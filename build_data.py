@@ -16,7 +16,7 @@ from pathlib import Path
 from refresh_health import build_refresh_health, call_notice_provider
 from apywa_ratings import collect_ratings, apply_ratings
 from robinhood_market import build_robinhood_board
-from spot_market import SOURCES as SPOT_BOARD_SOURCES, build_spot_board, collect_names, collect_paprika_caps
+from spot_market import SOURCES as SPOT_BOARD_SOURCES, build_spot_board, collect_names, collect_paprika_caps, fill_board_supplies
 from spot_listing_notices import collect_listing_notices
 from upbit_audit import collect_reports as collect_upbit_audit_reports
 from upbit_asset_names import normalize_asset_names, merge_asset_names, suspicious_catalog_drop
@@ -4768,6 +4768,7 @@ def make_payload(previous_payload: dict | None = None) -> dict:
         if str(row.get("symbol") or "").strip()
     }
     futures_coinmarketcap_candidates = {}
+    futures_symbols.update(symbol for row in all_supply_rows if not row_has_complete_supply(row) for symbol in row_symbols(row))
     if futures_symbols:
         try:
             futures_coinmarketcap_candidates = fetch_coinmarketcap_market_candidates(
@@ -4781,6 +4782,10 @@ def make_payload(previous_payload: dict | None = None) -> dict:
         except Exception as error:  # noqa: BLE001
             refresh_issues["futures_coinmarketcap"] = f"fetch_failed:{error}"
 
+    supply_fills = fill_board_supplies({
+        "upbit": upbit_rows, "bithumb": bithumb_rows, "coinbase": coinbase_rows, "binance": binance_rows,
+    }, futures_coinmarketcap_candidates)
+    print("Verified exchange supply fills:", json.dumps(supply_fills, separators=(",", ":")))
     expected_pairs = {
         "binance": {str(row.get("pair") or "").strip() for row in binance_rows},
         "upbit": {str(row.get("pair") or "").strip() for row in upbit_rows},
@@ -4823,9 +4828,9 @@ def make_payload(previous_payload: dict | None = None) -> dict:
     )
     # Keep the legacy symbol-keyed metadata separate from the new exchange rows.
     spot_candidates = {}
-    for rows in boards.values():
+    for board, rows in boards.items():
         for row in rows:
-            spot_candidates.setdefault(str(row.get("symbol") or "").upper(), []).append(row)
+            spot_candidates.setdefault(str(row.get("symbol") or "").upper(), []).append({**row, "referenceExchange": board})
     for candidates in (coingecko_supply_candidates, futures_coinmarketcap_candidates):
         for symbol, rows in candidates.items():
             spot_candidates.setdefault(symbol, []).extend(rows)
@@ -4859,6 +4864,11 @@ def make_payload(previous_payload: dict | None = None) -> dict:
             refresh_issues[f"{exchange}_spot_cap"] = cap_error
         print("Spot board audit:", json.dumps({
             "exchange": exchange, "listed": len(rows), "withCap": sum(bool(row["marketCapUsd"]) for row in rows),
+            "withCirculatingSupply": sum(bool(row.get("circulatingSupply")) for row in rows),
+            "withTotalSupply": sum(bool(row.get("totalSupply")) for row in rows),
+            "referenceCompleteSupply": sum(bool(ref.get("circulatingSupply")) and bool(ref.get("totalSupply")) for ref in references.values()),
+            "supplyExamples": {symbol: {key: references.get(symbol, {}).get(key) for key in ("marketCapUsd", "circulatingSupply", "totalSupply", "capSource", "referenceExchange")}
+                               for symbol in ("KSM", "JUV", "BB", "CITY", "SCR", "NOM", "PSG")},
             "identityCatalog": len(catalog.get("names") or {}), "referenceCaps": sum(bool(ref["marketCapUsd"]) for ref in references.values()),
             "coinMarketCap": sum(bool(ref.get("spotAssetId")) for ref in references.values()),
             "coinPaprika": sum(ref.get("capSource") == "spot_coinpaprika_asset" for ref in references.values()),
