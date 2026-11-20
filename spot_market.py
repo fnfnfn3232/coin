@@ -27,6 +27,7 @@ CMC_QUOTES = "https://pro-api.coinmarketcap.com/public-api/v3/cryptocurrency/quo
 BITGET_COINS = "https://api.bitget.com/api/v2/spot/public/coins"
 PAPRIKA_TICKERS = "https://api.coinpaprika.com/v1/tickers"
 CMC_REFRESH_INTERVAL = 1800
+REFERENCE_EXCHANGES = ("upbit", "bithumb", "coinbase", "binance")
 REVIEWED_SPOT_ASSETS = {
     # Both spot listing notices identify this Base contract.
     "KOR": {
@@ -206,9 +207,9 @@ def cmc_quote_reference(item, now, *, allow_reported=False):
         if reported and total and reported <= total:
             supply, cap = reported, reported * price
             source = "spot_coinmarketcap_reported"
-    if not cap:
+    if not cap and not supply and not total:
         return None
-    if supply and not 0.75 <= cap / (supply * price) <= 1.25:
+    if cap and supply and not 0.75 <= cap / (supply * price) <= 1.25:
         return None
     asset_id = str(item["id"])
     return {
@@ -225,10 +226,14 @@ def cmc_quote_reference(item, now, *, allow_reported=False):
 def collect_cmc_spot_caps(fetch, exchange, names, existing, previous, now, *, reviewed=None):
     previous = previous or {}
     reviewed = reviewed or {}
-    targets = {base for base, name in names.items() if name and (existing.get(base) or {}).get("capSource") != "spot_coinpaprika_asset"}
+    targets = {base for base, name in names.items() if name and (
+        not positive((existing.get(base) or {}).get("marketCapUsd"))
+        or any(not positive((existing.get(base) or {}).get(key)) for key in ("circulatingSupply", "totalSupply"))
+    )}
     reviewed = {base: asset for base, asset in reviewed.items() if base in targets}
     reviewed_ids = sorted(asset["id"] for asset in reviewed.values())
     if not targets or (previous.get("reviewedIds", []) == reviewed_ids
+                       and previous.get("supplyTargets") == sorted(targets)
                        and now - int(previous.get("checkedAt") or 0) < CMC_REFRESH_INTERVAL):
         return previous
     refs = {base: ref for base, ref in (previous.get("assets") or {}).items()
@@ -289,7 +294,19 @@ def collect_cmc_spot_caps(fetch, exchange, names, existing, previous, now, *, re
                     refs[base] = {**ref, "spotListingName": names[base], "verifiedListingKey": asset["listingKeys"][exchange]}
         except Exception as error:
             errors.append(f"reviewed_quotes:{type(error).__name__}:{str(error)[:100]}")
-    return {"checkedAt": now, "assets": refs, "reviewedIds": reviewed_ids, "error": "; ".join(errors)}
+    return {"checkedAt": now, "assets": refs, "reviewedIds": reviewed_ids, "supplyTargets": sorted(targets), "error": "; ".join(errors)}
+
+
+def merge_reference(primary, fallback):
+    result = {**primary, **fallback, **{key: value for key, value in primary.items() if value not in (None, "")}}
+    for key in ("circulatingSupply", "totalSupply"):
+        result[key] = positive(primary.get(key)) or positive(fallback.get(key))
+    circulating, total = result.get("circulatingSupply"), result.get("totalSupply")
+    if circulating and total and circulating > total:
+        # Do not publish a ratio assembled from incompatible supply snapshots.
+        missing_key = "circulatingSupply" if not positive(primary.get("circulatingSupply")) else "totalSupply"
+        result[missing_key] = None
+    return result
 
 
 def build_references(names, candidates):
@@ -300,24 +317,74 @@ def build_references(names, candidates):
         matching = [row for row in candidates.get(base, []) if row.get("marketIdentityVerified") is not False
                     and name_key(name) != name_key(base)
                     and same_name(base, name, row.get("englishName")) and positive(row.get("priceUsd"))]
-        with_cap = [row for row in matching if positive(row.get("marketCapUsd"))]
+        matching.sort(key=lambda row: REFERENCE_EXCHANGES.index(row["referenceExchange"])
+                      if row.get("referenceExchange") in REFERENCE_EXCHANGES else len(REFERENCE_EXCHANGES))
+        direct = [row for row in matching if row.get("referenceExchange") in REFERENCE_EXCHANGES]
+        with_cap = [row for row in direct or matching if positive(row.get("marketCapUsd"))]
+        cap_conflict = False
         if with_cap:
             # Don't pick between materially inconsistent same-name candidates.
             caps = [float(row["marketCapUsd"]) for row in with_cap]
-            matching = with_cap if max(caps) / min(caps) <= 1.5 else []
-        ref = matching[0] if matching else {}
-        assets[base] = {
+            cap_conflict = max(caps) / min(caps) > 1.5
+            with_cap = [] if cap_conflict else with_cap
+        ref = next(iter(with_cap), next(iter(matching), {}))
+        reference = {
             "englishName": name,
             "koreanName": ref.get("koreanName") or "",
             "referencePriceUsd": positive(ref.get("priceUsd")),
-            "marketCapUsd": positive(ref.get("marketCapUsd")),
+            "marketCapUsd": None if cap_conflict else positive(ref.get("marketCapUsd")),
             "circulatingSupply": positive(ref.get("circulatingSupply")) if ref.get("supplyIdentityVerified") is not False else None,
             "totalSupply": positive(ref.get("totalSupply")) if ref.get("supplyIdentityVerified") is not False else None,
             "fdvUsd": positive(ref.get("fdvUsd")),
             "logo": ref.get("logo") or "",
             "capSourceDetail": ref.get("capSourceDetail") or ref.get("supplyDetail") or "",
+            "referenceExchange": ref.get("referenceExchange"),
+            "capSource": "spot_verified_reference" if ref.get("referenceExchange") in REFERENCE_EXCHANGES and with_cap else None,
+            "supplyDetail": ref.get("supplyDetail") or ref.get("capSourceDetail") or "",
         }
+        for donor in matching:
+            if donor.get("supplyIdentityVerified") is False:
+                continue
+            if not 0.65 <= float(donor["priceUsd"]) / float(ref.get("priceUsd") or donor["priceUsd"]) <= 1.55:
+                continue
+            reference = merge_reference(reference, {
+                key: positive(donor.get(key)) for key in ("circulatingSupply", "totalSupply")
+            })
+        assets[base] = reference
     return assets
+
+
+def fill_board_supplies(boards, external_candidates):
+    candidates = {}
+    for board, rows in boards.items():
+        for row in rows:
+            candidates.setdefault(row["symbol"], []).append({**row, "referenceExchange": board})
+    for symbol, rows in external_candidates.items():
+        candidates.setdefault(symbol, []).extend(rows)
+    filled = {}
+    for board, rows in boards.items():
+        count = 0
+        for row in rows:
+            if (row.get("marketIdentityVerified") is False
+                    or all(positive(row.get(key)) for key in ("circulatingSupply", "totalSupply"))):
+                continue
+            base = row["symbol"]
+            name = row.get("englishName") or ""
+            reference = build_references({base: name}, candidates).get(base) or {}
+            primary = {key: row.get(key) for key in ("circulatingSupply", "totalSupply")
+                       if row.get("supplyIdentityVerified") is not False}
+            merged = merge_reference(primary, reference)
+            changed = False
+            for key in ("circulatingSupply", "totalSupply"):
+                if positive(merged.get(key)) and merged[key] != row.get(key):
+                    row[key] = merged[key]
+                    changed = True
+            if changed:
+                row.update(supplyIdentityVerified=True, fdvUsd=None, fdvKrw=None,
+                           supplyDetail=f"verified_exchange_supply:{reference.get('referenceExchange') or reference.get('capSourceDetail') or ''}")
+                count += 1
+        filled[board] = count
+    return filled
 
 
 def build_spot_board(fetch, exchange, previous=None, *, fx, candidates, catalog=None, paprika_caps=None, now=None):
@@ -358,16 +425,18 @@ def build_spot_board(fetch, exchange, previous=None, *, fx, candidates, catalog=
         ref = (paprika_caps or {}).get(asset_id)
         existing = assets.get(base) or {}
         if ref and same_name(base, names.get(base), ref["englishName"]):
-            assets[base] = {**ref, "spotListingName": names[base],
-                            "koreanName": existing.get("koreanName") or "", "logo": existing.get("logo")}
+            assets[base] = merge_reference(existing, {**ref, "spotListingName": names[base]})
     cmc = collect_cmc_spot_caps(fetch, exchange, names, assets, (old_catalog or {}).get("cmc"), now, reviewed=reviewed)
     catalog = {**catalog, "cmc": cmc}
     for base, ref in (cmc.get("assets") or {}).items():
         existing = assets.get(base) or {}
-        if (existing.get("capSource") == "spot_coinpaprika_asset" or not names.get(base) or names[base] != ref["spotListingName"]
+        if (not names.get(base) or names[base] != ref["spotListingName"]
                 or now - ref["capUpdatedAt"] > REFERENCE_MAX_AGE):
             continue
-        assets[base] = {**ref, "koreanName": existing.get("koreanName") or ""}
+        if existing.get("referenceExchange") in REFERENCE_EXCHANGES and positive(existing.get("marketCapUsd")):
+            assets[base] = merge_reference(existing, ref)
+        else:
+            assets[base] = merge_reference({**ref, "koreanName": existing.get("koreanName") or ""}, existing)
     for base, asset in reviewed.items():
         existing = assets.get(base) or {}
         launch_at = source_timestamp(asset.get("launchAt"))
@@ -426,7 +495,7 @@ def build_spot_board(fetch, exchange, previous=None, *, fx, candidates, catalog=
         cap = price * ref["circulatingSupply"] if ref and launch_estimate else ref.get("marketCapUsd")
         display_name = name or ref.get("englishName") or base
         rows.append({
-            **{key: ref.get(key) for key in ("logo", "circulatingSupply", "totalSupply", "fdvUsd", "spotAssetId", "launchSupplyAt", "launchSupplyUntil")},
+            **{key: ref.get(key) for key in ("logo", "circulatingSupply", "totalSupply", "fdvUsd", "spotAssetId", "launchSupplyAt", "launchSupplyUntil", "supplyDetail")},
             "exchange": exchange, "symbol": base, "pair": f"{base}/USDT",
             "name": ref.get("koreanName") or display_name, "englishName": display_name,
             "koreanName": ref.get("koreanName") or "", "nativeCurrency": "USDT",

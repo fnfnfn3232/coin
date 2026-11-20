@@ -21,6 +21,7 @@ async function main() {
   data.spotMarketStatus = { bybit: { usePublicFeed: true }, bitget: { usePublicFeed: false } };
   data.spotMarketReferences = { bybit: {
     BTC: { englishName: 'Bitcoin', koreanName: '비트코인', referencePriceUsd: 100, marketCapUsd: 1e12,
+      circulatingSupply: 19000000, totalSupply: 21000000,
       capSource: 'spot_coinpaprika_asset', capSourceDetail: 'coinpaprika:btc-bitcoin', capUpdatedAt: Math.floor(now / 1000) },
     AI: { englishName: 'Sleepless AI', referencePriceUsd: 0.02, marketCapUsd: 1e7 },
     KOR: { englishName: 'Kor Protocol', circulatingSupply: 2286666667, totalSupply: 10000000000,
@@ -91,6 +92,9 @@ async function main() {
     assert.match(await page.locator('#statusText').textContent(), /USDT 현물 4개/);
     const kor = page.locator('tr[data-live-product="KORUSDT"]');
     const btc = page.locator('tr[data-live-product="BTCUSDT"]');
+    assert.match(await btc.locator('.supply-main').textContent(), /유통비율 90\.48%/);
+    assert.equal(await page.evaluate(() => getBoardRows('bybit')[0].circulatingSupply), 19000000);
+    assert.equal(await page.evaluate(() => getBoardRows('bybit')[0].totalSupply), 21000000);
     assert.equal(await kor.locator('.asset-risk-badge.delisting').textContent(), '상폐예정');
     assert.equal(await page.locator('tr[data-live-product="AIUSDT"] .asset-risk-badge.warning').textContent(), '유의(ST)');
     assert.equal(await btc.locator('.asset-risk-badge.delisting').count(), 0, 'a USDC notice cannot affect USDT');
@@ -116,6 +120,7 @@ async function main() {
     });
     await page.waitForFunction(() => getBoardRows('bybit')[0].marketCapUsd === null
       && !publicSpotBoards.get('bybit').loading);
+    assert.equal(await page.evaluate(() => getBoardRows('bybit')[0].circulatingSupply ?? null), null, 'stale reference supply is not presented as current');
     assert.equal(await btc.locator('.price-main').textContent(), '100 USDT', 'live price survives stale cap data');
     assert.match(await page.locator('#marketReferenceStatus').textContent(), /시총·유통량 갱신 지연/);
     assert.equal(await page.locator('#marketReferenceStatus').isVisible(), true);
@@ -128,6 +133,7 @@ async function main() {
       && !publicSpotBoards.get('bybit').loading);
     assert.equal(requests.length, beforeRecovery + 2, 'a new snapshot refreshes caps without waiting five minutes or reloading');
     assert.equal(await page.locator('#marketReferenceStatus').isVisible(), false);
+    assert.match(await btc.locator('.supply-main').textContent(), /유통비율 90\.48%/);
     const beforeRenders = requests.length;
     await page.evaluate(() => { render(); render(); render(); });
     assert.equal(requests.length, beforeRenders, 'unchanged snapshots keep the bulk request cooldown');

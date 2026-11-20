@@ -3,13 +3,108 @@ from datetime import datetime, timezone
 from urllib.error import HTTPError
 
 from spot_market import (BITGET_COINS, CMC_LISTINGS, CMC_QUOTES, PAPRIKA_TICKERS, SOURCES, build_spot_board,
-                         collect_cmc_spot_caps, collect_paprika_caps, exchange_asset_names)
+                         build_references, collect_cmc_spot_caps, collect_paprika_caps, exchange_asset_names,
+                         fill_board_supplies, merge_reference)
 
 NOW = 1800000000
 ISO_NOW = datetime.fromtimestamp(NOW, timezone.utc).isoformat()
 
 
 class SpotMarketTests(unittest.TestCase):
+    def test_supply_is_filled_per_field_not_only_from_the_first_cap_row(self):
+        names = {"KSM": "Kusama"}
+        sources = {"KSM": [
+            {"referenceExchange": "upbit", "englishName": "Kusama", "priceUsd": 2.6, "marketCapUsd": 50e6, "totalSupply": 20e6},
+            {"referenceExchange": "binance", "englishName": "Kusama", "priceUsd": 2.6,
+             "marketCapUsd": 50e6, "circulatingSupply": 19e6, "totalSupply": 20e6},
+            {"englishName": "Different token", "priceUsd": 2.6, "circulatingSupply": 100e9, "totalSupply": 200e9},
+        ]}
+        ref = build_references(names, sources)["KSM"]
+        self.assertEqual(ref["circulatingSupply"], 19e6)
+        self.assertEqual(ref["totalSupply"], 20e6)
+        self.assertEqual(ref["referenceExchange"], "upbit")
+        sources["KSM"][1]["supplyIdentityVerified"] = False
+        self.assertIsNone(build_references(names, sources)["KSM"]["circulatingSupply"])
+
+    def test_sparse_cap_provider_cannot_erase_verified_exchange_supply_or_cap(self):
+        instrument = {"symbol": "KSMUSDT", "baseCoin": "KSM", "quoteCoin": "USDT", "status": "online",
+                      "category": "SPOT", "symbolType": "crypto", "fullName": "Kusama", "launchTime": "1663585620000"}
+        def fetch(url):
+            if url == SOURCES["bitget"][0]:
+                return {"code": "00000", "data": [instrument]}
+            if url == SOURCES["bitget"][1]:
+                return {"code": "00000", "data": [{"symbol": "KSMUSDT", "ts": NOW * 1000, "lastPr": "2.6"}]}
+            raise AssertionError("Complete exchange data does not need a CMC request: " + url)
+        candidate = {"referenceExchange": "binance", "englishName": "Kusama", "priceUsd": 2.6,
+                     "marketCapUsd": 50e6, "circulatingSupply": 19e6, "totalSupply": 20e6, "logo": "verified-logo"}
+        paprika = {"ksm-kusama": {"englishName": "Kusama", "referencePriceUsd": 2.6, "marketCapUsd": 66791,
+                                  "circulatingSupply": None, "totalSupply": 16e6,
+                                  "capSource": "spot_coinpaprika_asset", "capUpdatedAt": NOW}}
+        catalog = {"asOf": NOW, "names": {"KSM": "Kusama"}, "ids": {"KSM": "ksm-kusama"}}
+        rows, refs, _, _ = build_spot_board(fetch, "bitget", fx=1300, candidates={"KSM": [candidate]},
+                                           catalog=catalog, paprika_caps=paprika, now=NOW)
+        for ref in (rows[0], refs["KSM"]):
+            self.assertEqual(ref["marketCapUsd"], 50e6)
+            self.assertEqual(ref["circulatingSupply"], 19e6)
+            self.assertEqual(ref["totalSupply"], 20e6)
+            self.assertEqual(ref["logo"], "verified-logo")
+            self.assertEqual(ref["capSource"], "spot_verified_reference")
+
+    def test_cmc_is_requested_for_missing_supply_even_when_paprika_cap_exists(self):
+        item = {"id": 9288, "symbol": "JUV", "name": "Juventus Fan Token",
+                "circulating_supply": 16e6, "total_supply": 20e6,
+                "quote": {"USD": {"price": 0.23, "market_cap": 3.68e6, "last_updated": ISO_NOW}}}
+        called = []
+        def fetch(url):
+            called.append(url)
+            return {"status": {"error_code": 0}, "data": [item]}
+        result = collect_cmc_spot_caps(fetch, "bybit", {"JUV": "Juventus Fan Token"},
+            {"JUV": {"capSource": "spot_coinpaprika_asset", "marketCapUsd": 1.7e6, "totalSupply": 20e6}}, {}, NOW)
+        self.assertEqual(called, [CMC_LISTINGS])
+        self.assertEqual(result["assets"]["JUV"]["circulatingSupply"], 16e6)
+        self.assertEqual(result["assets"]["JUV"]["totalSupply"], 20e6)
+
+    def test_conflicting_caps_do_not_choose_an_arbitrary_external_cap(self):
+        candidates = {"AAA": [
+            {"englishName": "Example", "priceUsd": 1, "marketCapUsd": 10},
+            {"englishName": "Example", "priceUsd": 1, "marketCapUsd": 10000},
+        ]}
+        self.assertIsNone(build_references({"AAA": "Example"}, candidates)["AAA"]["marketCapUsd"])
+
+    def test_cmc_supply_is_used_without_inventing_a_missing_market_cap(self):
+        item = {"id": 1234, "symbol": "AAA", "name": "Example", "circulating_supply": 10, "total_supply": 100,
+                "quote": {"USD": {"price": 2, "market_cap": None, "last_updated": ISO_NOW}}}
+        result = collect_cmc_spot_caps(lambda url: {"status": {"error_code": 0}, "data": [item]},
+                                       "bybit", {"AAA": "Example"}, {}, {}, NOW)
+        self.assertEqual(result["assets"]["AAA"]["circulatingSupply"], 10)
+        self.assertEqual(result["assets"]["AAA"]["totalSupply"], 100)
+        self.assertIsNone(result["assets"]["AAA"]["marketCapUsd"])
+
+    def test_supply_merge_never_builds_over_100_percent_from_different_snapshots(self):
+        merged = merge_reference({"totalSupply": 10}, {"circulatingSupply": 20})
+        self.assertIsNone(merged["circulatingSupply"])
+        self.assertEqual(merged["totalSupply"], 10)
+        merged = merge_reference({"circulatingSupply": 20}, {"totalSupply": 10})
+        self.assertIsNone(merged["totalSupply"])
+        self.assertEqual(merged["circulatingSupply"], 20)
+
+    def test_all_primary_boards_fill_missing_supply_without_overwriting_native_values(self):
+        boards = {
+            "upbit": [{"symbol": "AAA", "englishName": "Example", "priceUsd": 1, "totalSupply": 100}],
+            "bithumb": [{"symbol": "AAA", "englishName": "Example", "priceUsd": 1, "circulatingSupply": 50}],
+            "coinbase": [{"symbol": "BBB", "englishName": "Another", "priceUsd": 2}],
+            "binance": [{"symbol": "AAA", "englishName": "Example", "priceUsd": 1, "circulatingSupply": 60, "totalSupply": 100}],
+        }
+        cmc = {"BBB": [{"englishName": "Another", "priceUsd": 2, "circulatingSupply": 10, "totalSupply": 30}],
+               "AAA": [{"englishName": "Wrong asset", "priceUsd": 1, "circulatingSupply": 1000, "totalSupply": 2000}]}
+        counts = fill_board_supplies(boards, cmc)
+        self.assertEqual(counts, {"upbit": 1, "bithumb": 1, "coinbase": 1, "binance": 0})
+        self.assertEqual(boards["upbit"][0]["circulatingSupply"], 50)
+        self.assertEqual(boards["bithumb"][0]["circulatingSupply"], 50)
+        self.assertEqual(boards["bithumb"][0]["totalSupply"], 100)
+        self.assertEqual(boards["coinbase"][0]["circulatingSupply"], 10)
+        self.assertEqual(boards["coinbase"][0]["totalSupply"], 30)
+
     def test_bitget_excludes_noncrypto_halted_and_non_usdt(self):
         def pair(base, **updates):
             return {"symbol": base + "USDT", "baseCoin": base, "quoteCoin": "USDT",
