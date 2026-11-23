@@ -26,7 +26,7 @@ for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", 
       }
       if (!response.ok) throw new Error(`probe_http_${response.status}`);
       result = await response.json();
-      if (result.implementation === 7 && (board !== "delivery" || (result.deliveryVersion === 1 && result.coinContentVersion === 2))
+      if (result.implementation === 7 && (board !== "delivery" || (result.deliveryVersion === 1 && result.coinContentVersion === 3))
         && (board !== "telegram" || result.telegramVersion === 2)) break;
       // Active Durable Objects may defer code updates for five minutes.
       if (attempt === versionAttempts - 1) throw new Error("new_worker_not_propagated:" + JSON.stringify({

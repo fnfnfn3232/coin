@@ -744,7 +744,12 @@ test("resource monitoring refreshes shared sources and cannot promote old snapsh
   } } };
   f.store.readMarketData = async () => market;
   const read = async () => (await (await f.store.probeComparisonSource('resources')).json()).sourceChecks;
-  assert.deepEqual(await read(), { l1fees: true, l2fees: true, news: true, market_snapshot: true, defillama: true, apywa: true });
+  assert.deepEqual(await read(), { l1fees: true, l2fees: true, news: true, telegram: false, market_snapshot: true, defillama: true, apywa: true });
+  const channels = ['BChoSN', 'umjuninsight', 'deganlululala', 'enjoymyhobby', 'officialunivercityofcrypto', 'JoshuaDeukKOR', 'fireant_crypto'];
+  await f.storage.put('coin-issues:telegram-status-v1', Object.fromEntries(channels.map(channel => [channel, { lastSuccessAt: now }])));
+  assert.equal((await read()).telegram, true);
+  await f.storage.put('coin-issues:telegram-status-v1', Object.fromEntries(channels.map(channel => [channel, { lastSuccessAt: now - 1800001 }])));
+  assert.equal((await read()).telegram, false, 'old successful checks cannot hide a stopped collector');
   newsSyncFailed = true;
   assert.equal((await read()).news, false, 'a successful feed cannot hide failed coin indexing from the existing news monitor');
   newsSyncFailed = false;
@@ -761,7 +766,7 @@ test("only bounded known resource source checks are accepted and their details s
   const write = sourceChecks => f.store.writeComparisonHealth(new Request('https://board-store/api/market-data?comparisonHealth=1', {
     method: 'POST', body: JSON.stringify({ rows: [['upbit', 'BTC', 'ok', 'coinbase']], sourceChecks }),
   }));
-  const sourceChecks = Object.fromEntries(['binance_futures', 'coinbase_futures', 'bybit_futures', 'news', 'l1fees', 'l2fees', 'market_snapshot', 'defillama', 'apywa'].map(key => [key, false]));
+  const sourceChecks = Object.fromEntries(['binance_futures', 'coinbase_futures', 'bybit_futures', 'news', 'telegram', 'l1fees', 'l2fees', 'market_snapshot', 'defillama', 'apywa'].map(key => [key, false]));
   assert.equal((await write(sourceChecks)).status, 200);
   assert.equal((await write({ arbitrary_url: true })).status, 400);
   assert.equal((await write({ news: 'healthy' })).status, 400);

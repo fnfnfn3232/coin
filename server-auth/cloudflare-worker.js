@@ -3790,7 +3790,7 @@ export class BoardStore {
         && /^[A-Z0-9]{1,40}$/.test(row[1]) && states.has(row[2]) && (row[3] === "" || boards.has(row[3])))
       || new Set(body.rows.map(row => `${row[0]}:${row[1]}`)).size !== body.rows.length
       || typeof sourceChecks !== "object" || Array.isArray(sourceChecks)
-      || Object.entries(sourceChecks).some(([key, value]) => !["binance_futures", "coinbase_futures", "bybit_futures", "news", "l1fees", "l2fees", "market_snapshot", "defillama", "apywa"].includes(key) || typeof value !== "boolean")) {
+      || Object.entries(sourceChecks).some(([key, value]) => !["binance_futures", "coinbase_futures", "bybit_futures", "news", "telegram", "l1fees", "l2fees", "market_snapshot", "defillama", "apywa"].includes(key) || typeof value !== "boolean")) {
       return jsonResponse({ error: "invalid_comparison_health" }, 400, this.env);
     }
     const checkedAt = Date.now();
@@ -4090,6 +4090,12 @@ export class BoardStore {
         sourceChecks.news = news.coinNewsSynced !== false && !news.stale && news.store.items.length > 0 && news.store.fetchedAt <= Date.now() + 5000
           && Date.now() - news.store.fetchedAt <= Math.max(getNewsCacheMs(this.env) * 2, 20 * 60000);
       } catch (_) { sourceChecks.news = false; }
+      const telegram = await this.state.storage.get(TELEGRAM_STATUS_KEY) || {};
+      sourceChecks.telegram = TELEGRAM_CHANNELS.every(channel => {
+        const status = telegram[channel];
+        return status && !status.error && status.lastSuccessAt > 0 && status.lastSuccessAt <= Date.now() + 5000
+          && Date.now() - status.lastSuccessAt <= 30 * 60000;
+      });
       const market = await this.readMarketData();
       const current = market?.generatedAt > 0 && market.generatedAt * 1000 <= Date.now() + 5000 && Date.now() - market.generatedAt * 1000 <= 30 * 60000;
       sourceChecks.market_snapshot = Boolean(current);
@@ -4172,7 +4178,7 @@ export class BoardStore {
       const bytes = value => new TextEncoder().encode(JSON.stringify(value)).byteLength;
       const publicFullBytes = bytes({ ...marketDataWithoutRefreshHistory(market), comparisonBootstrap: bootstrap });
       const marketBytes = bytes({ ...marketDataForScope(market, "market"), comparisonBootstrap: bootstrap });
-      return jsonResponse({ implementation: 7, deliveryVersion: 1, coinContentVersion: 2, exchange, warmSnapshotMs, publicFullBytes, marketBytes,
+      return jsonResponse({ implementation: 7, deliveryVersion: 1, coinContentVersion: 3, exchange, warmSnapshotMs, publicFullBytes, marketBytes,
         reductionPercent: Math.round((1 - marketBytes / publicFullBytes) * 100),
         sectionBytes: Object.fromEntries(["futures", "ranking", "audit", "search"].map(scope => [scope,
           bytes({ ...marketDataForScope(market, scope, true), comparisonBootstrap: bootstrap })])),
