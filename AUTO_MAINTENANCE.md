@@ -25,3 +25,11 @@ Tests: `node --test test_app_update.cjs test_futures_health.mjs test_comparison_
 - A limited reviewed OKX fallback is explicitly partial and retries after five minutes, not six hours. Still-valid prior identities remain available with their original verification timestamp; they are neither erased by a one-asset fallback nor renewed as if the aggregator had succeeded. Existing 24-hour expiry and current native-quote requirements remain unchanged.
 - Existing market, board, uploads, links, Korean search, charts, futures, issue caches and login regressions remain required. Tests do not modify real posts, memberships or uploads. Real-device Safari/iOS and an exhaustive penetration/load test remain outside this audit.
 - GitHub scheduled jobs can still be delayed by the hosting platform. Persistent provider restrictions are kept visible in the private administrator history; successful workflow completion alone must not be presented as proof that every source recovered.
+
+## 2026-11-23 Startup Follow-Up
+
+- Reproduced a cold/reloaded market waiting behind an unrelated screen-settings request (up to its eight-second timeout). Settings and the snapshot now load concurrently; live-price refresh also does not wait for settings.
+- Full local snapshots can exceed browser storage quotas. Failed full writes now fall back to a bounded market-only cache, with original snapshot timestamps and a complete server revalidation on every reload. Snapshot rendering precedes the deferred cache write, which checks the current login and snapshot before persisting.
+- Pending or failed initial snapshots no longer claim that there are zero coins. Genuine successful empty results and search misses retain their existing empty state; no rows or fresh observation clocks are fabricated.
+- The news/issue article delete action now sits at the bottom right with transparent, muted styling. Fresh-password checks, administrator-only visibility and automatic-news suppression remain unchanged.
+- `test_market_startup.cjs` holds settings and snapshot responses independently, injects storage quota errors, checks cold/cache/retry/empty states and responsive layouts. It runs in the existing browser CI with no extra scheduled job. Existing issue tests cover the footer position and transparent background for both manual and automatic articles.

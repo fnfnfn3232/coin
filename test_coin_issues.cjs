@@ -122,6 +122,19 @@ async function main() {
     detailDelayMs = 0;
     assert.equal(await page.locator('.coin-issue-text').textContent(), seed.body);
     assert.match(await page.locator('.coin-issues-meta').textContent(), /관리자 작성/);
+    async function assertQuietDelete(target) {
+      const layout = await target.locator('[data-coin-issue-action="delete"]').evaluate(button => {
+        const bounds = button.getBoundingClientRect();
+        const article = button.closest('article');
+        return { top: bounds.top, right: bounds.right, articleRight: article.getBoundingClientRect().right,
+          bodyBottom: article.querySelector('.coin-issue-text').getBoundingClientRect().bottom,
+          background: getComputedStyle(button).backgroundColor, footer: Boolean(button.closest('.coin-issue-footer')) };
+      });
+      assert.ok(layout.footer && layout.top >= layout.bodyBottom, 'delete follows the article body');
+      assert.ok(Math.abs(layout.right - layout.articleRight) < 2, 'delete is right aligned');
+      assert.equal(layout.background, 'rgba(0, 0, 0, 0)', 'delete has no red or filled background');
+    }
+    await assertQuietDelete(page);
     await page.getByRole('button', { name: '목록', exact: true }).click();
     await page.getByRole('button', { name: '글쓰기', exact: true }).click();
     const title = page.locator('#coinIssueForm input[name="title"]');
@@ -217,6 +230,7 @@ async function main() {
     assert.equal(requests.filter(request => request.id === automatic.id).length, autoRequests, 'automatic summaries open from the list payload');
     assert.match(await livePage.locator('.coin-issues-meta').textContent(), /코인니스 · 자동등록/);
     assert.equal(await livePage.getByRole('link', { name: '코인니스 원문 보기' }).getAttribute('href'), automatic.sourceUrl);
+    await assertQuietDelete(livePage);
     assert.equal(await livePage.getByRole('button', { name: '수정', exact: true }).count(), 0);
     assert.equal(await livePage.locator('#coinIssuesPanel img').count(), 0);
     await livePage.setViewportSize({ width: 390, height: 844 });

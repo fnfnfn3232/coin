@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-da67F2I1NzN6dqmlC2KZ+6Woh3tZ6l0PyMRNvtkXcb4='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-EW7/VXNFH8Ior7zSqBfDEfJFXnuAg8RQVKW6mmbkKyU='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -7533,7 +7533,9 @@
     .coin-issue-form input, .coin-issue-form textarea { width: 100%; min-width: 0; box-sizing: border-box; font-size: 16px; }
     .coin-issue-form textarea { min-height: 280px; resize: vertical; line-height: 1.7; }
     .coin-issue-actions { display: flex; flex-wrap: wrap; gap: 10px; }
-    .coin-issues-panel .danger { background: #482b32; border-color: #79434c; color: #ffe1e6; }
+    .coin-issue-footer { display: flex; justify-content: flex-end; margin-top: 24px; }
+    .coin-issues-panel .coin-issue-delete { background: transparent; border-color: var(--line); color: var(--muted); }
+    .coin-issues-panel .coin-issue-delete:hover { color: var(--text); border-color: var(--muted); }
     .coin-issue-error { margin: 12px 0; color: #d0757d; line-height: 1.6; overflow-wrap: anywhere; }
     @media(max-width: 640px) { .coin-issues-panel { padding: 18px 14px; } .coin-info-tabs { padding: 0 14px; } }
   </style>
@@ -7810,7 +7812,23 @@
         localStorage.setItem(LAST_GOOD_DATA_KEY, JSON.stringify(marketSnapshotWithoutRefreshHistory(payload)));
         return true;
       } catch (_error) {
-        // Ignore localStorage quota errors to keep runtime stable.
+        // Descriptions and report archives can exceed browser storage quotas.
+        // Keep a bounded market-only fallback; always revalidate it on reload.
+        const compact = {
+          startupOnly: true, generatedAt: payload.generatedAt, autoRefreshMinutes: payload.autoRefreshMinutes,
+          fxUsdKrw: payload.fxUsdKrw, fxSource: payload.fxSource, boards: payload.boards, stats: payload.stats,
+          futures: { binance: [], coinbase: [], bybit: [] }, futuresStats: {}, coinInfo: {}, notes: {},
+          news: { items: [] }, defillamaRankings: { generatedAt: 0, categories: {} },
+        };
+        for (const boards of [payload.boards, { [state.board]: payload.boards[state.board] || [] }]) {
+          try {
+            const cachedBoards = Object.keys(boards);
+            const value = JSON.stringify({ ...compact, boards, cachedBoards });
+            if (value.length > 1024 * 1024) continue;
+            localStorage.setItem(LAST_GOOD_DATA_KEY, value);
+            return true;
+          } catch (_quotaError) { /* Try the selected market before giving up. */ }
+        }
         return false;
       }
     }
@@ -7864,6 +7882,7 @@
     let marketDataLoaded = isValidBoardPayload(window.BOARD_DATA);
     let marketDataLoadedFromServer = false;
     let marketDataLoadPromise = null;
+    let marketDataLoadError = "";
     const loadedCachedData = loadLastGoodData();
     const cachedData = canUseLastGoodData() ? loadedCachedData : null;
     if (isValidBoardPayload(cachedData)) {
@@ -14261,9 +14280,9 @@
       let siteLockCheckPromise = null;
 
       async function refreshAuthenticatedSite() {
-        await requestServerScreenSettingsRefresh({ selectDefault: true });
-        await fetchLatestBoardData();
-        await refreshLiveMarketData();
+        const settings = requestServerScreenSettingsRefresh({ selectDefault: true });
+        const market = fetchLatestBoardData().then(() => refreshLiveMarketData());
+        await Promise.all([settings, market]);
       }
 
       function checkSiteLock() {
@@ -15582,17 +15601,18 @@
                 `<label>제목<input name="title" type="text" maxlength="120" required value="${escapeAttr(view.post?.title || "")}"></label>
                 <label>내용<textarea name="body" maxlength="20000" required>${escapeHtml(view.post?.body || "")}</textarea></label>`}
               <label>관리자 비밀번호<input name="adminPassword" type="password" autocomplete="current-password" required></label>
-              <div class="coin-issue-actions">${button("cancel", "취소")}<button type="submit" class="${deleting ? "danger" : ""}">${deleting ? "삭제" : "저장"}</button></div>
+              <div class="coin-issue-actions">${button("cancel", "취소")}<button type="submit" class="${deleting ? "coin-issue-delete" : ""}">${deleting ? "삭제" : "저장"}</button></div>
             </form>`;
         } else if (view.mode === "read" && view.post) {
           const automatic = view.post.source === "coinness";
           const sourceUrl = automatic && /^https:\/\/coinness\.com\/news\/[1-9]\d*$/.test(view.post.sourceUrl || "") ? view.post.sourceUrl : "";
           content = `<article class="coin-issues-article"><div class="coin-issues-toolbar">${button("list", "목록")}
-              ${admin ? `<div class="coin-issue-actions">${automatic ? "" : button("edit", "수정")}${button("delete", "삭제", "danger")}</div>` : ""}</div>
+              ${admin && !automatic ? button("edit", "수정") : ""}</div>
             <h3>${escapeHtml(view.post.title)}</h3><div class="coin-issues-meta">${automatic ? "코인니스 · 자동등록" : "관리자 작성"} · ${escapeHtml(coinIssueDate(view.post.createdAt))}
               ${view.post.revision > 1 ? ` · 수정 ${escapeHtml(coinIssueDate(view.post.updatedAt))}` : ""}</div>
             <pre class="coin-issue-text">${escapeHtml(view.post.body)}</pre>
-            ${sourceUrl ? `<p><a href="${escapeAttr(sourceUrl)}" target="_blank" rel="noopener noreferrer">코인니스 원문 보기</a></p>` : ""}</article>`;
+            ${sourceUrl ? `<p><a href="${escapeAttr(sourceUrl)}" target="_blank" rel="noopener noreferrer">코인니스 원문 보기</a></p>` : ""}
+            ${admin ? `<div class="coin-issue-footer">${button("delete", "삭제", "coin-issue-delete")}</div>` : ""}</article>`;
         } else {
           content = `<div class="coin-issues-toolbar"><h3>뉴스·이슈</h3>${admin ? button("new", "글쓰기") : ""}</div>
             ${view.error ? button("retry", "다시 시도") : view.items.length ? `<ul class="coin-issues-list">${view.items.map(post =>
@@ -18780,6 +18800,7 @@
             : 0;
           const query = new URLSearchParams({ ts: String(Date.now()) });
           if (snapshotGeneratedAt > 0) query.set("since", String(snapshotGeneratedAt));
+          marketDataLoadError = "";
           marketDataLoadPromise = fetchServerAuth(`/api/market-data?${query.toString()}`, { method: "GET", timeoutMs: 12000 })
             .then((parsed) => {
               if (parsed?.notModified) {
@@ -18803,11 +18824,14 @@
               normalizeKoreanAssetNames(nextData);
               seedComparisonBootstrap(parsed.comparisonBootstrap);
               delete nextData.comparisonBootstrap;
-              const saved = saveLastGoodData(data);
-              setMarketSnapshotGeneratedAt(saved ? nextData.generatedAt : 0);
               renderSummaryStats();
               renderAutoStatus();
               renderCurrentView();
+              window.setTimeout(() => {
+                if (!siteAuthConfirmed || isSiteLocked() || data !== nextData) return;
+                const saved = saveLastGoodData(nextData);
+                setMarketSnapshotGeneratedAt(saved ? nextData.generatedAt : 0);
+              }, 0);
               restorePriceDifferenceCache();
               requestPriceDifferenceFx();
               requestPriceDifferenceQuotes(true);
@@ -18815,6 +18839,11 @@
                 changed: Number(parsed.generatedAt || 0) !== beforeGeneratedAt,
                 generatedAt: Number(parsed.generatedAt || 0),
               };
+            })
+            .catch((error) => {
+              marketDataLoadError = "시총 정보를 받지 못했습니다. 수동 갱신으로 다시 시도해 주세요.";
+              renderCurrentView();
+              throw error;
             })
             .finally(() => {
               marketDataLoadPromise = null;
@@ -19426,7 +19455,8 @@
       function renderTable(rows) {
       if (!rows.length) {
         const direct = [state.board, ...getActiveCompareBoards()].map(board => publicSpotBoards.get(board));
-        const message = direct.some(entry => entry?.loading) ? "거래소 현물 목록을 확인하는 중입니다."
+        const message = isMarketSnapshotPending() ? (marketDataLoadError || "시총 정보를 불러오는 중입니다.")
+          : direct.some(entry => entry?.loading) ? "거래소 현물 목록을 확인하는 중입니다."
           : direct.some(entry => entry?.error) ? "거래소 현물 목록을 받지 못했습니다." : TEXT.empty;
         tableBody.innerHTML = `<tr><td class="empty" colspan="10" data-label="">${message}</td></tr>`;
         return;
@@ -19512,6 +19542,11 @@
         .join("");
     }
 
+      function isMarketSnapshotPending() {
+        return hasServerAuth() && !isLocalPreview() && !marketDataLoadedFromServer
+          && (!hasUsableMarketData(data) || (data.startupOnly && !data.cachedBoards?.includes(state.board)));
+      }
+
       function render() {
         ensureSelectedMarketBoard();
         const domesticComparison = isDomesticComparisonBoard();
@@ -19564,6 +19599,7 @@
           ? `\uACF5\uD1B5 \uC0C1\uC7A5 ${formatNumber(rows.length, 0)}\uAC1C | \uAE30\uC900 ${boardLabel(state.board)} | \uBE44\uAD50 ${activeCompareBoards.map((board) => boardLabel(board)).join(" + ")} | \uC2DC\uCD1D \uD655\uC778 ${formatNumber(withCapCount, 0)}\uAC1C | \uAC00\uACA9 \uD655\uC778 ${formatNumber(withPriceCount, 0)}\uAC1C | \uC720\uD1B5 \uC815\uBCF4 \uD655\uC778 ${formatNumber(withSupplyCount, 0)}\uAC1C | ${state.page} / ${totalPages} \uD398\uC774\uC9C0`
           : `${totalLabel} | \uC2DC\uCD1D \uD655\uC778 ${formatNumber(withCapCount, 0)}\uAC1C | \uAC00\uACA9 \uD655\uC778 ${formatNumber(withPriceCount, 0)}\uAC1C | \uC720\uD1B5 \uC815\uBCF4 \uD655\uC778 ${formatNumber(withSupplyCount, 0)}\uAC1C | ${state.page} / ${totalPages} \uD398\uC774\uC9C0`;
         const referenceStatus = document.getElementById("marketReferenceStatus");
+        if (!rows.length && isMarketSnapshotPending()) statusText.textContent = marketDataLoadError || "시총 정보를 불러오는 중입니다.";
         const referenceAge = Date.now() - Number(data.generatedAt || 0) * 1000;
         referenceStatus.hidden = ![state.board, ...activeCompareBoards].some(board => EXTRA_SPOT_BOARDS.includes(board))
           || !data.generatedAt || referenceAge < 21600000;
