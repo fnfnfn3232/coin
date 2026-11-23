@@ -12,6 +12,9 @@ const BOARD_CATEGORIES_KEY = "free-board-categories";
 const COIN_ISSUES_PREFIX = "coin-issues:";
 const COIN_NEWS_CRON = "*/10 * * * *";
 const COIN_NEWS_LIMIT = 50;
+const TELEGRAM_CHANNELS = ["BChoSN", "umjuninsight", "deganlululala", "enjoymyhobby", "officialunivercityofcrypto", "JoshuaDeukKOR", "fireant_crypto"];
+const TELEGRAM_STATUS_KEY = COIN_ISSUES_PREFIX + "telegram-status-v1";
+const TELEGRAM_CACHE_MS = 10 * 60 * 1000;
 const COIN_ISSUE_INLINE_POST_BYTES = 8 * 1024;
 const COIN_ISSUE_INLINE_PAGE_BYTES = 24 * 1024;
 const SKY_ISSUE_BODY = `이제 비트코인 하락이 진정되었으니 좀 더 제대로 짚어보는 Sky protocol 사태
@@ -60,10 +63,11 @@ function coinIssueAsset(value) {
 
 function coinIssueSummary(post) {
   const { id, title, createdAt, updatedAt, revision } = post;
-  return { id, title, createdAt, updatedAt, revision,
+  return { id, title, createdAt, updatedAt, revision, section: post.source === "coinness" ? "news" : "issues",
     ...(typeof post.body === "string" ? { bodyBytes: new TextEncoder().encode(post.body).byteLength } : {}),
-    author: post.source === "coinness" ? "코인니스" : "관리자",
-    ...(post.source === "coinness" ? { source: "coinness", sourceUrl: post.sourceUrl } : {}) };
+    author: post.source === "coinness" ? "코인니스" : post.source === "telegram" ? post.sourceName : "관리자",
+    ...(["coinness", "telegram"].includes(post.source) ? { source: post.source, sourceUrl: post.sourceUrl,
+      ...(post.source === "telegram" ? { sourceName: post.sourceName } : {}) } : {}) };
 }
 
 function coinNewsSymbols(entry) {
@@ -138,6 +142,60 @@ function matchCoinNews(item, catalog) {
     }
   }
   return assets;
+}
+
+function matchTelegramCoins(text, catalog) {
+  const assets = matchCoinNews({ headline: text, summary: "" }, catalog);
+  const generic = new Set(["AI", "ONE", "GAS", "NEAR", "OPEN", "MAGIC", "WORLD", "LAYER", "VIRTUAL", "ALL", "FOR", "THE", "NOT", "NEW", "NOW", "AND", "CEO", "USD"]);
+  const context = /코인|토큰|거래소|블록체인|비트코인|이더리움|스테이블|디페깅|청산|선물|현물|상장|매수|매도|protocol|crypto|token|blockchain|defi|\$[A-Z0-9]/i.test(text);
+  for (const match of text.matchAll(/(?<![\p{L}\p{N}_])(?:(\$)([A-Za-z][A-Za-z0-9]{1,19})|([A-Z][A-Z0-9]{2,19}))(?![\p{L}\p{N}_])/gu)) {
+    const symbol = (match[2] || match[3]).toUpperCase();
+    if ((!match[1] && (!context || generic.has(symbol))) || symbol.length < 2) continue;
+    const candidates = catalog.symbols.get(symbol);
+    if (candidates?.size === 1) assets.add([...candidates][0]);
+  }
+  return assets;
+}
+
+function telegramSourceUrl(channel, postId) {
+  const canonical = TELEGRAM_CHANNELS.find(name => name.toLowerCase() === String(channel).toLowerCase());
+  return canonical && /^[1-9]\d{0,15}$/.test(String(postId)) ? `https://t.me/${canonical}/${postId}` : "";
+}
+
+function telegramText(value) {
+  const entities = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+  return String(value || "").replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (whole, entity) => {
+    if (entity[0] !== "#") return entities[entity.toLowerCase()] || whole;
+    const code = entity[1].toLowerCase() === "x" ? parseInt(entity.slice(2), 16) : Number(entity.slice(1));
+    return code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff) ? String.fromCodePoint(code) : "";
+  }).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").trim();
+}
+
+async function parseTelegramPreview(html, channel) {
+  const posts = [];
+  let current = null;
+  const parser = new HTMLRewriter()
+    .on(".tgme_widget_message[data-post]", { element(element) {
+      const [name, id, extra] = (element.getAttribute("data-post") || "").split("/");
+      const url = !extra && name?.toLowerCase() === channel.toLowerCase() && telegramSourceUrl(name, id);
+      current = url ? { channel, id, sourceUrl: url, text: "", createdAt: 0 } : null;
+      if (current && posts.length < 40) posts.push(current);
+      element.onEndTag(() => { current = null; });
+    } })
+    .on(".tgme_widget_message_text", { text(chunk) { if (current) current.text += chunk.text; } })
+    .on(".tgme_widget_message_text br", { element() { if (current) current.text += "\n"; } })
+    .on(".tgme_widget_message_date time[datetime]", { element(element) {
+      if (current) current.createdAt = Date.parse(element.getAttribute("datetime") || "") || 0;
+    } });
+  await parser.transform(new Response(html)).text();
+  return posts.map(post => ({ ...post, text: telegramText(post.text).slice(0, 20000) }))
+    .filter(post => post.text && post.createdAt > 0 && post.createdAt <= Date.now() + 60000);
+}
+
+function telegramExcerpt(text) {
+  const shortened = text.replace(/https?:\/\/\S+/g, "").replace(/\s+/g, " ").trim().split(" ").slice(0, 18).join(" ");
+  const chars = Array.from(shortened);
+  return chars.slice(0, 90).join("") + (chars.length > 90 || shortened.length < text.trim().length ? "…" : "");
 }
 const USAGE_STATS_KEY = "usage-stats-v1";
 const NEWS_STORE_KEY = "coinness-news-store-v1";
@@ -2995,10 +3053,13 @@ export class BoardStore {
     const match = url.pathname.match(/^\/api\/coin-issues(?:\/([a-z0-9-]{1,64}))?$/);
     if (!asset || !match) return jsonResponse({ error: "invalid_coin_asset" }, 400, this.env);
     const id = match[1] || "";
+    const section = url.searchParams.get("section") || "all";
+    if (!["all", "news", "issues"].includes(section)) return jsonResponse({ error: "invalid_coin_section" }, 400, this.env);
+    const belongs = post => section === "all" || (post.source === "coinness" ? "news" : "issues") === section;
     const indexKey = COIN_ISSUES_PREFIX + "index:" + asset;
     if (request.method === "GET") {
       let sync = { ok: true };
-      if (!id) {
+      if (!id && section !== "issues") {
         const initialized = await this.state.storage.get(COIN_ISSUES_PREFIX + "auto-sync");
         if (initialized && typeof this.state.waitUntil === "function") {
           this.state.waitUntil(this.syncCoinNewsSafely());
@@ -3010,12 +3071,13 @@ export class BoardStore {
       if (id) {
         const post = automatic.find(post => post.id === id)
           || await this.state.storage.get(COIN_ISSUES_PREFIX + "post:" + asset + ":" + id);
-        return post ? this.recordApiResponse(jsonResponse({ post: { ...post, ...coinIssueSummary(post) } }, 200, this.env))
+        return post && belongs(post) ? this.recordApiResponse(jsonResponse({ post: { ...post, ...coinIssueSummary(post) } }, 200, this.env))
           : jsonResponse({ error: "issue_not_found" }, 404, this.env);
       }
       const index = [...(await this.state.storage.get(indexKey) || []), ...automatic.map(coinIssueSummary)]
+        .filter(belongs)
         .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
-      const page = Math.max(1, Math.min(15, Math.floor(Number(url.searchParams.get("page")) || 1)));
+      const page = Math.max(1, Math.min(20, Math.floor(Number(url.searchParams.get("page")) || 1)));
       const items = index.slice((page - 1) * 10, page * 10);
       const includedPosts = [];
       let remainingBytes = COIN_ISSUE_INLINE_PAGE_BYTES;
@@ -3031,7 +3093,7 @@ export class BoardStore {
         remainingBytes -= bytes;
       }
       return this.recordApiResponse(jsonResponse({
-        items, includedPosts, page, total: index.length, newsSyncDelayed: !sync.ok,
+        items, includedPosts, page, section, total: index.length, newsSyncDelayed: !sync.ok,
       }, 200, this.env));
     }
     if (!["POST", "PUT", "DELETE"].includes(request.method) || (request.method === "POST" ? Boolean(id) : !id)) {
@@ -3044,7 +3106,7 @@ export class BoardStore {
     }
     const denied = await this.checkAdminPassword(request, body.adminPassword);
     if (denied) return denied;
-    if (id.startsWith("coinness-")) {
+    if (id.startsWith("coinness-") || id.startsWith("telegram-")) {
       if (request.method !== "DELETE") return jsonResponse({ error: "automatic_issue_read_only" }, 409, this.env);
       const result = await this.state.storage.transaction(async storage => {
         const key = COIN_ISSUES_PREFIX + "auto:" + asset;
@@ -3131,7 +3193,12 @@ export class BoardStore {
           createdAt: item.publishAtTs * 1000, updatedAt: item.publishAtTs * 1000, revision: 1 });
       }
     }
-    // Keep a small archive independently of the rolling shared news feed.
+    await this.mergeAutomaticCoinIssues("coinness", grouped, new Set(news.items.map(item => `coinness-${item.id}`)));
+    await this.state.storage.put(COIN_ISSUES_PREFIX + "auto-sync", stamp);
+  }
+
+  async mergeAutomaticCoinIssues(source, grouped, currentIds) {
+    // Each feed has its own bounded archive; one source cannot evict the other.
     const prefix = COIN_ISSUES_PREFIX + "auto:";
     const knownAssets = new Set(grouped.keys());
     let startAfter;
@@ -3141,12 +3208,11 @@ export class BoardStore {
       if (batch.size < 100) break;
       startAfter = [...batch.keys()].at(-1);
     }
-    const currentIds = new Set(news.items.map(item => `coinness-${item.id}`));
     for (const asset of knownAssets) {
       await this.state.storage.transaction(async storage => {
         const key = prefix + asset, old = await storage.get(key) || [];
         const hidden = new Set(await storage.get(COIN_ISSUES_PREFIX + "hidden:" + asset) || []);
-        const byId = new Map(old.filter(post => !currentIds.has(post.id) && !hidden.has(post.id)).map(post => [post.id, post]));
+        const byId = new Map(old.filter(post => post.source === source && !currentIds.has(post.id) && !hidden.has(post.id)).map(post => [post.id, post]));
         for (const post of grouped.get(asset) || []) {
           if (hidden.has(post.id)) continue;
           const previous = old.find(item => item.id === post.id);
@@ -3154,11 +3220,71 @@ export class BoardStore {
           byId.set(post.id, previous && !changed ? previous : { ...post,
             revision: previous ? previous.revision + 1 : 1, updatedAt: changed ? Date.now() : post.updatedAt });
         }
-        const next = [...byId.values()].sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)).slice(0, COIN_NEWS_LIMIT);
+        const next = [...old.filter(post => post.source !== source && !hidden.has(post.id)),
+          ...[...byId.values()].sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)).slice(0, COIN_NEWS_LIMIT)]
+          .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
         if (JSON.stringify(old) !== JSON.stringify(next)) await storage.put(key, next);
       });
     }
-    await this.state.storage.put(COIN_ISSUES_PREFIX + "auto-sync", stamp);
+  }
+
+  async fetchTelegramChannel(channel) {
+    const response = await fetch(`https://t.me/s/${channel}`, { redirect: "error", signal: AbortSignal.timeout(7000),
+      headers: { Accept: "text/html" } });
+    if (!response.ok || !/text\/html/i.test(response.headers.get("Content-Type") || "")) throw new Error("telegram_feed_unavailable");
+    const bytes = await readBoundedRequestBody(response, 1024 * 1024);
+    const posts = await parseTelegramPreview(new TextDecoder().decode(bytes), channel);
+    if (!posts.length) throw new Error("telegram_preview_empty");
+    return posts;
+  }
+
+  async refreshTelegramIssues() {
+    if (this.telegramRefreshPromise) return this.telegramRefreshPromise;
+    this.telegramRefreshPromise = (async () => {
+      const status = await this.state.storage.get(TELEGRAM_STATUS_KEY) || {};
+      const market = await this.readMarketData();
+      if (!market) return { ok: false, channels: [] };
+      const catalog = coinNewsCatalog(market), grouped = new Map(), currentIds = new Set(), results = [];
+      const queue = [...TELEGRAM_CHANNELS];
+      const nextStatus = { ...status };
+      const runner = async () => {
+        for (let channel; (channel = queue.shift());) {
+          const previous = status[channel] || {}, now = Date.now();
+          if (previous.checkedAt && now - previous.checkedAt < (previous.error ? 60000 : TELEGRAM_CACHE_MS)) {
+            results.push({ channel, ...previous }); continue;
+          }
+          try {
+            const posts = await this.fetchTelegramChannel(channel);
+            let matched = 0;
+            for (const post of posts) {
+              if (post.channel !== channel || post.sourceUrl !== telegramSourceUrl(channel, post.id)
+                || !post.text || post.createdAt <= 0 || post.createdAt > now + 60000) continue;
+              const id = "telegram-" + (await sha256Hex(channel.toLowerCase() + ":" + post.id)).slice(0, 32);
+              currentIds.add(id);
+              const excerpt = telegramExcerpt(post.text);
+              if (!excerpt) continue;
+              const matches = matchTelegramCoins(post.text, catalog);
+              if (matches.size) matched++;
+              for (const asset of matches) {
+                if (!grouped.has(asset)) grouped.set(asset, []);
+                grouped.get(asset).push({ id, title: `@${channel} · ${asset.split(":")[0]} 관련 게시글`,
+                  body: excerpt, source: "telegram", sourceName: "@" + channel, sourceUrl: post.sourceUrl,
+                  createdAt: post.createdAt, updatedAt: post.createdAt, revision: 1 });
+              }
+            }
+            nextStatus[channel] = { checkedAt: now, lastSuccessAt: now, observed: posts.length, matched, error: "" };
+          } catch (_error) {
+            nextStatus[channel] = { ...previous, checkedAt: now, error: "telegram_source_delayed" };
+          }
+          results.push({ channel, ...nextStatus[channel] });
+        }
+      };
+      await Promise.all([runner(), runner(), runner()]);
+      await this.mergeAutomaticCoinIssues("telegram", grouped, currentIds);
+      await this.state.storage.put(TELEGRAM_STATUS_KEY, nextStatus);
+      return { ok: results.every(item => !item.error), channels: results };
+    })().finally(() => { this.telegramRefreshPromise = null; });
+    return this.telegramRefreshPromise;
   }
 
   async readCoinIssuesForBackup() {
@@ -4030,6 +4156,10 @@ export class BoardStore {
       return jsonResponse({ implementation: 7, exchange, elapsedMs: Date.now() - started, fx: value.fx, direct: value.direct,
         counts: Object.fromEntries(Object.entries(value.quotes).map(([board, quote]) => [board, Object.keys(quote.prices || {}).length])) }, 200, this.env);
     }
+    if (exchange === "telegram") {
+      const result = await this.refreshTelegramIssues();
+      return jsonResponse({ implementation: 7, telegramVersion: 1, exchange, ...result }, 200, this.env);
+    }
     if (exchange === "delivery") {
       const market = await this.readMarketData();
       if (!market) return jsonResponse({ error: "market_data_not_ready" }, 503, this.env);
@@ -4038,7 +4168,7 @@ export class BoardStore {
       const bytes = value => new TextEncoder().encode(JSON.stringify(value)).byteLength;
       const publicFullBytes = bytes({ ...marketDataWithoutRefreshHistory(market), comparisonBootstrap: bootstrap });
       const marketBytes = bytes({ ...marketDataForScope(market, "market"), comparisonBootstrap: bootstrap });
-      return jsonResponse({ implementation: 7, deliveryVersion: 1, exchange, warmSnapshotMs, publicFullBytes, marketBytes,
+      return jsonResponse({ implementation: 7, deliveryVersion: 1, coinContentVersion: 2, exchange, warmSnapshotMs, publicFullBytes, marketBytes,
         reductionPercent: Math.round((1 - marketBytes / publicFullBytes) * 100),
         sectionBytes: Object.fromEntries(["futures", "ranking", "audit", "search"].map(scope => [scope,
           bytes({ ...marketDataForScope(market, scope, true), comparisonBootstrap: bootstrap })])),
@@ -5419,8 +5549,11 @@ export class BoardStore {
     const postId = decodeURIComponent(url.pathname.replace(/^\/api\/board\/posts\/?/, ""));
 
     if (request.method === "POST" && url.hostname === "board-store" && url.pathname === "/internal/coin-news-warm") {
-      const result = await this.refreshNewsStore();
-      return jsonResponse({ ok: !result.stale && result.coinNewsSynced === true, fetchedAt: result.store.fetchedAt }, 200, this.env);
+      const [news, telegram] = await Promise.allSettled([this.refreshNewsStore(), this.refreshTelegramIssues()]);
+      const result = news.status === "fulfilled" ? news.value : null;
+      return jsonResponse({ ok: Boolean(result && !result.stale && result.coinNewsSynced === true
+        && telegram.status === "fulfilled" && telegram.value.ok), fetchedAt: result?.store?.fetchedAt || 0,
+        telegramSynced: telegram.status === "fulfilled" && telegram.value.ok }, 200, this.env);
     }
 
     if (request.method === "POST" && url.hostname === "board-store" && url.pathname === "/internal/comparison-fx-warm") {

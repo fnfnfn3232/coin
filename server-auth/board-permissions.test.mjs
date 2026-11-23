@@ -257,6 +257,34 @@ test("coin issues require active login, fresh administrator password and isolate
   assert.equal((await f.storage.get("free-board-posts")).length, 1, "ordinary board data is untouched");
 });
 
+test("coin content separates news and issues before pagination without moving or deleting records", async () => {
+  const f = await fixture();
+  f.store.syncCoinNewsSafely = async () => ({ ok: true });
+  const base = '/api/coin-issues?asset=BTC:bitcoin';
+  const id = crypto.randomUUID();
+  assert.equal((await f.request(base, 'POST', { id, title: 'Manual issue', body: 'Manual body', source: 'coinness', adminPassword: f.adminPassword }, f.adminToken)).status, 201);
+  const automatic = Array.from({ length: 12 }, (_, i) => ({ id: `coinness-${100 + i}`, title: `News ${i}`, body: `Summary ${i}`,
+    source: 'coinness', sourceUrl: `https://coinness.com/news/${100 + i}`, revision: 1, createdAt: Date.now() + i, updatedAt: Date.now() + i }));
+  await f.storage.put('coin-issues:auto:BTC:bitcoin', automatic);
+  const news = await (await f.request(base + '&section=news')).json();
+  assert.equal(news.section, 'news');
+  assert.equal(news.total, 12);
+  assert.equal(news.items.length, 10);
+  assert.ok(news.items.every(post => post.source === 'coinness' && post.section === 'news'));
+  assert.ok(news.includedPosts.every(post => post.source === 'coinness'));
+  assert.equal((await (await f.request(base + '&section=news&page=2')).json()).items.length, 2);
+  const issues = await (await f.request(base + '&section=issues')).json();
+  assert.equal(issues.total, 1);
+  assert.equal(issues.items[0].id, id);
+  assert.equal(issues.items[0].section, 'issues', 'manual source claims cannot turn an administrator post into automatic news');
+  assert.equal((await f.request(`/api/coin-issues/${automatic[0].id}?asset=BTC:bitcoin&section=issues`)).status, 404);
+  assert.equal((await f.request(`/api/coin-issues/${id}?asset=BTC:bitcoin&section=news`)).status, 404);
+  assert.equal((await (await f.request(base)).json()).total, 13, 'legacy clients retain the combined list during deployment');
+  assert.equal((await f.request(base + '&section=invalid')).status, 400);
+  assert.equal((await f.request(base + '&section=news', 'GET', undefined, '')).status, 401);
+  assert.equal((await f.storage.get('coin-issues:auto:BTC:bitcoin')).length, 12);
+});
+
 test("coin issue seed stays deleted and durable records are included in backup data", async () => {
   const f = await fixture();
   await f.request("/api/coin-issues?asset=SKY:skyprotocol");
@@ -438,6 +466,7 @@ test("automatic news keeps a bounded archive outside manual quota and retries an
 
 test("the news cron ingests official codes without visitor login or exposing an internal route", async () => {
   const f = await coinNewsFixture(), tasks = [];
+  f.store.refreshTelegramIssues = async () => ({ ok: true });
   const previous = globalThis.fetch;
   let calls = 0;
   await f.write([]);
@@ -461,6 +490,57 @@ test("the news cron ingests official codes without visitor login or exposing an 
     await Promise.all(tasks);
     assert.equal(calls, 1, "the shared news cache also coalesces scheduled checks");
   } finally { globalThis.fetch = previous; }
+});
+
+test("Telegram cron excerpts explicit mentions, coalesces, preserves news and failed sources, and honors deletion", async () => {
+  const f = await coinNewsFixture();
+  await f.write([f.news(1, "비트코인 소식", ["BTC"])]);
+  await f.store.syncCoinNews();
+  let calls = 0, active = 0, peak = 0, failing = false, corrected = false;
+  f.store.fetchTelegramChannel = async channel => {
+    calls++; active++; peak = Math.max(peak, active);
+    await new Promise(resolve => setTimeout(resolve, 2)); active--;
+    if (failing) throw new Error("source down");
+    const text = corrected ? "이더리움 토큰 업데이트" : "BTC 현물 거래소 동향 " + "짧은 공개 발췌자료 ".repeat(40);
+    return [{ channel, id: "123", sourceUrl: `https://t.me/${channel}/123`, text, createdAt: Date.now() - 60000 },
+      { channel, id: "124", sourceUrl: `https://t.me/${channel}/124`, text: "AI 산업과 가스 가격 동향", createdAt: Date.now() - 60000 },
+      { channel, id: "125", sourceUrl: "https://evil.test/125", text: "비트코인", createdAt: Date.now() - 60000 }];
+  };
+  const results = await Promise.all([f.store.refreshTelegramIssues(), f.store.refreshTelegramIssues()]);
+  assert.equal(calls, 7); assert.ok(peak <= 3); assert.ok(results.every(result => result.ok));
+  const list = async (asset, section) => (await (await f.request(`/api/coin-issues?asset=${asset}&section=${section}`)).json());
+  const issues = await list("BTC:bitcoin", "issues");
+  assert.equal(issues.total, 7);
+  assert.ok(issues.items.every(item => item.source === "telegram" && item.section === "issues"));
+  assert.ok(issues.includedPosts.every(post => Array.from(post.body).length <= 91 && post.body.split(" ").length <= 18));
+  assert.equal((await list("BTC:bitcoin", "news")).total, 1);
+  assert.equal((await list("AI:gensyn", "issues")).total, 0);
+  assert.equal((await list("GAS:gas", "issues")).total, 0);
+  await f.store.refreshTelegramIssues(); assert.equal(calls, 7, "successful sources wait ten minutes");
+  assert.equal((await f.request("/api/market-data?probeComparison=telegram", "GET", undefined, "")).status, 401);
+  const post = issues.items[0], path = `/api/coin-issues/${post.id}?asset=BTC:bitcoin&section=issues`;
+  assert.equal((await f.request(path, "PUT", { adminPassword: f.adminPassword, revision: 1 }, f.adminToken)).status, 409);
+  assert.equal((await f.request(path, "DELETE", { revision: 1 }, f.adminToken)).status, 401);
+  assert.equal((await f.request(path, "DELETE", { revision: 1, adminPassword: f.adminPassword }, f.adminToken)).status, 200);
+  const resetChecks = async () => {
+    const status = await f.storage.get("coin-issues:telegram-status-v1");
+    for (const item of Object.values(status)) item.checkedAt = 1;
+    await f.storage.put("coin-issues:telegram-status-v1", status);
+  };
+  await resetChecks(); await f.store.refreshTelegramIssues();
+  assert.equal((await list("BTC:bitcoin", "issues")).total, 6, "deleted Telegram posts stay hidden");
+  const before = await f.storage.get("coin-issues:telegram-status-v1");
+  failing = true; await resetChecks();
+  assert.equal((await f.store.refreshTelegramIssues()).ok, false);
+  assert.equal((await list("BTC:bitcoin", "issues")).total, 6, "failures retain the last good archive");
+  const after = await f.storage.get("coin-issues:telegram-status-v1");
+  for (const channel of Object.keys(before)) assert.equal(after[channel].lastSuccessAt, before[channel].lastSuccessAt);
+  const count = calls; await f.store.refreshTelegramIssues(); assert.equal(calls, count, "failed sources back off");
+  failing = false; corrected = true; await resetChecks(); await f.store.refreshTelegramIssues();
+  assert.equal((await list("BTC:bitcoin", "issues")).total, 0, "corrected mentions remove obsolete links");
+  assert.equal((await list("ETH:ethereum", "issues")).total, 7);
+  assert.equal((await list("BTC:bitcoin", "news")).total, 1);
+  assert.ok((await f.store.readCoinIssuesForBackup())["coin-issues:telegram-status-v1"]);
 });
 
 const feeSource = (fee = 12) => ({ protocols: [
