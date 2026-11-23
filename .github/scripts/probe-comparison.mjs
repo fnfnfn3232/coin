@@ -27,7 +27,9 @@ for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", 
       result = await response.json();
       if (result.implementation === 7 && (board !== "delivery" || result.deliveryVersion === 1)) break;
       // Worker deployment acknowledgement precedes worldwide propagation.
-      if (attempt === 12) throw new Error("new_worker_not_propagated");
+      if (attempt === 12) throw new Error("new_worker_not_propagated:" + JSON.stringify({
+        implementation: result.implementation, deliveryVersion: result.deliveryVersion, exchange: result.exchange, error: result.error,
+      }));
       await new Promise(resolve => setTimeout(resolve, 5000));
     }
     if (board === "audit") {
