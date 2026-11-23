@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-dbYwYOj4NBkvZInODVCxwCM+5IKlriTgRLq85Z8ii9k='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-68B61IzNbNuUA5/Nk9dQHMDZwHIN70jNSLPhNqviUbQ='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -7817,7 +7817,7 @@
         // Descriptions and report archives can exceed browser storage quotas.
         // Keep a bounded market-only fallback; always revalidate it on reload.
         const compact = {
-          startupOnly: true, generatedAt: payload.generatedAt, autoRefreshMinutes: payload.autoRefreshMinutes,
+          startupOnly: true, generatedAt: payload.generatedAt, snapshotVersion: payload.snapshotVersion, autoRefreshMinutes: payload.autoRefreshMinutes,
           fxUsdKrw: payload.fxUsdKrw, fxSource: payload.fxSource, boards: payload.boards, stats: payload.stats,
           futures: { binance: [], coinbase: [], bybit: [] }, futuresStats: {},
           coinInfo: Object.fromEntries(Object.entries(payload.coinInfo || {}).map(([symbol, info]) =>
@@ -7852,10 +7852,10 @@
       if (payload.refreshHealth && typeof payload.refreshHealth === "object") {
         safe.refreshHealth = { state: payload.refreshHealth.state, needsAttention: payload.refreshHealth.needsAttention === true };
       }
-      safe.noticeRefresh = Object.fromEntries(Object.entries(payload.noticeRefresh || {}).map(([name, status]) => [name, status?.error ? { error: true } : {}]));
+      if (Object.hasOwn(payload, "noticeRefresh")) safe.noticeRefresh = Object.fromEntries(Object.entries(payload.noticeRefresh || {}).map(([name, status]) => [name, status?.error ? { error: true } : {}]));
       if (payload.robinhoodRefresh) safe.robinhoodRefresh = { error: Boolean(payload.robinhoodRefresh.error) };
       delete safe.spotMarketCatalogs;
-      safe.refreshIssues = Object.fromEntries(Object.keys(payload.refreshIssues || {}).map(name => [name, "refresh_delayed"]));
+      if (Object.hasOwn(payload, "refreshIssues")) safe.refreshIssues = Object.fromEntries(Object.keys(payload.refreshIssues || {}).map(name => [name, "refresh_delayed"]));
       return safe;
     }
 
@@ -8197,6 +8197,7 @@
       let coinIssuesView = null;
       const coinIssuesCache = new Map();
       const coinIssuesPending = new Map();
+      const coinIntroductionRequests = new Map();
       const coinIssuesRetryAt = new Map();
       let coinDetailGeneration = 0;
       let coinIntroRestorePromise = null;
@@ -8219,6 +8220,18 @@
       }
 
       const failedCoinLogoUrls = new Set();
+      let coinLogoIndex = null;
+      function indexedCoinLogos(symbol) {
+        if (!coinLogoIndex) {
+          coinLogoIndex = new Map();
+          for (const [board, rows] of Object.entries(data.boards || {})) for (const row of rows) {
+            const key = getComparableSymbol(row);
+            if (!coinLogoIndex.has(key)) coinLogoIndex.set(key, []);
+            coinLogoIndex.get(key).push({ board, row });
+          }
+        }
+        return coinLogoIndex.get(symbol) || [];
+      }
 
       function safeCoinLogoUrl(value) {
         try {
@@ -8238,9 +8251,10 @@
           .filter((name) => name !== symbol.toLowerCase());
         const keys = new Set(names(row));
         const matches = (item) => item === row || names(item).some((name) => keys.has(name));
-        const references = Object.values(data.boards || {}).flat().filter((item) => getComparableSymbol(item) === symbol && matches(item));
-        const upbit = (data.boards?.upbit || []).find((item) => getComparableSymbol(item) === symbol && matches(item));
-        const bithumb = (data.boards?.bithumb || []).find((item) => getComparableSymbol(item) === symbol && matches(item));
+        const indexed = indexedCoinLogos(symbol);
+        const references = indexed.map(item => item.row).filter(matches);
+        const upbit = indexed.find(item => item.board === "upbit" && matches(item.row))?.row;
+        const bithumb = indexed.find(item => item.board === "bithumb" && matches(item.row))?.row;
         const info = data.coinInfo?.[symbol];
         const urls = [row?.logo, ...(matches(info) ? [info?.logo] : []), ...references.map((item) => item.logo)];
         if (bithumb && /^[A-Z0-9]{1,30}$/.test(bithumb.symbol) && typeof window.md5 === "function") {
@@ -13076,6 +13090,14 @@
       }
 
       function renderContentPanel() {
+        coinLogoIndex = null;
+        if (data.detailsPartial && !hasDataScope() && ["futures", "ranking", "audit"].includes(state.viewMode)) {
+          newsPanel.innerHTML = renderResourceTabs() + '<p class="muted" role="status">자료를 불러오는 중입니다.</p>';
+          if (siteAuthConfirmed && !isSiteLocked()) fetchLatestBoardData().catch(() => {
+            if (!hasDataScope()) newsPanel.innerHTML = renderResourceTabs() + '<p class="muted" role="status">자료를 받지 못했습니다. 메뉴를 다시 선택하면 재시도합니다.</p>';
+          });
+          return;
+        }
         if (RESOURCE_MENU_ITEMS.includes(state.viewMode)) {
           if (chainFeesStates[state.viewMode]) {
             renderChainFeesPanel();
@@ -14227,6 +14249,7 @@
         closeCoinInfo(true);
         coinIssuesCache.clear();
         coinIssuesPending.clear();
+        coinIntroductionRequests.clear();
         coinIssuesRetryAt.clear();
         coinDetailGeneration++;
         coinIntroRestorePromise = null;
@@ -15474,7 +15497,7 @@
       }
 
       function saveCoinIntroductions(payload) {
-        if (!payload.coinInfo || payload.startupOnly) return;
+        if (!payload.coinInfo || payload.startupOnly || (payload.detailsPartial && !payload.availableScopes?.includes("search"))) return;
         const access = coinDetailAccess();
         window.BlockscopeCoinDetailCache?.write("introductions", access.owner,
           { coinInfo: payload.coinInfo, generatedAt: payload.generatedAt }, Date.now(), getServerAuthTokenExpiry(), access.allowed);
@@ -15485,10 +15508,11 @@
         const access = coinDetailAccess();
         coinIntroRestorePromise = (async () => {
           const cached = await window.BlockscopeCoinDetailCache?.read("introductions", access.owner, 86400000, access.allowed);
-          if (!cached || !access.allowed() || marketDataLoadedFromServer || !cached.payload?.coinInfo) return;
+          if (!cached || !access.allowed() || (marketDataLoadedFromServer && !data.detailsPartial) || !cached.payload?.coinInfo) return;
           const restored = { ...data.coinInfo };
           for (const [symbol, info] of Object.entries(cached.payload.coinInfo)) {
             const current = restored[symbol] || Object.values(data.boards || {}).flat().find(row => getComparableSymbol(row) === symbol);
+            if (current && !current.identityOnly && restored[symbol]) continue;
             if (!current || !window.BlockscopeComparisonIdentity?.matches({ ...info, symbol }, { ...current, symbol }, { baseBoard: state.board })) continue;
             restored[symbol] = info;
           }
@@ -15638,6 +15662,35 @@
           coinIssuesRetryAt.set(asset, Date.now() + 30000);
           if (coinIssuesRetryAt.size > 100) coinIssuesRetryAt.delete(coinIssuesRetryAt.keys().next().value);
         });
+      }
+
+      function needsCoinIntroduction(symbol) {
+        const info = data.coinInfo?.[symbol];
+        return (data.detailsPartial || data.startupOnly) && (!info || info.identityOnly || Number(info._introVersion) !== Number(data.snapshotVersion || 0));
+      }
+
+      function requestCoinIntroduction(symbol, fallbackRow = null) {
+        if (!canReadCoinIssueCache() || !needsCoinIntroduction(symbol)) return Promise.resolve();
+        if (coinIntroductionRequests.has(symbol)) return coinIntroductionRequests.get(symbol);
+        const access = coinDetailAccess();
+        const pending = Promise.resolve().then(async () => {
+          const saved = await window.BlockscopeCoinDetailCache?.read("intro:" + symbol, access.owner, 86400000, access.allowed);
+          if (!access.allowed()) return;
+          const payload = saved?.payload || await fetchServerAuth(`/api/coin-info?symbol=${encodeURIComponent(symbol)}`, { method: "GET", timeoutMs: 12000 });
+          if (!access.allowed() || !needsCoinIntroduction(symbol)) return;
+          const expected = getCoinInfo(symbol, fallbackRow), info = payload.info;
+          if (payload.symbol !== symbol || !(Number(payload.generatedAt) > 0)
+            || (info && !window.BlockscopeComparisonIdentity?.matches({ ...info, symbol }, expected, { baseBoard: state.board }))) throw new Error("coin_introduction_identity_unconfirmed");
+          data.coinInfo[symbol] = { ...(info || data.coinInfo[symbol] || expected), identityOnly: false, _introVersion: payload.generatedAt };
+          coinLogoIndex = null;
+          refreshOpenCoinInfo();
+          if (!saved) window.BlockscopeCoinDetailCache?.write("intro:" + symbol, access.owner, payload, Date.now(), getServerAuthTokenExpiry(), access.allowed);
+        }).catch(() => {
+          if (access.allowed() && needsCoinIntroduction(symbol) && (!data.coinInfo?.[symbol] || data.coinInfo[symbol].identityOnly)
+            && coinIssuesView?.symbol === symbol) coinInfoBody.innerHTML = '<p class="muted" role="status">소개 자료 연결이 지연되고 있습니다. 다시 열면 재시도합니다.</p>';
+        }).finally(() => { if (coinIntroductionRequests.get(symbol) === pending) coinIntroductionRequests.delete(symbol); });
+        coinIntroductionRequests.set(symbol, pending);
+        return pending;
       }
 
       function invalidateCoinIssueLists(asset) {
@@ -15913,10 +15966,11 @@
         coinInfoModal.classList.remove("hidden");
         coinInfoCloseBtn.focus();
         primeCoinIssueList(info);
+        requestCoinIntroduction(symbol, fallbackRow);
       }
 
       function coinIntroductionHtml(info) {
-        if (data.startupOnly && (!data.coinInfo?.[info.symbol] || data.coinInfo[info.symbol].identityOnly)) {
+        if ((data.startupOnly || data.detailsPartial) && (!data.coinInfo?.[info.symbol] || data.coinInfo[info.symbol].identityOnly)) {
           return '<p class="muted" role="status">코인 소개를 불러오는 중입니다.</p>';
         }
         return renderCoinInfo(info);
@@ -18901,6 +18955,24 @@
       function mergeMarketSnapshotWithLiveNews(snapshot) {
         if (!snapshot || typeof snapshot !== "object") return snapshot;
         snapshot = marketSnapshotWithoutRefreshHistory(snapshot);
+        if (snapshot.dataScope) {
+          const same = Number(data.snapshotVersion || data.generatedAt) === Number(snapshot.generatedAt);
+          const previous = same ? data : { futures: { binance: [], coinbase: [], bybit: [] }, futuresStats: {}, defillamaRankings: { categories: {} } };
+          const coinInfo = { ...(same ? data.coinInfo : {}), ...snapshot.coinInfo };
+          for (const [symbol, info] of Object.entries(snapshot.coinInfo || {})) {
+            const existing = data.coinInfo?.[symbol];
+            if (!info.identityOnly) coinInfo[symbol] = { ...info, _introVersion: snapshot.generatedAt };
+            if (info.identityOnly && existing && !existing.identityOnly && window.BlockscopeComparisonIdentity?.matches({ ...info, symbol }, { ...existing, symbol }, { baseBoard: state.board })) coinInfo[symbol] = existing;
+          }
+          snapshot = { ...previous, ...snapshot, coinInfo, availableScopes: [...new Set(["market", snapshot.dataScope,
+            ...(same ? data.availableScopes || (!data.detailsPartial ? ["futures", "ranking", "audit"] : []) : [])])] };
+          delete snapshot.startupOnly;
+          delete snapshot.cachedBoards;
+          delete snapshot.sectionOnly;
+        } else {
+          snapshot.snapshotVersion = Number(snapshot.generatedAt) || 0;
+          snapshot.coinInfo = Object.fromEntries(Object.entries(snapshot.coinInfo || {}).map(([symbol, info]) => [symbol, { ...info, _introVersion: snapshot.generatedAt }]));
+        }
         const currentNews = data?.news;
         const hasLiveNewsState = liveNewsFetchedAtMs > 0
           || (Array.isArray(currentNews?.items) && currentNews.items.length > 0);
@@ -18908,19 +18980,29 @@
         return { ...snapshot, news: currentNews };
       }
 
+      function currentDataScope() {
+        if (["futures", "ranking", "audit"].includes(state.viewMode)) return state.viewMode;
+        return state.viewMode === "market" && String(state.query || "").trim() ? "search" : "market";
+      }
+      function hasDataScope(scope = currentDataScope()) {
+        return Boolean(data.generatedAt && !data.startupOnly && (!data.availableScopes || data.availableScopes.includes(scope)));
+      }
+
       async function fetchLatestBoardData() {
-        if (marketDataLoadPromise) return marketDataLoadPromise;
+        const scope = currentDataScope();
+        if (marketDataLoadPromise) return marketDataLoadPromise.then(result => hasDataScope(scope) ? result : fetchLatestBoardData());
         if (hasServerAuth() && !isLocalPreview()) {
           if (isSiteLocked()) throw new Error("site_locked");
           const beforeGeneratedAt = Number(data.generatedAt) || 0;
-          // A cached payload and its timestamp can get out of sync when browser
-          // storage is full. Always request one complete server snapshot after
-          // a page load before using the lightweight not-modified check.
-          const snapshotGeneratedAt = marketDataLoadedFromServer
-            ? getMarketSnapshotGeneratedAt()
+          // Only an embedded server revision with complete requested sections
+          // can skip a download; row ticks and external cache markers cannot.
+          const completeCachedScope = Number(data.snapshotVersion) > 0 && !data.startupOnly && hasUsableMarketData(data) && hasDataScope(scope);
+          const snapshotGeneratedAt = (marketDataLoadedFromServer || completeCachedScope) && hasDataScope(scope)
+            ? Number(data.snapshotVersion) || getMarketSnapshotGeneratedAt()
             : 0;
-          const query = new URLSearchParams({ ts: String(Date.now()) });
+          const query = new URLSearchParams({ ts: String(Date.now()), scope });
           if (snapshotGeneratedAt > 0) query.set("since", String(snapshotGeneratedAt));
+          if (Number(data.snapshotVersion) > 0 && hasDataScope("market")) query.set("baseSince", String(data.snapshotVersion));
           marketDataLoadError = "";
           marketDataLoadPromise = fetchServerAuth(`/api/market-data?${query.toString()}`, { method: "GET", timeoutMs: 12000 })
             .then((parsed) => {
@@ -18933,22 +19015,28 @@
                   generatedAt: Math.max(0, Math.floor(Number(parsed.generatedAt) || snapshotGeneratedAt)),
                 };
               }
-              if (!isValidBoardPayload(parsed)) {
+              if (parsed?.dataScope && (!["market", "futures", "ranking", "audit", "search"].includes(parsed.dataScope)
+                || !Number.isFinite(parsed.generatedAt) || parsed.generatedAt <= 0 || parsed.snapshotVersion !== parsed.generatedAt
+                || (!parsed.sectionOnly && !isValidBoardPayload(parsed)))) throw new Error("market_scope_invalid");
+              if (parsed?.sectionOnly && !(Number(parsed.snapshotVersion) === Number(data.snapshotVersion) && hasDataScope("market"))) throw new Error("market_section_revision_mismatch");
+              const nextData = mergeMarketSnapshotWithLiveNews(parsed);
+              if (!isValidBoardPayload(nextData)) {
                 throw new Error(parsed?.error || "market_data_invalid");
               }
-              const nextData = mergeMarketSnapshotWithLiveNews(parsed);
               data = nextData;
               window.BOARD_DATA = nextData;
               marketDataLoaded = true;
               marketDataLoadedFromServer = true;
               normalizeKnownAssetIdentities();
               normalizeKoreanAssetNames(nextData);
+              coinLogoIndex = null;
               seedComparisonBootstrap(parsed.comparisonBootstrap);
               delete nextData.comparisonBootstrap;
               renderSummaryStats();
               renderAutoStatus();
               renderCurrentView();
               refreshOpenCoinInfo();
+              if (coinIssuesView) requestCoinIntroduction(coinIssuesView.symbol, coinIssuesView.fallbackRow);
               window.setTimeout(() => {
                 if (!siteAuthConfirmed || isSiteLocked() || data !== nextData) return;
                 const saved = saveLastGoodData(nextData);
@@ -19166,6 +19254,7 @@
         const requestedMode = mode === "resources" ? orderedResourceMenuItems()[0]
           : ["news", "board", ...RESOURCE_MENU_ITEMS, "exchange-history"].includes(mode) ? mode : "market";
         state.viewMode = requestedMode === "board" && !canAccessFreeBoard() ? "market" : requestedMode;
+        if (siteAuthConfirmed && hasServerAuth() && !isLocalPreview() && !hasDataScope()) fetchLatestBoardData().catch(error => console.error(error));
         if (previousMode !== state.viewMode) {
           closeLivePriceSocket();
           closePriceDifferenceStreams();
@@ -19665,11 +19754,13 @@
     }
 
       function isMarketSnapshotPending() {
-        return hasServerAuth() && !isLocalPreview() && !marketDataLoadedFromServer
-          && (!hasUsableMarketData(data) || (data.startupOnly && !data.cachedBoards?.includes(state.board)));
+        return hasServerAuth() && !isLocalPreview() && ((data.detailsPartial && !hasDataScope()) || (!marketDataLoadedFromServer
+          && (!hasUsableMarketData(data) || (data.startupOnly && !data.cachedBoards?.includes(state.board)))));
       }
 
       function render() {
+        coinLogoIndex = null;
+        if (siteAuthConfirmed && data.detailsPartial && !hasDataScope() && state.viewMode === "market") fetchLatestBoardData().catch(error => console.error(error));
         ensureSelectedMarketBoard();
         const domesticComparison = isDomesticComparisonBoard();
         thPriceDifference.hidden = !domesticComparison;
@@ -19766,6 +19857,7 @@
           const symbol = button.dataset.coinInfoSymbol;
           const row = getBoardRows(state.board).find(item => getComparableSymbol(item) === symbol);
           primeCoinIssueList(getCoinInfo(symbol, row));
+          if (coinIntroductionRequests.size < 2) requestCoinIntroduction(symbol, row);
         };
         if (event.type === "focusin") warm();
         else coinIssueHoverTimer = window.setTimeout(warm, 100);

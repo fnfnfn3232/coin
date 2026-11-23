@@ -88,6 +88,86 @@ async function fixture({ read = true, write = false } = {}) {
   return { store, storage, member, request, rawRequest, post, adminToken, memberToken, adminPassword, env };
 }
 
+test("scoped snapshots retain comparison identity while excluding unrelated datasets and private history", async () => {
+  const f = await fixture();
+  const payload = { generatedAt: 100, boards: { upbit: [{ symbol: "BTC", priceKrw: 100, circulatingSupply: 2 }] },
+    coinInfo: { BTC: { englishName: "Bitcoin", koreanName: "비트코인", sources: { bithumb: {
+      description: "INTRODUCTION".repeat(40000), explorer: "https://etherscan.io/token/0x1111111111111111111111111111111111111111" } }, listings: {} } },
+    futures: { binance: [{ symbol: "BTC", pad: "FUTURES".repeat(30000) }] },
+    defillamaRankings: { categories: { tvl: [{ pad: "RANKING".repeat(30000) }] } },
+    upbitAudit: { rows: [[1, "BTC", "100", "101"]] }, refreshHealth: { history: [{ private: "private incident" }], state: "healthy" } };
+  await f.store.writeMarketData(new Request("https://worker.example/api/market-data", { method: "POST", body: JSON.stringify(payload) }));
+  const full = await (await f.request("/api/market-data")).text();
+  const scopedText = await (await f.request("/api/market-data?scope=market&includePrivate=1")).text();
+  const scoped = JSON.parse(scopedText);
+  assert.ok(scopedText.length < full.length * 0.1);
+  assert.equal(scoped.dataScope, "market");
+  assert.deepEqual(scoped.boards.upbit, payload.boards.upbit);
+  assert.equal(scoped.coinInfo.BTC.sources.bithumb.explorer, payload.coinInfo.BTC.sources.bithumb.explorer);
+  assert.equal(scoped.coinInfo.BTC.identityOnly, true);
+  assert.doesNotMatch(scopedText, /INTRODUCTION|FUTURES|RANKING|private incident/);
+  assert.equal(scoped.futures, undefined);
+  assert.equal(scoped.upbitAudit, undefined);
+  const delivery = await (await f.store.probeComparisonSource('delivery')).json();
+  assert.equal(delivery.deliveryVersion, 1);
+  assert.ok(delivery.marketBytes < delivery.publicFullBytes * 0.1);
+  assert.doesNotMatch(JSON.stringify(delivery), /INTRODUCTION|private incident|description/);
+  const delta = await (await f.request('/api/market-data?scope=futures&baseSince=100')).json();
+  assert.equal(delta.sectionOnly, true);
+  assert.equal(delta.boards, undefined);
+  assert.deepEqual(delta.futures.binance, payload.futures.binance);
+  const newerBase = await (await f.request('/api/market-data?scope=futures&baseSince=99')).json();
+  assert.equal(newerBase.sectionOnly, undefined, 'a stale base must receive its complete shared sections again');
+  assert.deepEqual(newerBase.boards.upbit, payload.boards.upbit);
+  for (const [scope, key] of [["futures", "futures"], ["ranking", "defillamaRankings"], ["audit", "upbitAudit"], ["search", "coinInfo"]]) {
+    const result = await (await f.request(`/api/market-data?scope=${scope}`)).json();
+    assert.deepEqual(result[key], key === "futures" ? { binance: payload.futures.binance, coinbase: [], bybit: [] } : payload[key]);
+  }
+  assert.equal((await f.request("/api/market-data?scope=market", "GET", undefined, "")).status, 401);
+  assert.equal((await f.request("/api/coin-info?symbol=BTC", "GET", undefined, "")).status, 401);
+  const info = await (await f.request("/api/coin-info?symbol=BTC")).json();
+  assert.deepEqual(info, { symbol: "BTC", generatedAt: 100, info: payload.coinInfo.BTC });
+  assert.equal((await f.request("/api/coin-info?symbol=..%2fsecret")).status, 400);
+  assert.equal((await (await f.request("/api/coin-info?symbol=UNKNOWN")).json()).info, null);
+});
+
+test("market reads coalesce and reuse one decoded generation, including same-generation publication retries", async () => {
+  const f = await fixture();
+  const publish = marker => f.store.writeMarketData(new Request("https://worker.example/api/market-data", {
+    method: "POST", body: JSON.stringify({ generatedAt: 100, boards: {}, marker, pad: marker.repeat(600000) }) }));
+  await publish("A");
+  const get = MemoryStorage.prototype.get;
+  let chunks = 0;
+  MemoryStorage.prototype.get = async function(key) { if (key.startsWith("market-data-v1:chunk:")) chunks++; return get.call(this, key); };
+  try {
+    const result = await Promise.all(Array.from({ length: 6 }, () => f.store.readMarketData()));
+    assert.ok(result.every(value => value.marker === "A"));
+    const reads = chunks;
+    assert.ok(reads > 0);
+    await f.store.readMarketData();
+    assert.equal(chunks, reads, "cache hits check revision metadata without decoding chunks again");
+    await publish("B");
+    assert.equal((await f.store.readMarketData()).marker, "B");
+    assert.ok(chunks > reads);
+  } finally { MemoryStorage.prototype.get = get; }
+});
+
+test("API responses do not wait for usage accounting and queued recordings preserve every response", async () => {
+  const f = await fixture();
+  const pending = [], sizes = [];
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  f.store.state.waitUntil = promise => pending.push(promise);
+  f.store.recordServerTransfer = async (_kind, bytes) => { await held; sizes.push(bytes); };
+  const respond = bytes => BoardStore.prototype.recordApiResponse.call(f.store, new Response("ok", { headers: { "X-Response-Bytes": String(bytes) } }));
+  const result = await Promise.race([Promise.all([respond(10), respond(20)]), new Promise(resolve => setTimeout(() => resolve(null), 50))]);
+  assert.ok(result, "response delivery must not wait for the held statistics write");
+  assert.equal(sizes.length, 0);
+  release();
+  await Promise.all(pending);
+  assert.deepEqual(sizes, [10, 20]);
+});
+
 test("market publication cannot expose mixed chunks to a concurrent reader", async () => {
   const f = await fixture();
   const snapshot = (generatedAt, fill) => ({ generatedAt, boards: {}, marker: fill, padding: fill.repeat(600000), tail: fill });
@@ -393,6 +473,7 @@ test("production comparison probes cannot be opened by forged sync headers or or
   for (const token of ["", memberToken, adminToken]) {
     const response = await rawRequest("/api/market-data?probeComparison=gateio", "GET", undefined, token, { "X-Market-Data-Sync": "1" });
     assert.equal(response.status, 401);
+    assert.equal((await rawRequest('/api/market-data?probeComparison=delivery', 'GET', undefined, token, { 'X-Market-Data-Sync': '1' })).status, 401);
     const health = await rawRequest("/api/market-data?comparisonHealth=1", "POST", JSON.stringify({ rows: [["upbit", "BTC", "ok", "coinbase"]] }), token, { "X-Market-Data-Sync": "1" });
     assert.equal(health.status, 401);
   }

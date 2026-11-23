@@ -7,7 +7,7 @@ if (!mint.ok) throw new Error(`oidc_mint_failed:${mint.status}`);
 const { value: token } = await mint.json();
 if (!token) throw new Error("oidc_token_missing");
 let failed = 0;
-for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", "bybit", "bitget", "okx", "coinbase_futures", "audit", "bootstrap"]) {
+for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", "bybit", "bitget", "okx", "coinbase_futures", "audit", "bootstrap", "delivery"]) {
   try {
     let result;
     for (let attempt = 0; attempt < 13; attempt += 1) {
@@ -25,7 +25,7 @@ for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", 
       }
       if (!response.ok) throw new Error(`probe_http_${response.status}`);
       result = await response.json();
-      if (result.implementation === 7) break;
+      if (result.implementation === 7 && (board !== "delivery" || result.deliveryVersion === 1)) break;
       // Worker deployment acknowledgement precedes worldwide propagation.
       if (attempt === 12) throw new Error("new_worker_not_propagated");
       await new Promise(resolve => setTimeout(resolve, 5000));
@@ -47,7 +47,7 @@ for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", 
         unverified: rows.filter(row => row.candidates), unavailable: rows.filter(row => !row.matches.length && !row.candidates),
         reported: rows.filter(row => ["SOON", "BEAM", "FLUID", "PIEVERSE", "CC", "WAVES", "B3", "UP2", "UP"].includes(row.symbol)) }));
     } else console.log(JSON.stringify(result));
-    if (result.error || result.identityError || (board === "fx" ? !result.rate || result.stale : !["audit", "bootstrap"].includes(board) && !result.quoteCount)) failed += 1;
+    if (result.error || result.identityError || (board === "fx" ? !result.rate || result.stale : !["audit", "bootstrap", "delivery"].includes(board) && !result.quoteCount)) failed += 1;
   } catch (error) { console.log(JSON.stringify({ exchange: board, error: error.message })); failed += 1; }
 }
 if (failed) console.log(`::warning title=Production quote source issues::${failed} sources require investigation; inspect the sanitized diagnostics above.`);

@@ -19,6 +19,7 @@ on:
       - "test_resource_search.cjs"
       - "test_content_cache.cjs"
       - "test_market_startup.cjs"
+      - "test_market_delivery.cjs"
       - "coin-detail-cache.js"
       - "test_market_fixture.cjs"
       - "test_futures_health.mjs"
@@ -47,6 +48,7 @@ on:
       - "test_resource_search.cjs"
       - "test_content_cache.cjs"
       - "test_market_startup.cjs"
+      - "test_market_delivery.cjs"
       - "coin-detail-cache.js"
       - "test_market_fixture.cjs"
       - "test_futures_health.mjs"
@@ -94,6 +96,7 @@ jobs:
           node test_resource_search.cjs
           node test_content_cache.cjs
           node test_market_startup.cjs
+          node test_market_delivery.cjs
           node test_audit_ui.cjs
           node test_security_ui.cjs
           node test_market_chart.cjs

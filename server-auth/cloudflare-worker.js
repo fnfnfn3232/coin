@@ -1868,6 +1868,7 @@ async function requireGithubOidc(request, env) {
 
 function isProtectedContentPath(url) {
   return url.pathname === "/api/coin-issues" || url.pathname.startsWith("/api/coin-issues/")
+    || url.pathname === "/api/coin-info"
     || url.pathname === "/api/market-data"
     || url.pathname === "/api/price-difference-fx"
     || url.pathname === "/api/price-difference-quotes"
@@ -2702,6 +2703,33 @@ function marketDataWithoutRefreshHistory(payload) {
   return safe;
 }
 
+function marketDataForScope(payload, scope, sectionOnly = false) {
+  const safe = marketDataWithoutRefreshHistory(payload);
+  if (!["market", "futures", "ranking", "audit", "search"].includes(scope)) return safe;
+  if (sectionOnly && scope !== "market") {
+    const sectionKeys = scope === "futures" ? ["futures", "futuresStats"] : scope === "ranking" ? ["defillamaRankings"]
+      : scope === "search" ? ["coinInfo"] : ["upbitAudit", "upbitAuditReports", "upbitAssetNames", "upbitAuditMarket", "upbitWalletNetworks"];
+    return { generatedAt: safe.generatedAt, snapshotVersion: safe.generatedAt, dataScope: scope, detailsPartial: true, sectionOnly: true,
+      ...Object.fromEntries(sectionKeys.filter(key => Object.hasOwn(safe, key)).map(key => [key, safe[key]])) };
+  }
+  const keys = ["generatedAt", "autoRefreshMinutes", "fxUsdKrw", "fxSource", "boards", "stats", "futuresStats",
+    "apywaRatings", "robinhoodRefresh", "spotMarketReferences", "spotMarketStatus", "spotListings", "spotTradingEnds",
+    "spotSpecialTreatment", "scheduledDelistings", "noticeRefresh", "changes", "notes", "refreshIssues", "refreshHealth", "news", "protected"];
+  const scoped = Object.fromEntries(keys.filter(key => Object.hasOwn(safe, key)).map(key => [key, safe[key]]));
+  scoped.coinInfo = Object.fromEntries(Object.entries(safe.coinInfo || {}).map(([symbol, info]) => [symbol, {
+    koreanName: info.koreanName, englishName: info.englishName, logo: info.logo, listings: info.listings, identityOnly: true,
+    sources: Object.fromEntries(Object.entries(info.sources || {}).map(([board, source]) => [board,
+      { englishName: source.englishName, explorer: source.explorer, explorerUrl: source.explorerUrl }])),
+  }]));
+  if (scope === "search") scoped.coinInfo = safe.coinInfo;
+  if (scope === "futures") scoped.futures = safe.futures;
+  if (scope === "ranking") scoped.defillamaRankings = safe.defillamaRankings;
+  if (scope === "audit") for (const key of ["upbitAudit", "upbitAuditReports", "upbitAssetNames", "upbitAuditMarket", "upbitWalletNetworks"]) {
+    if (Object.hasOwn(safe, key)) scoped[key] = safe[key];
+  }
+  return { ...scoped, dataScope: scope, detailsPartial: true, snapshotVersion: safe.generatedAt };
+}
+
 function emptyExchangeHistoryRecord() {
   return {
     version: 1,
@@ -3413,11 +3441,25 @@ export class BoardStore {
   }
 
   async readMarketData() {
+    if (this.marketReadPromise) return this.marketReadPromise;
+    const operation = this.readMarketDataSnapshot();
+    this.marketReadPromise = operation;
+    try { return await operation; }
+    finally { if (this.marketReadPromise === operation) this.marketReadPromise = null; }
+  }
+
+  async readMarketDataSnapshot() {
+    const metadata = await this.state.storage.get(MARKET_DATA_KEY);
+    if (metadata && this.marketSnapshotCache?.version === `${metadata.revision || ""}:${metadata.generatedAt}:${metadata.updatedAt}:${metadata.bytes}:${metadata.chunkCount}`) {
+      return this.marketSnapshotCache.payload;
+    }
+    let version;
     const serialized = await this.state.storage.transaction(async storage => {
       const meta = await storage.get(MARKET_DATA_KEY);
       if (!meta || !Number.isFinite(Number(meta.chunkCount))) return null;
       const chunkCount = Math.max(0, Math.floor(Number(meta.chunkCount) || 0));
       if (!chunkCount) return null;
+      version = `${meta.revision || ""}:${meta.generatedAt}:${meta.updatedAt}:${meta.bytes}:${meta.chunkCount}`;
       const chunks = [];
       for (let index = 0; index < chunkCount; index += 1) {
         const chunk = await storage.get(`${MARKET_DATA_CHUNK_PREFIX}${index}`);
@@ -3428,7 +3470,9 @@ export class BoardStore {
     });
     if (!serialized) return null;
     try {
-      return normalizeMarketDataPayload(JSON.parse(serialized));
+      const payload = normalizeMarketDataPayload(JSON.parse(serialized));
+      if (payload) this.marketSnapshotCache = { version, payload };
+      return payload;
     } catch (_error) {
       return null;
     }
@@ -3548,7 +3592,7 @@ export class BoardStore {
         for (let index = chunkCount; index < previousChunkCount; index += 1) staleKeys.push(`${MARKET_DATA_CHUNK_PREFIX}${index}`);
         await storage.delete(staleKeys);
       }
-      await storage.put(MARKET_DATA_KEY, { generatedAt, updatedAt: Date.now(), bytes: serializedBytes, chunkCount });
+      await storage.put(MARKET_DATA_KEY, { generatedAt, updatedAt: Date.now(), bytes: serializedBytes, chunkCount, revision: crypto.randomUUID() });
       return true;
     });
     if (!published) return jsonResponse({ error: "stale_market_data" }, 409, this.env);
@@ -3562,6 +3606,7 @@ export class BoardStore {
   }
 
   async handleMarketDataRequest(request, url = new URL(request.url), includePrivate = false) {
+    const scope = includePrivate ? "" : url.searchParams.get("scope");
     const since = Math.max(0, Math.floor(Number(url.searchParams.get("since")) || 0));
     if (since > 0) {
       const meta = await this.state.storage.get(MARKET_DATA_KEY);
@@ -3578,8 +3623,17 @@ export class BoardStore {
     }
     const payload = await this.readMarketData();
     if (!payload) return jsonResponse({ error: "market_data_not_ready" }, 404, this.env);
-    return jsonResponse(includePrivate ? payload : { ...marketDataWithoutRefreshHistory(payload),
+    const sectionOnly = Number(url.searchParams.get("baseSince")) > 0 && Number(url.searchParams.get("baseSince")) === Number(payload.generatedAt);
+    return jsonResponse(includePrivate ? payload : { ...marketDataForScope(payload, scope, sectionOnly),
       comparisonBootstrap: await this.readComparisonBootstrap() }, 200, this.env);
+  }
+
+  async handleCoinInfoRequest(url) {
+    const symbol = String(url.searchParams.get("symbol") || "").trim().toUpperCase();
+    if (!/^[A-Z0-9]{1,30}$/.test(symbol)) return jsonResponse({ error: "invalid_coin_symbol" }, 400, this.env);
+    const payload = await this.readMarketData();
+    if (!payload) return jsonResponse({ error: "market_data_not_ready" }, 404, this.env);
+    return jsonResponse({ symbol, generatedAt: payload.generatedAt, info: payload.coinInfo?.[symbol] || null }, 200, this.env);
   }
 
   async handleRefreshHistoryRequest(request) {
@@ -3976,6 +4030,21 @@ export class BoardStore {
       return jsonResponse({ implementation: 7, exchange, elapsedMs: Date.now() - started, fx: value.fx, direct: value.direct,
         counts: Object.fromEntries(Object.entries(value.quotes).map(([board, quote]) => [board, Object.keys(quote.prices || {}).length])) }, 200, this.env);
     }
+    if (exchange === "delivery") {
+      const market = await this.readMarketData();
+      if (!market) return jsonResponse({ error: "market_data_not_ready" }, 503, this.env);
+      const warmSnapshotMs = Date.now() - started;
+      const bootstrap = await this.readComparisonBootstrap();
+      const bytes = value => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+      const publicFullBytes = bytes({ ...marketDataWithoutRefreshHistory(market), comparisonBootstrap: bootstrap });
+      const marketBytes = bytes({ ...marketDataForScope(market, "market"), comparisonBootstrap: bootstrap });
+      return jsonResponse({ implementation: 7, deliveryVersion: 1, exchange, warmSnapshotMs, publicFullBytes, marketBytes,
+        reductionPercent: Math.round((1 - marketBytes / publicFullBytes) * 100),
+        sectionBytes: Object.fromEntries(["futures", "ranking", "audit", "search"].map(scope => [scope,
+          bytes({ ...marketDataForScope(market, scope, true), comparisonBootstrap: bootstrap })])),
+        bitcoinIntroductionBytes: bytes({ symbol: "BTC", generatedAt: market.generatedAt, info: market.coinInfo?.BTC || null }),
+      }, 200, this.env);
+    }
     const response = await this.handleComparisonQuotesRequest(new URL(`https://board-store/api/price-difference-quotes?exchange=${encodeURIComponent(exchange)}`));
     const payload = await response.json();
     const market = await this.readMarketData();
@@ -4160,7 +4229,11 @@ export class BoardStore {
 
   async recordApiResponse(response) {
     const bytes = Math.max(0, Math.floor(Number(response?.headers?.get("X-Response-Bytes")) || 0));
-    if (bytes) await this.recordServerTransfer("api", bytes);
+    if (bytes && typeof this.state.waitUntil === "function") {
+      const recording = (this.apiTransferQueue || Promise.resolve()).then(() => this.recordServerTransfer("api", bytes));
+      this.apiTransferQueue = recording.catch(() => {});
+      this.state.waitUntil(this.apiTransferQueue);
+    } else if (bytes) await this.recordServerTransfer("api", bytes);
     return response;
   }
 
@@ -5470,6 +5543,10 @@ export class BoardStore {
       return this.recordApiResponse(await this.handleMarketDataRequest(request, url));
     }
 
+    if (request.method === "GET" && url.pathname === "/api/coin-info") {
+      return this.recordApiResponse(await this.handleCoinInfoRequest(url));
+    }
+
     if (url.pathname === "/api/admin/refresh-history") {
       return this.recordApiResponse(await this.handleRefreshHistoryRequest(request));
     }
@@ -6002,6 +6079,10 @@ export default {
       if (!env.BOARD_STORE) return jsonResponse({ error: "market_data_storage_not_configured" }, 500, env);
       const id = env.BOARD_STORE.idFromName("free-board");
       return env.BOARD_STORE.get(id).fetch(request);
+    }
+    if (url.pathname === "/api/coin-info" && request.method === "GET") {
+      if (!env.BOARD_STORE) return jsonResponse({ error: "market_data_storage_not_configured" }, 500, env);
+      return env.BOARD_STORE.get(env.BOARD_STORE.idFromName("free-board")).fetch(request);
     }
     if (url.pathname === "/api/admin/refresh-history") {
       if (!env.BOARD_STORE) return jsonResponse({ error: "auth_storage_unavailable" }, 503, env);

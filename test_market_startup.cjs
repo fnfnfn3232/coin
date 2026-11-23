@@ -13,6 +13,8 @@ async function main() {
   const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME_PATH
     || (process.platform === 'win32' ? 'C:/Program Files/Google/Chrome/Application/chrome.exe' : undefined) });
   let releaseSettings, releaseMarket, releaseLive;
+  const heldIntroductions = [];
+  let holdIntroduction = false;
   let issueCalls = 0;
   const issueAssets = [];
   const issue = { id: 'btc-test', title: 'Bitcoin cached issue', body: 'Already fetched issue body.', revision: 1,
@@ -59,6 +61,10 @@ async function main() {
         issueCalls++;
         issueAssets.push(url.searchParams.get('asset'));
         result = { items: [issue], includedPosts: [issue], total: 1 };
+      } else if (url.pathname === '/api/coin-info') {
+        if (holdIntroduction) await new Promise(resolve => heldIntroductions.push(resolve));
+        const symbol = url.searchParams.get('symbol');
+        result = { symbol, generatedAt: snapshot.generatedAt, info: snapshot.coinInfo[symbol] || null };
       }
       return route.fulfill({ json: result, headers, status: url.pathname === '/api/market-data' ? marketStatus : 200 });
     });
@@ -76,6 +82,7 @@ async function main() {
     await page.waitForFunction(async () => Boolean((await BlockscopeCoinDetailCache.read('introductions', comparisonCacheOwner(), 86400000, () => true))?.payload.coinInfo.BTC));
     releaseSettings();
     holdMarket = true;
+    holdIntroduction = true;
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => siteAuthConfirmed && Boolean(marketDataLoadPromise));
     assert.ok(await page.locator('#tableBody [data-coin-info-symbol]').count(), 'cached coins remain visible with both APIs held');
@@ -163,6 +170,7 @@ async function main() {
     console.log('PASS: market startup is independent of settings, survives cache quota, and distinguishes loading from empty results');
     await context.close();
   } finally {
+    for (const release of heldIntroductions) release();
     releaseSettings?.(); releaseMarket?.(); releaseLive?.();
     await browser.close();
   }
