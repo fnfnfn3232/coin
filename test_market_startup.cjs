@@ -8,9 +8,15 @@ async function main() {
   const cacheKey = 'fdv_last_good_data_v5';
   const snapshot = require('./test_market_fixture.cjs')();
   snapshot.coinInfo.EXTRA = { description: 'x'.repeat(700000) };
+  snapshot.coinInfo.BTC = { englishName: 'Bitcoin', koreanName: '비트코인', sources: {
+    bithumb: { description: 'Complete Bitcoin introduction retained beyond localStorage quota.' } }, listings: {} };
   const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME_PATH
     || (process.platform === 'win32' ? 'C:/Program Files/Google/Chrome/Application/chrome.exe' : undefined) });
   let releaseSettings, releaseMarket, releaseLive;
+  let issueCalls = 0;
+  const issueAssets = [];
+  const issue = { id: 'btc-test', title: 'Bitcoin cached issue', body: 'Already fetched issue body.', revision: 1,
+    createdAt: Date.now(), updatedAt: Date.now() };
   let holdMarket = false, marketCalls = 0, marketStatus = 200;
   const errors = [];
   try {
@@ -49,6 +55,10 @@ async function main() {
       } else if (url.pathname === '/api/live-prices') {
         await new Promise(resolve => { releaseLive = resolve; });
         result = { prices: {}, caps: {} };
+      } else if (url.pathname === '/api/coin-issues') {
+        issueCalls++;
+        issueAssets.push(url.searchParams.get('asset'));
+        result = { items: [issue], includedPosts: [issue], total: 1 };
       }
       return route.fulfill({ json: result, headers, status: url.pathname === '/api/market-data' ? marketStatus : 200 });
     });
@@ -62,16 +72,58 @@ async function main() {
     assert.ok(cache.boards.upbit.length, 'quota-safe startup cache retains every Upbit row');
     assert.equal(cache.generatedAt, snapshot.generatedAt, 'cache does not fabricate a newer observation time');
     assert.ok(JSON.stringify(cache).length < 256 * 1024);
+    assert.equal(cache.coinInfo.BTC.englishName, 'Bitcoin', 'compact cache retains canonical issue identity');
+    await page.waitForFunction(async () => Boolean((await BlockscopeCoinDetailCache.read('introductions', comparisonCacheOwner(), 86400000, () => true))?.payload.coinInfo.BTC));
     releaseSettings();
     holdMarket = true;
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => siteAuthConfirmed && Boolean(marketDataLoadPromise));
     assert.ok(await page.locator('#tableBody [data-coin-info-symbol]').count(), 'cached coins remain visible with both APIs held');
-    await page.evaluate(() => { data.boards = Object.fromEntries(MARKET_BOARDS.map(board => [board, []])); render(); });
-    assert.match(await page.locator('#tableBody').textContent(), /불러오는 중/);
-    assert.doesNotMatch(await page.locator('#tableBody').textContent(), /표시할 코인이 없습니다/);
+    await page.evaluate(() => openCoinInfo('BTC'));
+    await page.waitForFunction(() => document.getElementById('coinInfoBody').textContent.includes('Complete Bitcoin introduction'));
+    assert.match(await page.locator('#coinInfoTitle').textContent(), /비트코인/);
+    if (process.env.MARKET_STARTUP_SCREENSHOTS) await page.locator('#coinInfoModal').screenshot({
+      path: path.join(process.env.MARKET_STARTUP_SCREENSHOTS, 'coin-introduction-cached.png') });
+    assert.equal(await page.evaluate(() => coinIssuesView.asset), 'BTC:bitcoin');
+    await page.waitForFunction(() => coinIssuesCache.has('BTC:bitcoin:1'));
+    assert.equal(await page.evaluate(() => {
+      document.getElementById('coinIssuesTab').click();
+      return document.getElementById('coinIssuesPanel').textContent.includes('Bitcoin cached issue');
+    }), true, 'the issue tab renders its prefetched list in the click task');
+    if (process.env.MARKET_STARTUP_SCREENSHOTS) await page.locator('#coinInfoModal').screenshot({
+      path: path.join(process.env.MARKET_STARTUP_SCREENSHOTS, 'coin-issues-prefetched.png') });
+    await page.waitForFunction(async () => Boolean(await BlockscopeCoinDetailCache.read('issues:BTC:bitcoin:1', comparisonCacheOwner(), 60000, () => true)));
+    const beforeIssueReload = issueCalls;
+    releaseSettings();
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => siteAuthConfirmed && Boolean(marketDataLoadPromise));
+    await page.evaluate(() => openCoinInfo('BTC'));
+    await page.waitForFunction(() => coinIssuesCache.has('BTC:bitcoin:1'));
+    await page.locator('#coinIssuesTab').click();
+    assert.match(await page.locator('#coinIssuesPanel').textContent(), /Bitcoin cached issue/);
+    assert.equal(issueCalls, beforeIssueReload, 'reload reuses a fresh owner-bound issue list without a network round trip');
+    await page.evaluate(async key => {
+      await BlockscopeCoinDetailCache.clear();
+      const legacy = JSON.parse(localStorage.getItem(key)); legacy.coinInfo = {};
+      localStorage.setItem(key, JSON.stringify(legacy));
+    }, cacheKey);
+    releaseSettings();
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => siteAuthConfirmed && Boolean(marketDataLoadPromise));
+    await page.evaluate(() => openCoinInfo('BTC'));
+    assert.match(await page.locator('#coinInfoBody').textContent(), /불러오는 중/);
+    assert.doesNotMatch(await page.locator('#coinInfoBody').textContent(), /정보 없음/);
+    await page.locator('#coinIssuesTab').click();
     releaseMarket();
     releaseSettings();
+    await page.waitForFunction(() => document.getElementById('coinInfoBody').textContent.includes('Complete Bitcoin introduction'));
+    assert.equal(await page.locator('#coinIssuesTab').getAttribute('aria-selected'), 'true', 'snapshot hydration does not reset the selected issue tab');
+    await page.locator('#coinInfoCloseBtn').click();
+    holdMarket = false;
+    await page.evaluate(() => { marketDataLoadedFromServer = false; data.boards = Object.fromEntries(MARKET_BOARDS.map(board => [board, []])); render(); });
+    assert.match(await page.locator('#tableBody').textContent(), /불러오는 중/);
+    assert.doesNotMatch(await page.locator('#tableBody').textContent(), /표시할 코인이 없습니다/);
+    await page.evaluate(() => fetchLatestBoardData());
     await page.waitForFunction(() => marketDataLoadedFromServer && !marketDataLoadPromise);
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 1000 });
@@ -93,6 +145,20 @@ async function main() {
     await page.evaluate(() => fetchLatestBoardData());
     assert.match(await page.locator('#tableBody').textContent(), /표시할 코인이 없습니다/,
       'a successful empty response remains distinct from pending or failed loading');
+    assert.deepEqual(await page.evaluate(async () => {
+      const cache = BlockscopeCoinDetailCache, owner = comparisonCacheOwner(), now = Date.now();
+      await cache.write('test-owner', owner, { private: true }, now, now + 60000, () => true);
+      const other = await cache.read('test-owner', 'member:other', 60000, () => true);
+      await cache.write('test-old', owner, {}, now - 61000, now + 60000, () => true);
+      const old = await cache.read('test-old', owner, 60000, () => true);
+      await cache.write('test-future', owner, {}, now + 60000, now + 120000, () => true);
+      const future = await cache.read('test-future', owner, 60000, () => true);
+      const late = cache.write('test-late', owner, { private: true }, now, now + 60000, () => true);
+      const clearing = cache.clear();
+      await Promise.all([late, clearing]);
+      return [other, old, future, await cache.read('test-late', owner, 60000, () => true)];
+    }), [null, null, null, null], 'another owner, expired/future entries and a late pre-logout write cannot restore private cached details');
+    assert.ok(issueAssets.every(asset => asset === 'BTC:bitcoin'), 'even the legacy empty-info cache never requests the wrong BTC:btc issue key');
     assert.deepEqual(errors, []);
     console.log('PASS: market startup is independent of settings, survives cache quota, and distinguishes loading from empty results');
     await context.close();

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-EW7/VXNFH8Ior7zSqBfDEfJFXnuAg8RQVKW6mmbkKyU='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-dbYwYOj4NBkvZInODVCxwCM+5IKlriTgRLq85Z8ii9k='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -7543,6 +7543,7 @@
   <script src="./comparison-identity.js?v=762328f0a7b3"></script>
   <script src="./app-update.js?v=20261031-1"></script>
   <script src="./audit-report.js?v=20261031-2"></script>
+  <script src="./coin-detail-cache.js?v=1"></script>
   <script>
     window.SERVER_AUTH_API_BASE = "https://coin-board-auth.dlatl20000.workers.dev";
   </script>
@@ -7808,6 +7809,7 @@
 
     function saveLastGoodData(payload) {
       if (!isValidBoardPayload(payload)) return false;
+      if (siteAuthConfirmed && !payload.startupOnly) saveCoinIntroductions(payload);
       try {
         localStorage.setItem(LAST_GOOD_DATA_KEY, JSON.stringify(marketSnapshotWithoutRefreshHistory(payload)));
         return true;
@@ -7817,7 +7819,9 @@
         const compact = {
           startupOnly: true, generatedAt: payload.generatedAt, autoRefreshMinutes: payload.autoRefreshMinutes,
           fxUsdKrw: payload.fxUsdKrw, fxSource: payload.fxSource, boards: payload.boards, stats: payload.stats,
-          futures: { binance: [], coinbase: [], bybit: [] }, futuresStats: {}, coinInfo: {}, notes: {},
+          futures: { binance: [], coinbase: [], bybit: [] }, futuresStats: {},
+          coinInfo: Object.fromEntries(Object.entries(payload.coinInfo || {}).map(([symbol, info]) =>
+            [symbol, { koreanName: info.koreanName, englishName: info.englishName, logo: info.logo, identityOnly: true }])), notes: {},
           news: { items: [] }, defillamaRankings: { generatedAt: 0, categories: {} },
         };
         for (const boards of [payload.boards, { [state.board]: payload.boards[state.board] || [] }]) {
@@ -8192,6 +8196,10 @@
       const coinInfoModal = document.getElementById("coinInfoModal");
       let coinIssuesView = null;
       const coinIssuesCache = new Map();
+      const coinIssuesPending = new Map();
+      const coinIssuesRetryAt = new Map();
+      let coinDetailGeneration = 0;
+      let coinIntroRestorePromise = null;
       const coinInfoTitle = document.getElementById("coinInfoTitle");
       const coinInfoSubtitle = document.getElementById("coinInfoSubtitle");
       const coinInfoBody = document.getElementById("coinInfoBody");
@@ -9044,6 +9052,7 @@
 
       function completeSiteLogin() {
         siteAuthConfirmed = true;
+        restoreCoinIntroductions();
         setLockExtendCount(0);
         hideSiteLock();
         primeChainFees();
@@ -14217,6 +14226,11 @@
       function clearSiteLoginState() {
         closeCoinInfo(true);
         coinIssuesCache.clear();
+        coinIssuesPending.clear();
+        coinIssuesRetryAt.clear();
+        coinDetailGeneration++;
+        coinIntroRestorePromise = null;
+        window.BlockscopeCoinDetailCache?.clear();
         publicSpotBoards.clear();
         coinbaseFuturesClient.generation++;
         Object.assign(coinbaseFuturesClient, { rows: null, promise: null, checkedAt: 0, error: "" });
@@ -14280,6 +14294,7 @@
       let siteLockCheckPromise = null;
 
       async function refreshAuthenticatedSite() {
+        restoreCoinIntroductions();
         const settings = requestServerScreenSettingsRefresh({ selectDefault: true });
         const market = fetchLatestBoardData().then(() => refreshLiveMarketData());
         await Promise.all([settings, market]);
@@ -15453,6 +15468,36 @@
         `;
       }
 
+      function coinDetailAccess() {
+        const owner = comparisonCacheOwner(), epoch = coinDetailGeneration;
+        return { owner, allowed: () => epoch === coinDetailGeneration && owner === comparisonCacheOwner() && canReadCoinIssueCache() };
+      }
+
+      function saveCoinIntroductions(payload) {
+        if (!payload.coinInfo || payload.startupOnly) return;
+        const access = coinDetailAccess();
+        window.BlockscopeCoinDetailCache?.write("introductions", access.owner,
+          { coinInfo: payload.coinInfo, generatedAt: payload.generatedAt }, Date.now(), getServerAuthTokenExpiry(), access.allowed);
+      }
+
+      function restoreCoinIntroductions() {
+        if (coinIntroRestorePromise || !canReadCoinIssueCache()) return coinIntroRestorePromise;
+        const access = coinDetailAccess();
+        coinIntroRestorePromise = (async () => {
+          const cached = await window.BlockscopeCoinDetailCache?.read("introductions", access.owner, 86400000, access.allowed);
+          if (!cached || !access.allowed() || marketDataLoadedFromServer || !cached.payload?.coinInfo) return;
+          const restored = { ...data.coinInfo };
+          for (const [symbol, info] of Object.entries(cached.payload.coinInfo)) {
+            const current = restored[symbol] || Object.values(data.boards || {}).flat().find(row => getComparableSymbol(row) === symbol);
+            if (!current || !window.BlockscopeComparisonIdentity?.matches({ ...info, symbol }, { ...current, symbol }, { baseBoard: state.board })) continue;
+            restored[symbol] = info;
+          }
+          data.coinInfo = restored;
+          refreshOpenCoinInfo();
+        })();
+        return coinIntroRestorePromise;
+      }
+
       function getCoinInfo(symbol, fallbackRow = null) {
         const key = String(symbol || "").toUpperCase();
         const info = data.coinInfo?.[key] || {};
@@ -15549,6 +15594,56 @@
 
       function coinIssueDate(at) {
         return new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", dateStyle: "medium", timeStyle: "short" }).format(at);
+      }
+
+      function coinIssueListKey(asset, page) { return asset + ":" + page; }
+
+      function requestCoinIssueList(asset, page, fresh = false) {
+        const key = coinIssueListKey(asset, page);
+        const cached = coinIssuesCache.get(key);
+        if (!fresh && cached && Date.now() >= cached.at && Date.now() - cached.at < 60000) return Promise.resolve(cached.payload);
+        if (coinIssuesPending.has(key)) return coinIssuesPending.get(key);
+        const access = coinDetailAccess();
+        const pending = Promise.resolve().then(async () => {
+          if (!fresh) {
+            const saved = await window.BlockscopeCoinDetailCache?.read("issues:" + key, access.owner, 60000, access.allowed);
+            if (saved && access.allowed() && coinIssuesPending.get(key) === pending) {
+              coinIssuesCache.set(key, { payload: saved.payload, at: saved.at });
+              return saved.payload;
+            }
+          }
+          if (!access.allowed() || coinIssuesPending.get(key) !== pending) throw new Error("retired_coin_issue_request");
+          const payload = await fetchServerAuth(`/api/coin-issues?asset=${encodeURIComponent(asset)}&page=${page}`, { method: "GET" });
+          if (!Array.isArray(payload.items) || !Number.isInteger(payload.total)) throw new Error("invalid_issue_response");
+          if (access.allowed() && coinIssuesPending.get(key) === pending) {
+            const at = Date.now();
+            coinIssuesCache.set(key, { payload, at });
+            if (coinIssuesCache.size > 100) coinIssuesCache.delete(coinIssuesCache.keys().next().value);
+            window.BlockscopeCoinDetailCache?.write("issues:" + key, access.owner, payload, at, getServerAuthTokenExpiry(),
+              () => access.allowed() && coinIssuesCache.get(key)?.payload === payload);
+          }
+          return payload;
+        }).finally(() => { if (coinIssuesPending.get(key) === pending) coinIssuesPending.delete(key); });
+        coinIssuesPending.set(key, pending);
+        return pending;
+      }
+
+      function primeCoinIssueList(info) {
+        if (!canReadCoinIssueCache() || !navigator.onLine || coinIssuesPending.size >= 2) return;
+        const asset = coinIssueAssetKey(info);
+        if ((coinIssuesRetryAt.get(asset) || 0) > Date.now()) return;
+        const epoch = coinDetailGeneration;
+        requestCoinIssueList(asset, 1).catch(() => {
+          if (epoch !== coinDetailGeneration || !canReadCoinIssueCache()) return;
+          coinIssuesRetryAt.set(asset, Date.now() + 30000);
+          if (coinIssuesRetryAt.size > 100) coinIssuesRetryAt.delete(coinIssuesRetryAt.keys().next().value);
+        });
+      }
+
+      function invalidateCoinIssueLists(asset) {
+        for (const key of coinIssuesCache.keys()) if (key.startsWith(asset + ":")) coinIssuesCache.delete(key);
+        for (const key of coinIssuesPending.keys()) if (key.startsWith(asset + ":")) coinIssuesPending.delete(key);
+        return window.BlockscopeCoinDetailCache?.removePrefix(comparisonCacheOwner(), "issues:" + asset + ":");
       }
 
       function coinIssueError(error) {
@@ -15671,18 +15766,17 @@
         view.loading = !background;
         view.error = "";
         if (!background) renderCoinIssues();
-        const query = `?asset=${encodeURIComponent(view.asset)}&page=${view.page}`;
         try {
           const cached = !id && !fresh && coinIssuesCache.get(view.asset + ":" + view.page);
           const payload = id ? { post: await fetchCoinIssuePost(view, id) }
             : cached && Date.now() - cached.at < 60000 ? cached.payload
-            : await fetchServerAuth("/api/coin-issues" + query, { method: "GET" });
+            : await requestCoinIssueList(view.asset, view.page, fresh);
           if (coinIssuesView !== view || view.request !== request || !siteAuthConfirmed || isSiteLocked()) return;
           if (id ? !payload.post || typeof payload.post.body !== "string"
             : !Array.isArray(payload.items) || !Number.isInteger(payload.total)) throw new Error("invalid_issue_response");
           if (id) { view.post = payload.post; view.mode = "read"; }
           else {
-            const validatedAt = cached && payload === cached.payload ? cached.at : Date.now();
+            const validatedAt = coinIssuesCache.get(coinIssueListKey(view.asset, view.page))?.at || Date.now();
             const included = new Map((Array.isArray(payload.includedPosts) ? payload.includedPosts : [])
               .filter(post => post && typeof post.body === "string").map(post => [post.id, post]));
             const details = new Map();
@@ -15720,16 +15814,17 @@
         view.error = "";
         view.details.clear();
         view.pendingDetails.clear();
-        for (const key of coinIssuesCache.keys()) if (key.startsWith(view.asset + ":")) coinIssuesCache.delete(key);
+        const invalidating = invalidateCoinIssueLists(view.asset);
         form.querySelectorAll("button").forEach(button => button.disabled = true);
         document.getElementById("coinIssueError").textContent = "";
         try {
+          await invalidating;
           const payload = await fetchServerAuth("/api/coin-issues" + (view.post ? "/" + encodeURIComponent(id) : "")
             + "?asset=" + encodeURIComponent(view.asset), {
               method: deleting ? "DELETE" : view.post ? "PUT" : "POST", body: JSON.stringify(body),
             });
           if (coinIssuesView !== view || !siteAuthConfirmed || isSiteLocked()) return;
-          for (const key of coinIssuesCache.keys()) if (key.startsWith(view.asset + ":")) coinIssuesCache.delete(key);
+          await invalidateCoinIssueLists(view.asset);
           view.busy = false;
           if (deleting) { view.post = null; view.page = 1; await loadCoinIssues(); }
           else { view.post = payload.post; view.mode = "read"; renderCoinIssues(); }
@@ -15804,18 +15899,44 @@
 
       function openCoinInfo(symbol, fallbackRow = null) {
         if (coinIssuesView?.busy || (coinIssueDraftChanged() && !window.confirm("작성 중인 내용을 버리고 다른 코인을 열까요?"))) return;
+        fallbackRow ||= getBoardRows(state.board).find(row => getComparableSymbol(row) === symbol) || null;
         const info = getCoinInfo(symbol, fallbackRow);
         coinIssuesView?.details.clear();
         coinIssuesView?.pendingDetails.clear();
-        coinIssuesView = { asset: coinIssueAssetKey(info), page: 1, items: [], total: 0, mode: "list",
+        coinIssuesView = { symbol, fallbackRow, asset: coinIssueAssetKey(info), page: 1, items: [], total: 0, mode: "list",
           post: null, details: new Map(), pendingDetails: new Map(), loaded: false, loading: false, request: 0, busy: false, error: "" };
         coinInfoTitle.innerHTML = renderCoinIdentity(fallbackRow || info, info.koreanName || info.symbol);
         coinInfoSubtitle.textContent = `${info.symbol}${info.englishName ? ` · ${info.englishName}` : ""}`;
-        coinInfoBody.innerHTML = renderCoinInfo(info);
+        coinInfoBody.innerHTML = coinIntroductionHtml(info);
         document.getElementById("coinIssuesPanel").replaceChildren();
         setCoinInfoTab(false);
         coinInfoModal.classList.remove("hidden");
         coinInfoCloseBtn.focus();
+        primeCoinIssueList(info);
+      }
+
+      function coinIntroductionHtml(info) {
+        if (data.startupOnly && (!data.coinInfo?.[info.symbol] || data.coinInfo[info.symbol].identityOnly)) {
+          return '<p class="muted" role="status">코인 소개를 불러오는 중입니다.</p>';
+        }
+        return renderCoinInfo(info);
+      }
+
+      function refreshOpenCoinInfo() {
+        const view = coinIssuesView;
+        if (!view || coinInfoModal.classList.contains("hidden")) return;
+        const info = getCoinInfo(view.symbol, view.fallbackRow);
+        coinInfoTitle.innerHTML = renderCoinIdentity(view.fallbackRow || info, info.koreanName || info.symbol);
+        coinInfoSubtitle.textContent = `${info.symbol}${info.englishName ? ` · ${info.englishName}` : ""}`;
+        coinInfoBody.innerHTML = coinIntroductionHtml(info);
+        const asset = coinIssueAssetKey(info);
+        if (view.asset !== asset && !view.busy && !["edit", "delete"].includes(view.mode)) {
+          view.request++;
+          Object.assign(view, { asset, page: 1, items: [], total: 0, post: null, loaded: false, mode: "list", loading: false });
+          view.details.clear(); view.pendingDetails.clear();
+          if (!document.getElementById("coinIssuesPanel").hidden) loadCoinIssues();
+        }
+        primeCoinIssueList(info);
       }
 
       function closeCoinInfo(force = false) {
@@ -18827,6 +18948,7 @@
               renderSummaryStats();
               renderAutoStatus();
               renderCurrentView();
+              refreshOpenCoinInfo();
               window.setTimeout(() => {
                 if (!siteAuthConfirmed || isSiteLocked() || data !== nextData) return;
                 const saved = saveLastGoodData(nextData);
@@ -19633,6 +19755,26 @@
         const row = EXTRA_SPOT_BOARDS.includes(state.board)
           ? getBoardRows(state.board).find(item => liveSpotProductId(item, state.board) === button.closest("tr")?.dataset.liveProduct) : null;
         openCoinInfo(button.dataset.coinInfoSymbol, row);
+      });
+      let coinIssueHoverTimer = null;
+      const warmCoinIssuesFromTable = event => {
+        const button = event.target.closest("[data-coin-info-symbol]");
+        if (!button || button.contains(event.relatedTarget)) return;
+        window.clearTimeout(coinIssueHoverTimer);
+        const warm = () => {
+          if (!button.isConnected) return;
+          const symbol = button.dataset.coinInfoSymbol;
+          const row = getBoardRows(state.board).find(item => getComparableSymbol(item) === symbol);
+          primeCoinIssueList(getCoinInfo(symbol, row));
+        };
+        if (event.type === "focusin") warm();
+        else coinIssueHoverTimer = window.setTimeout(warm, 100);
+      };
+      tableBody.addEventListener("pointerover", warmCoinIssuesFromTable);
+      tableBody.addEventListener("focusin", warmCoinIssuesFromTable);
+      tableBody.addEventListener("pointerout", event => {
+        const button = event.target.closest("[data-coin-info-symbol]");
+        if (button && !button.contains(event.relatedTarget)) window.clearTimeout(coinIssueHoverTimer);
       });
 
       coinInfoCloseBtn.addEventListener("click", closeCoinInfo);

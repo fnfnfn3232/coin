@@ -106,7 +106,9 @@ async function main() {
     }), ['XLM:stellar', 'AI:sleeplessai', 'AI:gensyn']);
     await page.getByRole('button', { name: '스카이프로토콜 코인 정보 보기' }).click();
     assert.match(await page.locator('#coinInfoBody').textContent(), /거래소 공식 소개/);
-    assert.equal(requests.length, 0, 'opening the introduction does not fetch every coin issue board');
+    await page.waitForFunction(() => coinIssuesCache.has('SKY:skyprotocol:1'));
+    assert.equal(requests.length, 1, 'opening the introduction prefetches only that coin issue board');
+    assert.equal(requests[0].asset, 'SKY:skyprotocol');
     await page.locator('#coinIssuesTab').click();
     await page.getByRole('button', { name: seed.title, exact: true }).waitFor();
     detailDelayMs = 750;
