@@ -1,5 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const { readFileSync } = require('node:fs');
 const { assessComparisonHealth } = require('./.github/scripts/comparison-health.cjs');
 const NOW = 1793300000000;
 const row = (symbol, englishName = `${symbol} Network`) => ({ symbol, englishName });
@@ -47,4 +48,13 @@ test('future or invalid identity catalog clocks cannot be marked healthy', () =>
     const result = states(audit([local('A')], [source('gateio', [row('A')], { catalogAt }), source('coinbase', [row('USDT')])]));
     assert.equal(result[0][2], 'identity');
   }
+});
+
+test('manual and recovery rebuilds verify live health without doubling normal scheduled audits', () => {
+  const workflow = readFileSync(require.resolve('./.github/workflows/comparison-monitor.yml'), 'utf8');
+  assert.match(workflow, /workflows: \['Deploy Cloudflare Worker', 'Auto Refresh Data'\]/);
+  assert.match(workflow, /github\.event\.workflow_run\.event != 'schedule'/);
+  assert.match(workflow, /github\.event\.workflow_run\.conclusion == 'success'/);
+  assert.match(workflow, /github\.event\.workflow_run\.head_repository\.full_name == github\.repository/);
+  assert.match(workflow, /push:\s+branches: \[main\]/);
 });
