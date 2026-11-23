@@ -13,7 +13,12 @@ const COIN_ISSUES_PREFIX = "coin-issues:";
 const COIN_NEWS_CRON = "*/10 * * * *";
 const COIN_NEWS_LIMIT = 50;
 const TELEGRAM_CHANNELS = ["BChoSN", "umjuninsight", "deganlululala", "enjoymyhobby", "officialunivercityofcrypto", "JoshuaDeukKOR", "fireant_crypto"];
+// Full-text republication authorized by the site owner for these specific channels.
+const TELEGRAM_REPUBLISH_CHANNELS = new Set(["BChoSN", "umjuninsight", "deganlululala", "enjoymyhobby", "officialunivercityofcrypto", "JoshuaDeukKOR", "fireant_crypto"]);
 const TELEGRAM_STATUS_KEY = COIN_ISSUES_PREFIX + "telegram-status-v1";
+const TELEGRAM_BODY_REPAIR_KEY = COIN_ISSUES_PREFIX + "telegram-body-repair-v1";
+const TELEGRAM_BODY_PREFIX = COIN_ISSUES_PREFIX + "telegram-body:";
+const TELEGRAM_TEXT_MAX_BYTES = 80000;
 const TELEGRAM_CACHE_MS = 10 * 60 * 1000;
 const TELEGRAM_CATCHUP_PAGES = 2;
 const TELEGRAM_RETRY_MS = 60000;
@@ -64,12 +69,14 @@ function coinIssueAsset(value) {
 }
 
 function coinIssueSummary(post) {
-  const { id, title, createdAt, updatedAt, revision } = post;
+  const { id, createdAt, updatedAt, revision } = post;
+  const title = post.source === "telegram" && /관련 게시글$/.test(post.title || "") ? telegramIssueTitle(post.body) : post.title;
   return { id, title, createdAt, updatedAt, revision, section: post.source === "coinness" ? "news" : "issues",
-    ...(typeof post.body === "string" ? { bodyBytes: new TextEncoder().encode(post.body).byteLength } : {}),
+    ...(typeof post.body === "string" ? { bodyBytes: post.fullText && post.bodyKey && Number.isSafeInteger(post.bodyBytes)
+      ? post.bodyBytes : new TextEncoder().encode(post.body).byteLength } : {}),
     author: post.source === "coinness" ? "코인니스" : post.source === "telegram" ? post.sourceName : "관리자",
     ...(["coinness", "telegram"].includes(post.source) ? { source: post.source, sourceUrl: post.sourceUrl,
-      ...(post.source === "telegram" ? { sourceName: post.sourceName } : {}) } : {}) };
+      ...(post.source === "telegram" ? { sourceName: post.sourceName, fullText: post.fullText === true } : {}) } : {}) };
 }
 
 function coinNewsSymbols(entry) {
@@ -194,7 +201,7 @@ async function parseTelegramPreview(html, channel) {
     } });
   await parser.transform(new Response(html)).text();
   // Media-only messages still define pagination boundaries, even without an issue excerpt.
-  return { messages: posts.map(post => ({ ...post, text: telegramText(post.text).slice(0, 20000) })) };
+  return { messages: posts.map(post => ({ ...post, text: telegramText(post.text) })) };
 }
 
 function validateTelegramPage(page, channel, before = "") {
@@ -205,6 +212,7 @@ function validateTelegramPage(page, channel, before = "") {
     if (post.channel !== channel || post.sourceUrl !== telegramSourceUrl(channel, post.id)
       || typeof post.id !== "string" || !/^[1-9]\d{0,15}$/.test(post.id) || typeof post.text !== "string"
       || !Number.isSafeInteger(post.createdAt) || post.createdAt <= 0 || post.createdAt > Date.now() + 60000
+      || new TextEncoder().encode(post.text).byteLength > TELEGRAM_TEXT_MAX_BYTES
       || seen.has(post.id) || (before && BigInt(post.id) >= BigInt(before))) throw new Error("telegram_preview_invalid");
     seen.add(post.id);
   }
@@ -215,6 +223,20 @@ function telegramExcerpt(text) {
   const shortened = text.replace(/https?:\/\/\S+/g, "").replace(/\s+/g, " ").trim().split(" ").slice(0, 18).join(" ");
   const chars = Array.from(shortened);
   return chars.slice(0, 90).join("") + (chars.length > 90 || shortened.length < text.trim().length ? "…" : "");
+}
+
+function telegramIssueTitle(text) {
+  const line = String(text || "").replace(/https?:\/\/\S+/g, "").split(/\r?\n/)
+    .map(value => value.trim()).find(value => /[\p{L}\p{N}]/u.test(value) && !/^@[A-Za-z0-9_]+$/.test(value)) || "본문 확인";
+  const clean = line.replace(/^(?:[-*•]\s+|\d{1,2}[.)]\s+)/u, "").replace(/\s+/g, " ");
+  const sentence = clean.match(/^.*?[.!?。！？](?=\s|$)/u)?.[0] || clean;
+  const chars = Array.from(sentence);
+  return chars.slice(0, 100).join("") + (chars.length > 100 ? "…" : "");
+}
+
+function telegramSourceParts(url) {
+  const match = String(url || "").match(/^https:\/\/t\.me\/([A-Za-z0-9_]+)\/([1-9]\d{0,15})$/);
+  return match && telegramSourceUrl(match[1], match[2]) === url ? { channel: match[1], id: match[2] } : null;
 }
 const USAGE_STATS_KEY = "usage-stats-v1";
 const NEWS_STORE_KEY = "coinness-news-store-v1";
@@ -3090,8 +3112,12 @@ export class BoardStore {
       if (id) {
         const post = automatic.find(post => post.id === id)
           || await this.state.storage.get(COIN_ISSUES_PREFIX + "post:" + asset + ":" + id);
-        return post && belongs(post) ? this.recordApiResponse(jsonResponse({ post: { ...post, ...coinIssueSummary(post) } }, 200, this.env))
-          : jsonResponse({ error: "issue_not_found" }, 404, this.env);
+        if (!post || !belongs(post)) return jsonResponse({ error: "issue_not_found" }, 404, this.env);
+        try {
+          const resolved = await this.readCoinIssueBody(post, asset, true);
+          if (!resolved) return jsonResponse({ error: "issue_source_delayed" }, 503, this.env);
+          return this.recordApiResponse(jsonResponse({ post: { ...resolved, ...coinIssueSummary(resolved) } }, 200, this.env));
+        } catch (_error) { return jsonResponse({ error: "issue_source_delayed" }, 503, this.env); }
       }
       const index = [...(await this.state.storage.get(indexKey) || []), ...automatic.map(coinIssueSummary)]
         .filter(belongs)
@@ -3105,7 +3131,9 @@ export class BoardStore {
         const stored = automatic.find(post => post.id === item.id)
           || await this.state.storage.get(COIN_ISSUES_PREFIX + "post:" + asset + ":" + item.id);
         if (!stored || stored.revision !== item.revision || typeof stored.body !== "string") continue;
-        const post = { ...stored, ...coinIssueSummary(stored) };
+        const resolved = await this.readCoinIssueBody(stored, asset);
+        if (!resolved) continue;
+        const post = { ...resolved, ...coinIssueSummary(resolved) };
         const bytes = new TextEncoder().encode(JSON.stringify(post)).byteLength;
         if (bytes > COIN_ISSUE_INLINE_POST_BYTES || bytes > remainingBytes) continue;
         includedPosts.push(post);
@@ -3220,6 +3248,7 @@ export class BoardStore {
     // Each feed has its own bounded archive; one source cannot evict the other.
     const prefix = COIN_ISSUES_PREFIX + "auto:";
     const knownAssets = new Set(grouped.keys());
+    const bodyKeys = new Set();
     let startAfter;
     for (;;) {
       const batch = await this.state.storage.list({ prefix, limit: 100, ...(startAfter ? { startAfter } : {}) });
@@ -3228,14 +3257,15 @@ export class BoardStore {
       startAfter = [...batch.keys()].at(-1);
     }
     for (const asset of knownAssets) {
-      await this.state.storage.transaction(async storage => {
+      const retained = await this.state.storage.transaction(async storage => {
         const key = prefix + asset, old = await storage.get(key) || [];
         const hidden = new Set(await storage.get(COIN_ISSUES_PREFIX + "hidden:" + asset) || []);
         const byId = new Map(old.filter(post => post.source === source && !currentIds.has(post.id) && !hidden.has(post.id)).map(post => [post.id, post]));
         for (const post of grouped.get(asset) || []) {
           if (hidden.has(post.id)) continue;
           const previous = old.find(item => item.id === post.id);
-          const changed = previous && (previous.title !== post.title || previous.body !== post.body || previous.createdAt !== post.createdAt);
+          const changed = previous && (previous.title !== post.title || previous.body !== post.body || previous.createdAt !== post.createdAt
+            || previous.bodyHash !== post.bodyHash || previous.fullText !== post.fullText);
           byId.set(post.id, previous && !changed ? previous : { ...post,
             revision: previous ? previous.revision + 1 : 1, updatedAt: changed ? Date.now() : post.updatedAt });
         }
@@ -3243,12 +3273,129 @@ export class BoardStore {
           ...[...byId.values()].sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)).slice(0, COIN_NEWS_LIMIT)]
           .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
         if (JSON.stringify(old) !== JSON.stringify(next)) await storage.put(key, next);
+        return next;
       });
+      for (const post of retained) if (post.bodyKey) bodyKeys.add(post.bodyKey);
     }
+    return bodyKeys;
+  }
+
+  async makeTelegramIssuePost(post, id) {
+    const base = { id, title: telegramIssueTitle(post.text), body: telegramExcerpt(post.text),
+      source: "telegram", sourceName: "@" + post.channel, sourceUrl: post.sourceUrl,
+      createdAt: post.createdAt, updatedAt: post.createdAt, revision: 1 };
+    if (!TELEGRAM_REPUBLISH_CHANNELS.has(post.channel)) return base;
+    const body = post.text.replace(/\r\n?/g, "\n"), bodyBytes = new TextEncoder().encode(body).byteLength;
+    if (!body || bodyBytes > TELEGRAM_TEXT_MAX_BYTES) throw new Error("telegram_text_unavailable");
+    const bodyHash = await sha256Hex(body), bodyKey = TELEGRAM_BODY_PREFIX + id + ":" + bodyHash;
+    const stored = await this.state.storage.get(bodyKey);
+    if (stored?.body !== body || stored.sourceUrl !== post.sourceUrl || Date.now() - stored.lastUsedAt >= 1800000) {
+      await this.state.storage.put(bodyKey, { body, sourceUrl: post.sourceUrl, lastUsedAt: Date.now() });
+    }
+    return { ...base, bodyKey, bodyHash, bodyBytes, fullText: true };
+  }
+
+  async fetchTelegramOriginal(sourceUrl) {
+    const source = telegramSourceParts(sourceUrl);
+    if (!source || !TELEGRAM_REPUBLISH_CHANNELS.has(source.channel)) throw new Error("telegram_text_unavailable");
+    this.telegramOriginalRequests ||= new Map();
+    if (this.telegramOriginalRequests.has(sourceUrl)) return this.telegramOriginalRequests.get(sourceUrl);
+    if (this.telegramOriginalRequests.size >= 3) throw new Error("telegram_source_busy");
+    const before = String(BigInt(source.id) + 1n);
+    const pending = this.fetchTelegramChannel(source.channel, before).then(page => {
+      const post = validateTelegramPage(page, source.channel, before).find(post => post.id === source.id);
+      if (!post?.text) throw new Error("telegram_text_unavailable");
+      return post;
+    }).finally(() => this.telegramOriginalRequests.delete(sourceUrl));
+    this.telegramOriginalRequests.set(sourceUrl, pending);
+    return pending;
+  }
+
+  async repairTelegramIssue(post, asset, original = null) {
+    const source = original || await this.fetchTelegramOriginal(post.sourceUrl);
+    const prepared = await this.makeTelegramIssuePost(source, post.id);
+    return this.state.storage.transaction(async storage => {
+      const key = COIN_ISSUES_PREFIX + "auto:" + asset, posts = await storage.get(key) || [];
+      const current = posts.find(item => item.id === post.id && item.sourceUrl === post.sourceUrl && item.source === "telegram");
+      if (!current) return null;
+      if (current.bodyHash === prepared.bodyHash && current.fullText && current.title === prepared.title) return current;
+      const next = { ...current, ...prepared, createdAt: current.createdAt, revision: current.revision + 1, updatedAt: Date.now() };
+      await storage.put(key, posts.map(item => item === current ? next : item));
+      return next;
+    });
+  }
+
+  async readCoinIssueBody(post, asset, repair = false) {
+    const source = post.source === "telegram" && telegramSourceParts(post.sourceUrl);
+    if (!source || !TELEGRAM_REPUBLISH_CHANNELS.has(source.channel)) return post;
+    let entry = post.bodyKey && await this.state.storage.get(post.bodyKey);
+    if ((!entry || entry.sourceUrl !== post.sourceUrl) && repair) {
+      post = await this.repairTelegramIssue(post, asset);
+      if (!post) return null;
+      entry = await this.state.storage.get(post.bodyKey);
+    }
+    if (!entry || entry.sourceUrl !== post.sourceUrl || typeof entry.body !== "string") return null;
+    return { ...post, body: entry.body };
+  }
+
+  async repairTelegramArchive() {
+    if (this.telegramArchiveRepairPromise) return this.telegramArchiveRepairPromise;
+    this.telegramArchiveRepairPromise = (async () => {
+      const previous = await this.state.storage.get(TELEGRAM_BODY_REPAIR_KEY);
+      if (previous?.complete || (previous?.checkedAt && Date.now() - previous.checkedAt < TELEGRAM_RETRY_MS)) return previous;
+      const targets = new Map(), prefix = COIN_ISSUES_PREFIX + "auto:";
+      let startAfter;
+      for (;;) {
+        const batch = await this.state.storage.list({ prefix, limit: 100, ...(startAfter ? { startAfter } : {}) });
+        for (const [key, posts] of batch) for (const post of posts) {
+          const source = post.source === "telegram" && telegramSourceParts(post.sourceUrl);
+          if (!source || !TELEGRAM_REPUBLISH_CHANNELS.has(source.channel) || post.fullText && post.bodyKey) continue;
+          if (!targets.has(post.sourceUrl)) targets.set(post.sourceUrl, { source, posts: [] });
+          targets.get(post.sourceUrl).posts.push({ asset: key.slice(prefix.length), post });
+        }
+        if (batch.size < 100) break;
+        startAfter = [...batch.keys()].at(-1);
+      }
+      let attempts = 0, failures = 0, pendingCount = targets.size, after = previous?.after || "";
+      const sorted = [...targets.keys()].sort();
+      for (const url of [...sorted.filter(url => url > after), ...sorted.filter(url => url <= after)]) {
+        const target = targets.get(url);
+        if (!target) continue;
+        if (attempts++ >= 3) break;
+        after = url;
+        try {
+          const page = validateTelegramPage(await this.fetchTelegramChannel(target.source.channel, String(BigInt(target.source.id) + 1n)),
+            target.source.channel, String(BigInt(target.source.id) + 1n));
+          const messages = new Map(page.map(post => [post.sourceUrl, post]));
+          if (!messages.get(url)?.text) failures++;
+          for (const [candidateUrl, candidate] of targets) {
+            const original = messages.get(candidateUrl);
+            if (!original?.text) continue;
+            for (const item of candidate.posts) await this.repairTelegramIssue(item.post, item.asset, original);
+            targets.delete(candidateUrl); pendingCount--;
+          }
+        } catch (_error) { failures++; }
+      }
+      const status = { checkedAt: Date.now(), complete: pendingCount === 0, pending: pendingCount, failures, after: pendingCount ? after : "" };
+      await this.state.storage.put(TELEGRAM_BODY_REPAIR_KEY, status);
+      return status;
+    })().finally(() => { this.telegramArchiveRepairPromise = null; });
+    return this.telegramArchiveRepairPromise;
+  }
+
+  async cleanupTelegramBodies(activeKeys) {
+    const key = COIN_ISSUES_PREFIX + "telegram-body-gc", previous = await this.state.storage.get(key);
+    const batch = await this.state.storage.list({ prefix: TELEGRAM_BODY_PREFIX, limit: 20,
+      ...(previous?.after ? { startAfter: previous.after } : {}) });
+    for (const bodyKey of batch.keys()) if (!activeKeys.has(bodyKey)) await this.state.storage.transaction(async storage => {
+      const entry = await storage.get(bodyKey);
+      if (entry && entry.lastUsedAt < Date.now() - 3600000) await storage.delete(bodyKey);
+    });
+    await this.state.storage.put(key, { after: batch.size === 20 ? [...batch.keys()].at(-1) : "" });
   }
 
   async fetchTelegramChannel(channel, before = "") {
-    if (!TELEGRAM_CHANNELS.includes(channel) || (before && !/^[1-9]\d{0,15}$/.test(before))) throw new Error("telegram_preview_invalid");
+    if (!TELEGRAM_CHANNELS.includes(channel) || (before && !/^[1-9]\d{0,16}$/.test(before))) throw new Error("telegram_preview_invalid");
     const response = await fetch(`https://t.me/s/${channel}${before ? "?before=" + before : ""}`, { redirect: "manual", signal: AbortSignal.timeout(7000),
       headers: { Accept: "text/html" } });
     if (!response.ok) throw new Error(`telegram_feed_http_${response.status}`);
@@ -3277,7 +3424,7 @@ export class BoardStore {
           const previous = status[channel] || {}, now = Date.now();
           const cooldown = previous.error ? Math.min(TELEGRAM_CACHE_MS, TELEGRAM_RETRY_MS * 2 ** Math.min(4, Math.max(0, (previous.failures || 1) - 1)))
             : previous.pending || previous.pollSoon ? TELEGRAM_RETRY_MS : TELEGRAM_CACHE_MS;
-          const migrating = previous.lastSuccessAt > 0 && !previous.cursorId && !previous.pending && !previous.error;
+          const migrating = previous.lastSuccessAt > 0 && ((!previous.cursorId && !previous.pending) || previous.textVersion !== 1) && !previous.error;
           if (!migrating && previous.checkedAt && now - previous.checkedAt < cooldown) {
             results.push({ channel, ...previous }); continue;
           }
@@ -3297,16 +3444,14 @@ export class BoardStore {
               for (const post of messages) {
                 if (BigInt(post.id) > BigInt(pending.targetId) || (before && pending.baseId && BigInt(post.id) <= BigInt(pending.baseId))) continue;
                 const id = "telegram-" + (await sha256Hex(channel.toLowerCase() + ":" + post.id)).slice(0, 32);
-                currentIds.add(id);
-                if (!post.text) continue;
-                const excerpt = telegramExcerpt(post.text);
-                const matches = excerpt ? matchTelegramCoins(post.text, catalog) : new Set();
+                if (!post.text) { currentIds.add(id); continue; }
+                const matches = matchTelegramCoins(post.text, catalog);
                 if (matches.size) matched++;
+                const imported = matches.size ? await this.makeTelegramIssuePost(post, id) : null;
+                currentIds.add(id);
                 for (const asset of matches) {
                   if (!grouped.has(asset)) grouped.set(asset, []);
-                  grouped.get(asset).push({ id, title: `@${channel} · ${asset.split(":")[0]} 관련 게시글`,
-                    body: excerpt, source: "telegram", sourceName: "@" + channel, sourceUrl: post.sourceUrl,
-                    createdAt: post.createdAt, updatedAt: post.createdAt, revision: 1 });
+                  grouped.get(asset).push(imported);
                 }
               }
               pending.observed += messages.length; pending.matched += matched;
@@ -3315,12 +3460,12 @@ export class BoardStore {
               if (reached) {
                 progress = { checkedAt: now, lastSuccessAt: now, cursorId: pending.targetId,
                   observed: pending.observed, matched: pending.matched, error: "", failures: 0,
-                  pollSoon: Boolean(previous.pending), pending: null };
+                  pollSoon: Boolean(previous.pending), pending: null, textVersion: 1 };
                 break;
               }
               // Save only an exclusive older-page boundary; the committed high-water mark stays put.
               pending.before = messages[0].id;
-              progress = { ...previous, checkedAt: now, error: "", failures: 0, pollSoon: false, pending: { ...pending } };
+              progress = { ...previous, checkedAt: now, error: "", failures: 0, pollSoon: false, pending: { ...pending }, textVersion: 1 };
             }
           } catch (error) {
             const detail = /^telegram_(?:feed_http_\d{3}|feed_content_type|feed_too_large|preview_empty|preview_invalid|preview_overflow)$/.test(error?.message || "")
@@ -3332,9 +3477,10 @@ export class BoardStore {
         }
       };
       await Promise.all([runner(), runner(), runner()]);
-      await this.mergeAutomaticCoinIssues("telegram", grouped, currentIds);
+      const activeBodies = await this.mergeAutomaticCoinIssues("telegram", grouped, currentIds);
       // A crash or failed issue write must replay the page, never commit a cursor past missing content.
       await this.state.storage.put(TELEGRAM_STATUS_KEY, nextStatus);
+      try { await this.cleanupTelegramBodies(activeBodies); } catch (_error) { console.error("telegram_body_cleanup_delayed"); }
       return { ok: results.every(item => !item.error && !item.pending && !item.pollSoon), channels: results };
     })().finally(() => { this.telegramRefreshPromise = null; });
     return this.telegramRefreshPromise;
@@ -4217,7 +4363,8 @@ export class BoardStore {
     }
     if (exchange === "telegram") {
       const result = await this.refreshTelegramIssues();
-      return jsonResponse({ implementation: 7, telegramVersion: 3, exchange, ...result }, 200, this.env);
+      const archiveRepair = await this.repairTelegramArchive();
+      return jsonResponse({ implementation: 7, telegramVersion: 4, exchange, ...result, archiveRepair }, 200, this.env);
     }
     if (exchange === "delivery") {
       const market = await this.readMarketData();
@@ -5609,6 +5756,7 @@ export class BoardStore {
 
     if (request.method === "POST" && url.hostname === "board-store" && url.pathname === "/internal/coin-news-warm") {
       const [news, telegram] = await Promise.allSettled([this.refreshNewsStore(), this.refreshTelegramIssues()]);
+      await this.repairTelegramArchive();
       const result = news.status === "fulfilled" ? news.value : null;
       return jsonResponse({ ok: Boolean(result && !result.stale && result.coinNewsSynced === true
         && telegram.status === "fulfilled" && telegram.value.ok), fetchedAt: result?.store?.fetchedAt || 0,
@@ -5622,6 +5770,7 @@ export class BoardStore {
 
     if (request.method === "POST" && url.hostname === "board-store" && url.pathname === "/internal/telegram-catchup") {
       const result = await this.refreshTelegramIssues(true);
+      await this.repairTelegramArchive();
       return jsonResponse({ ok: result.ok }, 200, this.env);
     }
 

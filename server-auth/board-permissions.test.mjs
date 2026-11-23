@@ -507,7 +507,7 @@ test("Telegram fetch uses edge-supported manual redirects and rejects foreign re
   } finally { globalThis.fetch = previous; }
 });
 
-test("Telegram cron excerpts explicit mentions, coalesces, preserves news and failed sources, and honors deletion", async () => {
+test("Telegram cron imports authorized full text, coalesces, preserves news and failed sources, and honors deletion", async () => {
   const f = await coinNewsFixture();
   await f.write([f.news(1, "비트코인 소식", ["BTC"])]);
   await f.store.syncCoinNews();
@@ -526,7 +526,9 @@ test("Telegram cron excerpts explicit mentions, coalesces, preserves news and fa
   const issues = await list("BTC:bitcoin", "issues");
   assert.equal(issues.total, 7);
   assert.ok(issues.items.every(item => item.source === "telegram" && item.section === "issues"));
-  assert.ok(issues.includedPosts.every(post => Array.from(post.body).length <= 91 && post.body.split(" ").length <= 18));
+  assert.ok(issues.includedPosts.length > 0);
+  assert.ok(issues.includedPosts.every(post => post.fullText && post.body === "BTC 현물 거래소 동향 " + "짧은 공개 발췌자료 ".repeat(40)));
+  assert.ok(issues.items.every(post => !post.title.includes('관련 게시글') && !post.title.includes('@')));
   assert.equal((await list("BTC:bitcoin", "news")).total, 1);
   assert.equal((await list("AI:gensyn", "issues")).total, 0);
   assert.equal((await list("GAS:gas", "issues")).total, 0);
@@ -575,7 +577,7 @@ async function telegramCursorFixture(cursorId = '100') {
   const f = await coinNewsFixture(), channel = 'BChoSN', now = Date.now();
   const names = ['BChoSN', 'umjuninsight', 'deganlululala', 'enjoymyhobby', 'officialunivercityofcrypto', 'JoshuaDeukKOR', 'fireant_crypto'];
   await f.storage.put('coin-issues:telegram-status-v1', Object.fromEntries(names.map(name => [name, {
-    checkedAt: name === channel ? 1 : now, lastSuccessAt: now - 60000, cursorId, error: '',
+    checkedAt: name === channel ? 1 : now, lastSuccessAt: now - 60000, cursorId, error: '', textVersion: 1,
   }])));
   const status = async () => (await f.storage.get('coin-issues:telegram-status-v1'))[channel];
   const due = async () => {
@@ -708,6 +710,100 @@ test('Telegram migration uses the previous successful time and invalid/nondecrea
     const status = await f.status();
     assert.equal(status.cursorId, '40'); assert.equal(status.pending.before, '61'); assert.ok(status.error);
   }
+});
+
+test('authorized Telegram posts use first-sentence titles and immutable shared full bodies without enlarging list transfers', async () => {
+  const f = await coinNewsFixture(), id = 'telegram-' + 'a'.repeat(32);
+  const text = '🚨\n\n1. 비트코인과 이더리움 소식입니다. 다음 문장입니다.\n\n' + '원문 문단입니다. <script>는 텍스트입니다.\n'.repeat(500);
+  const original = { channel: 'BChoSN', id: '123', sourceUrl: 'https://t.me/BChoSN/123', text, createdAt: Date.now() - 1000 };
+  const prepared = await f.store.makeTelegramIssuePost(original, id);
+  assert.equal(prepared.title, '비트코인과 이더리움 소식입니다.');
+  assert.equal(prepared.fullText, true); assert.equal(prepared.bodyBytes, Buffer.byteLength(text));
+  await f.store.mergeAutomaticCoinIssues('telegram', new Map([['BTC:bitcoin', [prepared]], ['ETH:ethereum', [prepared]]]), new Set([id]));
+  const response = await f.request('/api/coin-issues?asset=BTC:bitcoin&section=issues');
+  const list = await response.json();
+  assert.equal(list.items[0].title, prepared.title); assert.equal(list.items[0].bodyBytes, Buffer.byteLength(text));
+  assert.equal(list.items[0].body, undefined); assert.deepEqual(list.includedPosts, []);
+  assert.ok(Buffer.byteLength(JSON.stringify(list)) < 2000);
+  const path = `/api/coin-issues/${id}?asset=BTC:bitcoin&section=issues`;
+  const post = (await (await f.request(path)).json()).post;
+  assert.equal(post.body, text); assert.equal(post.fullText, true);
+  assert.equal((await f.request(path, 'GET', undefined, '')).status, 401);
+  assert.equal((await f.storage.list({ prefix: 'coin-issues:telegram-body:' })).size, 1, 'several coins reference one immutable message body');
+  const updatedText = text + '\n마지막 부분만 수정했습니다.';
+  const next = await f.store.makeTelegramIssuePost({ ...original, text: updatedText }, id);
+  assert.equal(next.body, prepared.body, 'the preview did not change'); assert.notEqual(next.bodyHash, prepared.bodyHash);
+  await f.store.mergeAutomaticCoinIssues('telegram', new Map([['BTC:bitcoin', [next]], ['ETH:ethereum', [next]]]), new Set([id]));
+  const corrected = (await (await f.request(path)).json()).post;
+  assert.equal(corrected.body, updatedText); assert.equal(corrected.revision, 2, 'tail corrections still invalidate caches');
+  assert.equal((await f.storage.get(prepared.bodyKey)).body, text, 'old metadata cannot resolve to a newer body');
+  assert.equal((await f.store.readCoinIssuesForBackup())[next.bodyKey].body, updatedText);
+});
+
+test('legacy Telegram excerpts upgrade on demand with coalesced exact-message reads and bounded archive backfill', async () => {
+  const f = await coinNewsFixture(), id = 'telegram-' + 'b'.repeat(32), now = Date.now();
+  const legacy = { id, title: '@BChoSN · BTC 관련 게시글', body: '비트코인 첫 문장입니다. 오래된 발췌…',
+    source: 'telegram', sourceName: '@BChoSN', sourceUrl: 'https://t.me/BChoSN/10', createdAt: now - 1000, updatedAt: now - 1000, revision: 1 };
+  await f.storage.put('coin-issues:auto:BTC:bitcoin', [legacy]);
+  await f.storage.put('coin-issues:auto:ETH:ethereum', [legacy]);
+  const text = '비트코인 첫 문장입니다. 전체 문장입니다.\n\n모든 문단과 숫자 123을 유지합니다.\n끝.';
+  let calls = 0, release;
+  const gate = new Promise(resolve => { release = resolve; });
+  f.store.fetchTelegramChannel = async (channel, before) => {
+    calls++; assert.equal(channel, 'BChoSN'); assert.equal(before, '11'); await gate;
+    return { messages: [{ channel, id: '10', sourceUrl: legacy.sourceUrl, text, createdAt: now - 1000 }] };
+  };
+  const list = await (await f.request('/api/coin-issues?asset=BTC:bitcoin&section=issues')).json();
+  assert.equal(list.items[0].title, '비트코인 첫 문장입니다.'); assert.deepEqual(list.includedPosts, []);
+  assert.equal(calls, 0, 'opening the list never waits for source HTTP');
+  const path = `/api/coin-issues/${id}?asset=BTC:bitcoin&section=issues`;
+  const requests = [f.request(path), f.request(path)];
+  while (!calls) await new Promise(resolve => setTimeout(resolve, 1));
+  release();
+  const posts = await Promise.all((await Promise.all(requests)).map(async response => (await response.json()).post));
+  assert.equal(calls, 1); assert.ok(posts.every(post => post.body === text && post.fullText && post.revision === 2));
+  const repaired = await f.store.repairTelegramArchive();
+  assert.equal(repaired.complete, true); assert.equal(repaired.pending, 0);
+  assert.equal((await f.storage.get('coin-issues:auto:ETH:ethereum'))[0].fullText, true);
+  const count = calls; await f.store.repairTelegramArchive(); assert.equal(calls, count);
+});
+
+test('unavailable Telegram originals never masquerade as full text or resurrect a concurrently deleted issue', async () => {
+  const f = await coinNewsFixture(), id = 'telegram-' + 'c'.repeat(32), now = Date.now();
+  const legacy = { id, title: '@BChoSN · BTC 관련 게시글', body: '남아 있는 발췌', source: 'telegram', sourceName: '@BChoSN',
+    sourceUrl: 'https://t.me/BChoSN/10', createdAt: now - 1000, updatedAt: now - 1000, revision: 1 };
+  await f.storage.put('coin-issues:auto:BTC:bitcoin', [legacy]);
+  f.store.fetchTelegramChannel = async () => ({ messages: [{ channel: 'BChoSN', id: '9', sourceUrl: 'https://t.me/BChoSN/9', text: '다른 글', createdAt: now - 1000 }] });
+  const path = `/api/coin-issues/${id}?asset=BTC:bitcoin&section=issues`;
+  let response = await f.request(path); assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: 'issue_source_delayed' });
+  assert.deepEqual(await f.storage.get('coin-issues:auto:BTC:bitcoin'), [legacy]);
+  const pending = await f.store.repairTelegramArchive(); assert.equal(pending.complete, false); assert.equal(pending.pending, 1);
+  f.store.fetchTelegramChannel = async () => {
+    await f.storage.put('coin-issues:auto:BTC:bitcoin', []);
+    return { messages: [{ channel: 'BChoSN', id: '10', sourceUrl: legacy.sourceUrl, text: '원문 전체', createdAt: now - 1000 }] };
+  };
+  response = await f.request(path); assert.equal(response.status, 503);
+  assert.deepEqual(await f.storage.get('coin-issues:auto:BTC:bitcoin'), []);
+});
+
+test('full-body cleanup protects shared references and recent writes while eventually removing retired bodies', async () => {
+  const f = await coinNewsFixture(), id = 'telegram-' + 'd'.repeat(32), now = Date.now();
+  const original = { channel: 'BChoSN', id: '10', sourceUrl: 'https://t.me/BChoSN/10', text: '비트코인 첫 원문', createdAt: now - 1000 };
+  const first = await f.store.makeTelegramIssuePost(original, id);
+  await f.store.mergeAutomaticCoinIssues('telegram', new Map([['BTC:bitcoin', [first]], ['ETH:ethereum', [first]]]), new Set([id]));
+  const changed = { ...original, text: '비트코인 수정 원문' };
+  await f.store.repairTelegramIssue(first, 'BTC:bitcoin', changed);
+  const old = await f.storage.get(first.bodyKey); old.lastUsedAt = 1; await f.storage.put(first.bodyKey, old);
+  const orphan = 'coin-issues:telegram-body:orphan', fresh = 'coin-issues:telegram-body:fresh';
+  await f.storage.put(orphan, { body: 'unused', lastUsedAt: 1 });
+  await f.storage.put(fresh, { body: 'pending write', lastUsedAt: now });
+  await f.store.cleanupTelegramBodies(await f.store.mergeAutomaticCoinIssues('coinness', new Map(), new Set()));
+  assert.ok(await f.storage.get(first.bodyKey), 'another coin still references the old immutable version');
+  assert.equal(await f.storage.get(orphan), undefined); assert.ok(await f.storage.get(fresh));
+  await f.store.repairTelegramIssue(first, 'ETH:ethereum', changed);
+  await f.store.cleanupTelegramBodies(await f.store.mergeAutomaticCoinIssues('coinness', new Map(), new Set()));
+  assert.equal(await f.storage.get(first.bodyKey), undefined);
 });
 
 const feeSource = (fee = 12) => ({ protocols: [

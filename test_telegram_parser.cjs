@@ -5,7 +5,8 @@ const { chromium } = require('playwright');
 async function main() {
   const worker = fs.readFileSync(__dirname + '/server-auth/cloudflare-worker.js', 'utf8');
   const helpers = worker.slice(worker.indexOf('function telegramSourceUrl'), worker.indexOf('const USAGE_STATS_KEY'));
-  const channels = worker.match(/const TELEGRAM_CHANNELS = (\[[^;]+\]);/)[0];
+  const channels = worker.match(/const TELEGRAM_CHANNELS = (\[[^;]+\]);/)[0] + '\n'
+    + worker.match(/const TELEGRAM_TEXT_MAX_BYTES = \d+;/)[0];
   const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME_PATH
     || (process.platform === 'win32' ? 'C:/Program Files/Google/Chrome/Application/chrome.exe' : undefined) });
   try {
@@ -46,12 +47,16 @@ async function main() {
         + post('evil/125', '잘못된 채널') + post('BChoSN/not-id', '잘못된 번호')
         + post('BChoSN/126', '', time);
       const valid = validate(await parse(html, 'BChoSN'), 'BChoSN');
-      let futureRejected = false, overflowRejected = false;
+      let futureRejected = false, overflowRejected = false, oversizedTextRejected = false;
       try { validate(await parse(html + post('BChoSN/127', '미래', new Date(Date.now() + 86400000).toISOString()), 'BChoSN'), 'BChoSN'); }
       catch (_error) { futureRejected = true; }
       try { await parse(Array.from({ length: 201 }, (_, i) => post('BChoSN/' + (i + 1), '글')).join(''), 'BChoSN'); }
       catch (_error) { overflowRejected = true; }
-      return { messages: valid, futureRejected, overflowRejected };
+      const longText = '원문 첫 문장입니다.\n\n' + 'a'.repeat(25000) + '\n마지막 문장';
+      const long = validate(await parse(post('BChoSN/128', longText.replaceAll('\n', '<br>')), 'BChoSN'), 'BChoSN')[0];
+      try { validate(await parse(post('BChoSN/129', 'a'.repeat(80001)), 'BChoSN'), 'BChoSN'); }
+      catch (_error) { oversizedTextRejected = true; }
+      return { messages: valid, futureRejected, overflowRejected, fullTextIntact: long.text === longText, oversizedTextRejected };
     }, { helpers, channels });
     assert.equal(result.messages.length, 3);
     assert.equal(result.messages[0].text, '비트코인 BTC\nETH & 스테이블 <script>');
@@ -60,6 +65,8 @@ async function main() {
     assert.equal(result.messages[2].text, '', 'media-only messages remain pagination boundaries');
     assert.equal(result.futureRejected, true);
     assert.equal(result.overflowRejected, true, 'oversized pages fail instead of silently truncating');
+    assert.equal(result.fullTextIntact, true, 'the old 20,000-character slicing limit cannot truncate authorized text');
+    assert.equal(result.oversizedTextRejected, true, 'the safety limit fails explicitly instead of publishing a partial original');
     console.log('PASS: Telegram selector parser handles nested and fragmented text, entities, dates and strict source links');
   } finally { await browser.close(); }
 }
