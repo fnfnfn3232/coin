@@ -11,3 +11,13 @@
 - The refresh watchdog pins GitHub's documented API version. After a transient dispatch error it checks whether the requested run already exists; ambiguous outcomes are left for the next scheduled check, never blindly redispatched or labeled as successfully repaired.
 
 Tests: `node --test test_app_update.cjs test_futures_health.mjs test_comparison_health.cjs comparison-identity.test.cjs server-auth/board-permissions.test.mjs server-auth/security-regression.test.mjs`; existing browser regressions remain required.
+
+## 2026-11-23 Maintenance Audit
+
+- Initial baseline: 123 Node checks, 150 Python checks and all 12 browser suites passed. Production monitoring nevertheless reported 26 persistent alerts, demonstrating that mocked UI success is not evidence of healthy live providers.
+- APYWA replaced its legacy `data-slug` rating table with the public `v2-asset`/`v2-grade` layout. The collector now supports both layouts and was verified against all 794 current public entries. Incomplete pages, invalid grades, unsafe links and unrelated same-ticker assets remain rejected. The new list does not publish individual evaluation dates; these remain explicitly unavailable, not copied from old ratings or invented from collection time.
+- Market snapshot metadata and chunks now publish and read inside storage transactions. Injected mid-write failures roll back, concurrent readers cannot combine two generations, and older retry payloads receive HTTP 409 instead of replacing newer data. Same-generation retries remain supported.
+- Queued and approval-waiting refreshes remain busy even after the normal execution timeout, preventing a backlog of duplicate recovery runs. A failed Comparison Monitor on the same repository's main branch now wakes the existing watchdog immediately; bounded cooldowns, manual-disable protection and authenticated publication remain intact.
+- Comparison health rejects future, missing and non-finite catalog timestamps rather than treating those identities as healthy.
+- Existing market, board, uploads, links, Korean search, charts, futures, issue caches and login regressions remain required. Tests do not modify real posts, memberships or uploads. Real-device Safari/iOS and an exhaustive penetration/load test remain outside this audit.
+- GitHub scheduled jobs can still be delayed by the hosting platform. Persistent provider restrictions are kept visible in the private administrator history; successful workflow completion alone must not be presented as proof that every source recovered.

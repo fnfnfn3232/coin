@@ -8,6 +8,7 @@ import unicodedata
 import urllib.request
 from datetime import datetime, timezone
 from html.parser import HTMLParser
+from urllib.parse import urlsplit
 
 SOURCE = "https://www.apywa.io/en/cryptocurrencies"
 GRADES = {"A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D", "D-", "NR"}
@@ -112,6 +113,61 @@ class RatingsParser(HTMLParser):
             self.row = None
 
 
+class CurrentRatingsParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.rows = []
+        self.count_text = []
+        self.in_count = False
+        self.row = None
+        self.in_asset = False
+        self.part = None
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        classes = set(attrs.get("class", "").split())
+        if tag == "div" and "v2-list-bar" in classes:
+            self.in_count = True
+        if tag == "tr":
+            self.row = {"dateUnavailable": True}
+            self.in_asset = False
+            self.part = None
+        if self.row is None:
+            return
+        if tag == "a" and "v2-asset" in classes:
+            url = urlsplit(attrs.get("href", ""))
+            slug = re.fullmatch(r"/(?:en/)?cryptocurrencies/([a-zA-Z0-9_-]{0,120})", url.path)
+            if not slug or url.netloc not in {"", "www.apywa.io", "apywa.io"} or url.scheme not in {"", "https"}:
+                raise ValueError("apywa_invalid_slug")
+            self.row["slug"] = slug[1]
+            self.in_asset = True
+        elif self.in_asset and tag in {"span", "small"}:
+            self.part = (tag, "name" if tag == "span" else "symbol")
+        elif tag == "span" and "v2-grade" in classes:
+            self.part = (tag, "grade")
+        elif tag == "span" and "v2-score" in classes:
+            self.part = (tag, "score")
+
+    def handle_data(self, text):
+        if self.in_count:
+            self.count_text.append(text)
+        if self.row is not None and self.part:
+            key = self.part[1]
+            self.row[key] = self.row.get(key, "") + text.strip()
+
+    def handle_endtag(self, tag):
+        if tag == "div":
+            self.in_count = False
+        if self.part and tag == self.part[0]:
+            self.part = None
+        if tag == "a":
+            self.in_asset = False
+        if tag == "tr" and self.row is not None:
+            if "slug" in self.row:
+                self.rows.append(validate_rating(self.row, allow_unlinked=True))
+            self.row = None
+
+
 def validate_rating(raw, *, allow_unlinked=False):
     rating = {key: str(raw.get(key) or "").strip() for key in ("slug", "symbol", "name", "grade", "date", "round")}
     rating["symbol"] = rating["symbol"].upper()
@@ -124,7 +180,10 @@ def validate_rating(raw, *, allow_unlinked=False):
     score = float(raw.get("score"))
     if not math.isfinite(score) or not 0 <= score <= 100:
         raise ValueError("apywa_invalid_score")
-    rating["date"] = datetime.strptime(rating["date"].replace(".", "-"), "%Y-%m-%d").date().isoformat()
+    if not rating["date"] and raw.get("dateUnavailable") is True:
+        rating["dateUnavailable"] = True
+    else:
+        rating["date"] = datetime.strptime(rating["date"].replace(".", "-"), "%Y-%m-%d").date().isoformat()
     rating["score"] = score
     return rating
 
@@ -133,9 +192,14 @@ def parse_page(html):
     parser = RatingsParser()
     parser.feed(html)
     total = re.search(r"Total Records\s*:\s*([\d,]+)", " ".join(parser.text))
-    if not total or not parser.rows:
+    if total and parser.rows:
+        return parser.rows, int(total[1].replace(",", ""))
+    current = CurrentRatingsParser()
+    current.feed(html)
+    total = re.search(r"\b([\d,]+)\s+assets\b", " ".join(current.count_text), re.I)
+    if not total or not current.rows:
         raise ValueError("apywa_rating_table_missing")
-    return parser.rows, int(total[1].replace(",", ""))
+    return current.rows, int(total[1].replace(",", ""))
 
 
 def fetch_page(url):
@@ -171,12 +235,15 @@ def collect_ratings(previous=None, *, now=None, loader=None):
             raise ValueError("apywa_suspicious_count_drop")
         # A weekly round must not be partially replaced or roll back through an old CDN page.
         dates = {row["date"] for row in rows}
-        if len(dates) != 1 or max(dates) < str(old.get("evaluationDate") or ""):
+        undated = dates == {""} and all(row.get("dateUnavailable") is True for row in rows)
+        date_floor = str(old.get("evaluationDate") or old.get("evaluationFloorDate") or "")
+        if len(dates) != 1 or (not undated and ("" in dates or max(dates) < date_floor)):
             raise ValueError("apywa_inconsistent_evaluation_date")
         if max(dates) > datetime.fromtimestamp(now + 86400, timezone.utc).date().isoformat():
             raise ValueError("apywa_future_evaluation_date")
         return {"source": SOURCE, "checkedAt": now, "lastSuccessAt": now,
-                "nextCheckAt": now + CACHE_SECONDS, "evaluationDate": max(dates),
+                "nextCheckAt": now + CACHE_SECONDS, "evaluationDate": max(dates), "evaluationDateUnavailable": undated,
+                "evaluationFloorDate": max(dates) or date_floor,
                 "total": total, "rows": rows, "error": ""}
     except Exception as error:
         return {**old, "source": SOURCE, "checkedAt": now,

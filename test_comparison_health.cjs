@@ -41,3 +41,10 @@ test('freshness, native quotes, FX, identity expiry and ambiguous candidates fai
   assert.equal(states(audit([local('A')], [source('coinbase', [row('A')], { observedAt: NOW + 6000 })]))[0][2], 'delayed');
   assert.throws(() => states({}), /invalid_comparison_audit/);
 });
+
+test('future or invalid identity catalog clocks cannot be marked healthy', () => {
+  for (const catalogAt of [NOW + 6000, Infinity, NaN, 0, 'invalid']) {
+    const result = states(audit([local('A')], [source('gateio', [row('A')], { catalogAt }), source('coinbase', [row('USDT')])]));
+    assert.equal(result[0][2], 'identity');
+  }
+});

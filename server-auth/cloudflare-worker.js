@@ -3413,18 +3413,22 @@ export class BoardStore {
   }
 
   async readMarketData() {
-    const meta = await this.state.storage.get(MARKET_DATA_KEY);
-    if (!meta || !Number.isFinite(Number(meta.chunkCount))) return null;
-    const chunkCount = Math.max(0, Math.floor(Number(meta.chunkCount) || 0));
-    if (!chunkCount) return null;
-    const chunks = [];
-    for (let index = 0; index < chunkCount; index += 1) {
-      const chunk = await this.state.storage.get(`${MARKET_DATA_CHUNK_PREFIX}${index}`);
-      if (typeof chunk !== "string") return null;
-      chunks.push(chunk);
-    }
+    const serialized = await this.state.storage.transaction(async storage => {
+      const meta = await storage.get(MARKET_DATA_KEY);
+      if (!meta || !Number.isFinite(Number(meta.chunkCount))) return null;
+      const chunkCount = Math.max(0, Math.floor(Number(meta.chunkCount) || 0));
+      if (!chunkCount) return null;
+      const chunks = [];
+      for (let index = 0; index < chunkCount; index += 1) {
+        const chunk = await storage.get(`${MARKET_DATA_CHUNK_PREFIX}${index}`);
+        if (typeof chunk !== "string") return null;
+        chunks.push(chunk);
+      }
+      return chunks.join("");
+    });
+    if (!serialized) return null;
     try {
-      return normalizeMarketDataPayload(JSON.parse(chunks.join("")));
+      return normalizeMarketDataPayload(JSON.parse(serialized));
     } catch (_error) {
       return null;
     }
@@ -3529,30 +3533,30 @@ export class BoardStore {
 
     const serialized = JSON.stringify(normalized);
     const chunkCount = Math.max(1, Math.ceil(serialized.length / MARKET_DATA_CHUNK_CHARS));
-    const previousMeta = await this.state.storage.get(MARKET_DATA_KEY);
-    const previousChunkCount = Math.max(0, Math.floor(Number(previousMeta?.chunkCount) || 0));
-    for (let index = 0; index < chunkCount; index += 1) {
-      const start = index * MARKET_DATA_CHUNK_CHARS;
-      await this.state.storage.put(`${MARKET_DATA_CHUNK_PREFIX}${index}`, serialized.slice(start, start + MARKET_DATA_CHUNK_CHARS));
-    }
-    if (previousChunkCount > chunkCount) {
-      const staleKeys = [];
-      for (let index = chunkCount; index < previousChunkCount; index += 1) {
-        staleKeys.push(`${MARKET_DATA_CHUNK_PREFIX}${index}`);
+    const generatedAt = Math.max(0, Math.floor(Number(normalized.generatedAt) || 0));
+    const serializedBytes = new TextEncoder().encode(serialized).byteLength;
+    const published = await this.state.storage.transaction(async storage => {
+      const previousMeta = await storage.get(MARKET_DATA_KEY);
+      if (Number(previousMeta?.generatedAt) > generatedAt) return false;
+      const previousChunkCount = Math.max(0, Math.floor(Number(previousMeta?.chunkCount) || 0));
+      for (let index = 0; index < chunkCount; index += 1) {
+        const start = index * MARKET_DATA_CHUNK_CHARS;
+        await storage.put(`${MARKET_DATA_CHUNK_PREFIX}${index}`, serialized.slice(start, start + MARKET_DATA_CHUNK_CHARS));
       }
-      if (staleKeys.length) await this.state.storage.delete(staleKeys);
-    }
-    await this.state.storage.put(MARKET_DATA_KEY, {
-      generatedAt: Math.max(0, Math.floor(Number(normalized.generatedAt) || 0)),
-      updatedAt: Date.now(),
-      bytes: new TextEncoder().encode(serialized).byteLength,
-      chunkCount,
+      if (previousChunkCount > chunkCount) {
+        const staleKeys = [];
+        for (let index = chunkCount; index < previousChunkCount; index += 1) staleKeys.push(`${MARKET_DATA_CHUNK_PREFIX}${index}`);
+        await storage.delete(staleKeys);
+      }
+      await storage.put(MARKET_DATA_KEY, { generatedAt, updatedAt: Date.now(), bytes: serializedBytes, chunkCount });
+      return true;
     });
+    if (!published) return jsonResponse({ error: "stale_market_data" }, 409, this.env);
     await this.recordExchangeHistory(normalized);
     return jsonResponse({
       ok: true,
       generatedAt: normalized.generatedAt || 0,
-      bytes: new TextEncoder().encode(serialized).byteLength,
+      bytes: serializedBytes,
       chunkCount,
     }, 200, this.env);
   }

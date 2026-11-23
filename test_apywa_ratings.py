@@ -17,7 +17,59 @@ def page(slug="bitcoin", symbol="BTC", name="Bitcoin", grade="A+", score="95.26"
       </tr></tbody></table><div>Total Records : <b>{total}</b></div>'''
 
 
+def v2_page(slug="bitcoin", symbol="BTC", name="Bitcoin", grade="A", score="89.9", total=1):
+    return f'''<div class="v2-list-bar"><span>{total:,} assets</span><small>Click a column to sort</small></div>
+      <table><tbody><tr><td>1</td><td><a class="v2-asset" href="/en/cryptocurrencies/{slug}">
+      <img alt=""><span>{name}</span><small>{symbol}</small></a></td>
+      <td class="v2-muted">A+ <small>99.9</small></td><td><span class="v2-down">-1.2</span></td>
+      <td><span class="g-a v2-grade">{grade}</span><span class="v2-score">{score}</span></td>
+      </tr></tbody></table>'''
+
+
 class ApywaTests(unittest.TestCase):
+    def test_redesigned_list_uses_current_grade_and_does_not_invent_evaluation_dates(self):
+        rows, total = parse_page(v2_page())
+        self.assertEqual(total, 1)
+        self.assertEqual(rows[0]["grade"], "A")
+        self.assertEqual(rows[0]["score"], 89.9)
+        self.assertEqual(rows[0]["symbol"], "BTC")
+        self.assertEqual(rows[0]["slug"], "bitcoin")
+        self.assertEqual(rows[0]["date"], "")
+        self.assertTrue(rows[0]["dateUnavailable"])
+        old = collect_ratings(now=NOW, loader=lambda _: page())
+        current = collect_ratings(old, now=NOW + 86400, loader=lambda _: v2_page())
+        self.assertEqual(current["error"], "")
+        self.assertEqual(current["evaluationDate"], "")
+        self.assertTrue(current["evaluationDateUnavailable"])
+        board = [{"symbol": "BTC", "englishName": "Bitcoin"}]
+        self.assertEqual(apply_ratings({"upbit": board}, current), 1)
+        self.assertEqual(board[0]["apywaRating"]["grade"], "A")
+        self.assertEqual(board[0]["apywaRating"]["date"], "")
+
+    def test_redesigned_pages_still_reject_incomplete_collections_and_invalid_grades(self):
+        old = collect_ratings(now=NOW, loader=lambda _: page())
+        for html in (v2_page(total=2), v2_page(grade="INVALID"), v2_page(score="nan"),
+                     v2_page(slug="../other"), v2_page().replace('class="v2-asset"', 'class="unrelated"')):
+            result = collect_ratings(old, now=NOW + 86400, loader=lambda _: html)
+            self.assertTrue(result["error"])
+            self.assertEqual(result["lastSuccessAt"], old["lastSuccessAt"])
+            self.assertEqual(result["rows"], old["rows"])
+
+    def test_redesigned_unlinked_row_is_counted_but_never_applied(self):
+        data = collect_ratings(now=NOW, loader=lambda _: v2_page(slug=""))
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(data["error"], "")
+        self.assertEqual(apply_ratings({"upbit": [{"symbol": "BTC", "englishName": "Bitcoin"}]}, data), 0)
+
+    def test_undated_layout_does_not_erase_the_last_verified_rollback_floor(self):
+        old = collect_ratings(now=NOW, loader=lambda _: page())
+        current = collect_ratings(old, now=NOW + 86400, loader=lambda _: v2_page())
+        self.assertEqual(current["evaluationDate"], "")
+        self.assertEqual(current["evaluationFloorDate"], old["evaluationDate"])
+        rolled_back = collect_ratings(current, now=NOW + 2 * 86400, loader=lambda _: page(date="2026.10.12"))
+        self.assertIn("inconsistent_evaluation_date", rolled_back["error"])
+        self.assertEqual(rolled_back["rows"], current["rows"])
+
     def test_reads_current_not_previous_grade(self):
         rows, total = parse_page(page())
         self.assertEqual(total, 1)

@@ -1,5 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const { readFileSync } = require('node:fs');
 const { recoveryPlan, updateIncident, watchdog } = require('./.github/scripts/refresh-watchdog.cjs');
 const NOW = Date.parse('2026-10-17T00:00:00Z');
 const run = (minutes, extra = {}) => ({ status: 'completed', conclusion: 'success', head_branch: 'main', event: 'schedule',
@@ -25,6 +26,23 @@ test('stale scheduler dispatches one recovery, with cooldown and busy protection
   assert.equal(recoveryPlan([run(45), run(5, { conclusion: 'failure' })], NOW).dispatch, false);
   assert.equal(recoveryPlan([run(45), run(2, { status: 'queued', conclusion: null })], NOW).dispatch, false);
   assert.equal(recoveryPlan([run(45), run(25, { status: 'in_progress', conclusion: null })], NOW).dispatch, true);
+});
+
+test('an old queued or approval-waiting refresh must not accumulate duplicate recovery runs', async () => {
+  for (const status of ['queued', 'pending', 'waiting', 'requested']) {
+    const args = fixture([run(180), run(90, { status, conclusion: null })]);
+    const result = await watchdog(args);
+    assert.equal(result.busy, true, status + ' work is still pending');
+    assert.equal(args.calls.dispatched.length, 0, 'another dispatch cannot repair a runner or approval queue');
+  }
+});
+
+test('a failed main-repository comparison monitor automatically wakes the existing watchdog', () => {
+  const workflow = readFileSync(require.resolve('./.github/workflows/refresh-watchdog.yml'), 'utf8');
+  assert.match(workflow, /workflow_run:\s+workflows: \['Comparison Monitor'\]\s+types: \[completed\]\s+branches: \[main\]/);
+  assert.match(workflow, /github\.event\.workflow_run\.conclusion == 'failure'/);
+  assert.match(workflow, /github\.event\.workflow_run\.head_repository\.full_name == github\.repository/);
+  assert.match(workflow, /workflow_dispatch:/);
 });
 test('other branches and pull request successes cannot hide stale main', () => {
   assert.equal(recoveryPlan([run(45), run(1, { head_branch: 'feature' }), run(1, { event: 'pull_request' })], NOW).stale, true);

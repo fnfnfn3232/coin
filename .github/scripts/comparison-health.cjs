@@ -13,7 +13,8 @@ function assessComparisonHealth(audit, now = Date.now()) {
   const rows = audit.local.map(item => {
     const key = identity.symbol(item.row, item.board);
     const listed = sources.flatMap(source => (source.index.get(key) || []).map(row => ({ source, row })));
-    const matches = listed.filter(({ source, row }) => (!additional.has(source.board) || now - source.catalogAt <= 86400000)
+    const matches = listed.filter(({ source, row }) => (!additional.has(source.board)
+      || (Number.isFinite(source.catalogAt) && source.catalogAt > 0 && source.catalogAt <= now + 5000 && now - source.catalogAt <= 86400000))
       && identity.matches(item.row, row, { baseBoard: item.board, referenceBoard: source.board, info: item.info }));
     // The browser rejects ambiguous matches within one exchange too.
     const unique = matches.filter(item => matches.filter(other => other.source.board === item.source.board).length === 1);

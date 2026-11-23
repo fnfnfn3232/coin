@@ -9,7 +9,8 @@ function recoveryPlan(runs, now = Date.now()) {
   const stamp = run => Date.parse(run.run_started_at || run.created_at || '') || 0;
   const lastSuccess = Math.max(0, ...relevant.filter(run => run.status === 'completed' && run.conclusion === 'success')
     .map(run => Date.parse(run.updated_at || run.created_at || '') || 0));
-  const busy = relevant.some(run => ['queued', 'pending', 'in_progress', 'waiting', 'requested'].includes(run.status) && now - stamp(run) < ACTIVE_MS);
+  const busy = relevant.some(run => ['queued', 'pending', 'waiting', 'requested'].includes(run.status)
+    || (run.status === 'in_progress' && now - stamp(run) < ACTIVE_MS));
   const stale = !lastSuccess || now - lastSuccess > STALE_MS;
   const lastAttempt = Math.max(0, ...relevant.map(stamp));
   return { stale, dispatch: stale && !busy && now - lastAttempt >= 15 * 60 * 1000, busy };

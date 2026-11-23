@@ -2,6 +2,10 @@ name: Refresh Watchdog
 
 on:
   workflow_dispatch:
+  workflow_run:
+    workflows: ['Comparison Monitor']
+    types: [completed]
+    branches: [main]
   push:
     branches: [main]
     paths:
@@ -22,6 +26,7 @@ concurrency:
 
 jobs:
   watchdog:
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

@@ -88,6 +88,58 @@ async function fixture({ read = true, write = false } = {}) {
   return { store, storage, member, request, rawRequest, post, adminToken, memberToken, adminPassword, env };
 }
 
+test("market publication cannot expose mixed chunks to a concurrent reader", async () => {
+  const f = await fixture();
+  const snapshot = (generatedAt, fill) => ({ generatedAt, boards: {}, marker: fill, padding: fill.repeat(600000), tail: fill });
+  const publish = payload => f.store.writeMarketData(new Request("https://worker.example/api/market-data", { method: "POST", body: JSON.stringify(payload) }));
+  await publish(snapshot(100, "A"));
+  const put = MemoryStorage.prototype.put;
+  let release, reached;
+  const paused = new Promise(resolve => { reached = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  MemoryStorage.prototype.put = async function(key, value) {
+    await put.call(this, key, value);
+    if (key === "market-data-v1:chunk:0" && String(value).includes('"generatedAt":200')) { reached(); await gate; }
+  };
+  let writing, reading;
+  try {
+    writing = publish(snapshot(200, "B"));
+    await paused;
+    reading = f.store.readMarketData();
+    await new Promise(resolve => setTimeout(resolve, 5));
+    release();
+    await writing;
+    const during = await reading;
+    assert.ok(during, "an in-progress publish must not turn a valid snapshot into missing data");
+    const expected = during.generatedAt === 100 ? "A" : "B";
+    assert.equal(during.marker, expected);
+    assert.equal(during.tail, expected, "metadata and every chunk must belong to the same generation");
+    assert.equal(during.padding, expected.repeat(600000));
+  } finally { release(); MemoryStorage.prototype.put = put; await Promise.allSettled([writing, reading]); }
+});
+
+test("failed market publication rolls back and older retries cannot overwrite a newer generation", async () => {
+  const f = await fixture();
+  const publish = (generatedAt, fill) => f.store.writeMarketData(new Request("https://worker.example/api/market-data", {
+    method: "POST", body: JSON.stringify({ generatedAt, boards: {}, marker: fill, padding: fill.repeat(600000), tail: fill }),
+  }));
+  await publish(200, "A");
+  const put = MemoryStorage.prototype.put;
+  MemoryStorage.prototype.put = async function(key, value) {
+    if (key === "market-data-v1:chunk:1") throw new Error("injected write failure");
+    return put.call(this, key, value);
+  };
+  try { await assert.rejects(publish(300, "B"), /injected write failure/); }
+  finally { MemoryStorage.prototype.put = put; }
+  const retained = await f.store.readMarketData();
+  assert.equal(retained.generatedAt, 200);
+  assert.equal(retained.marker, "A", "a failed publication cannot leave its first chunk live");
+  assert.equal(retained.tail, "A");
+  assert.equal((await publish(100, "C")).status, 409);
+  assert.equal((await f.store.readMarketData()).generatedAt, 200);
+  assert.equal((await publish(200, "A")).status, 200, "retrying the same generation remains supported");
+});
+
 test("coin issues require active login, fresh administrator password and isolate assets", async () => {
   const f = await fixture({ write: true });
   const list = "/api/coin-issues?asset=SKY%3Askyprotocol";
