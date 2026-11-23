@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-eGCDdiZXvatFzASkDqZGzq6Xs1p2fM1odDioLjp4fLI='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-da67F2I1NzN6dqmlC2KZ+6Woh3tZ6l0PyMRNvtkXcb4='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -19011,9 +19011,14 @@
       }
 
       function setViewMode(mode, options = {}) {
+        const previousMode = state.viewMode;
         const requestedMode = mode === "resources" ? orderedResourceMenuItems()[0]
           : ["news", "board", ...RESOURCE_MENU_ITEMS, "exchange-history"].includes(mode) ? mode : "market";
         state.viewMode = requestedMode === "board" && !canAccessFreeBoard() ? "market" : requestedMode;
+        if (previousMode !== state.viewMode) {
+          closeLivePriceSocket();
+          closePriceDifferenceStreams();
+        }
         const isMarketMode = state.viewMode === "market";
         const isNewsMode = state.viewMode === "news";
         const isBoardMode = state.viewMode === "board";

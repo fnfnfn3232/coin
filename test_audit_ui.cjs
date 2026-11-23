@@ -315,6 +315,14 @@ async function main() {
     await page.locator('#auditComparisonSelect').selectOption('none');
     assert.equal(await page.locator('[data-audit-change]').count(), 0);
     assert.deepEqual(errors, []);
+    await page.waitForFunction(() => window.__auditSockets.some(socket => socket.readyState === 1));
+    assert.equal(await page.evaluate(() => {
+      setViewMode('ranking');
+      return window.__auditSockets.filter(socket => socket.readyState === 1).length;
+    }), 0, 'navigation releases audit connections synchronously, before timers can run');
+    await page.locator('#resourcesMenuBtn').click();
+    await page.locator('[data-resource-view="audit"]').first().click();
+    await page.waitForFunction(() => window.__auditSockets.some(socket => socket.readyState === 1));
     await page.locator('#resourcesMenuBtn').click();
     await page.locator('[data-resource-view="ranking"]').first().click();
     assert.equal(await page.evaluate(() => [...window.__auditSockets].filter(socket => socket.readyState === 1).length), 0, 'audit subscriptions stop on navigation');

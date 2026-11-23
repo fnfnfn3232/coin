@@ -472,6 +472,28 @@ test("unknown baseline markets stay informational, but losing a previously verif
   } finally { Date.now = originalNow; }
 });
 
+test("confirmed incidents stay latched across monitoring gaps until actual recovery", async () => {
+  const f = await fixture(), originalNow = Date.now, now = Date.now();
+  const write = async (minute, state) => {
+    Date.now = () => now + minute * 60000;
+    return (await f.store.writeComparisonHealth(new Request("https://board-store/api/market-data?comparisonHealth=1", {
+      method: "POST", body: JSON.stringify({ rows: [["upbit", "BTC", state, "coinbase"]] }),
+    }))).json();
+  };
+  try {
+    await write(0, "delayed"); await write(15, "delayed");
+    assert.equal((await write(30, "delayed")).activeAlerts, 1);
+    const afterGap = await write(180, "delayed");
+    assert.equal(afterGap.activeAlerts, 1, "missing checks are not proof that an outage recovered");
+    assert.equal(afterGap.newAlerts, 0, "an existing incident must not send duplicate alerts after a gap");
+    assert.equal(afterGap.recoveredAlerts, 0);
+    assert.equal((await write(181, "ok")).recoveredAlerts, 1);
+    await write(200, "delayed");
+    const unconfirmedGap = await write(300, "delayed");
+    assert.equal(unconfirmedGap.activeAlerts, 0, "an unconfirmed streak still needs consecutive observations");
+  } finally { Date.now = originalNow; }
+});
+
 test("futures source failures participate in private persistent alerts without resetting unrelated coin incidents", async () => {
   const f = await fixture();
   const originalNow = Date.now;
@@ -730,9 +752,43 @@ test("an unavailable aggregator cannot suppress the reviewed official XDP spot i
   try {
     const value = await (await request("/api/price-difference-quotes?exchange=okx")).json();
     assert.deepEqual(value.assets, { XDP: ["Doppler Finance", "okx-doppler-finance"] });
+    assert.equal(value.identityPartial, true);
     assert.equal(value.identityError, "");
     assert.equal(value.prices.XDP, 0.02);
   } finally { globalThis.fetch = originalFetch; }
+});
+
+test("a partial official fallback preserves verified identities and retries before a six-hour cache can freeze it", async () => {
+  const f = await fixture(), previousFetch = globalThis.fetch, previousNow = Date.now;
+  let now = Date.now(), recovered = false, catalogCalls = 0;
+  const priorAt = now - 7 * 3600000;
+  await f.storage.put('price-difference-catalog-v4:okx', { assets: { BTC: ['Bitcoin', 'btc-bitcoin'] },
+    source: 'CoinPaprika', fetchedAt: priorAt, checkedAt: priorAt, error: '' });
+  Date.now = () => now;
+  globalThis.fetch = async url => {
+    if (String(url).includes('coinpaprika')) {
+      catalogCalls++;
+      if (!recovered) return new Response('provider unavailable', { status: 402 });
+      return Response.json([{ category: 'Spot', pair: 'BTC/USDT', quote_currency_id: 'usdt-tether',
+        base_currency_name: 'Bitcoin', base_currency_id: 'btc-bitcoin' }]);
+    }
+    throw new Error('unexpected network source');
+  };
+  try {
+    const partial = await f.store.readComparisonCatalog('okx', { BTC: 60000, XDP: .02 });
+    assert.deepEqual(partial.assets.BTC, ['Bitcoin', 'btc-bitcoin']);
+    assert.deepEqual(partial.assets.XDP, ['Doppler Finance', 'okx-doppler-finance']);
+    assert.equal(partial.fetchedAt, priorAt, 'unverified cached identities do not receive a new verification time');
+    assert.equal(partial.partial, true);
+    const afterFailure = catalogCalls;
+    await f.store.readComparisonCatalog('okx', { BTC: 60000, XDP: .02 });
+    assert.equal(catalogCalls, afterFailure, 'a partial result still backs off');
+    now += 300001; recovered = true;
+    const full = await f.store.readComparisonCatalog('okx', { BTC: 60000, XDP: .02 });
+    assert.ok(catalogCalls > afterFailure, 'partial catalog retries after five minutes, not six hours');
+    assert.equal(full.partial, undefined);
+    assert.equal(full.fetchedAt, now);
+  } finally { globalThis.fetch = previousFetch; Date.now = previousNow; }
 });
 
 test("four additional exchanges cache quote data separately from shared asset catalogs", async () => {

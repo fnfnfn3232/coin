@@ -3632,7 +3632,8 @@ export class BoardStore {
           || (row[2] === "no_market" && (prior || ["ok", "domestic"].includes(priorRows.get(id))));
         if (!actionable) continue;
         // Independent per-coin streaks prevent one flapping market masking another.
-        const continuous = prior && checkedAt >= prior[2] && checkedAt - Number(previous?.checkedAt || 0) <= 3600000;
+        const continuous = prior && (prior[4] === true
+          || (checkedAt >= prior[2] && checkedAt - Number(previous?.checkedAt || 0) <= 3600000));
         const item = continuous ? [...prior] : [id, checkedAt, checkedAt, 1, false];
         if (continuous && checkedAt - item[2] >= 10 * 60000) { item[2] = checkedAt; item[3]++; }
         if (!item[4] && item[3] >= 3 && checkedAt - item[1] >= 30 * 60000) { item[4] = true; newAlerts++; }
@@ -3767,7 +3768,9 @@ export class BoardStore {
     const key = `price-difference-catalog-v4:${exchange}`;
     const now = Date.now();
     const stored = await this.state.storage.get(key);
-    if (stored && now - stored.checkedAt < (stored.error ? 300000 : 6 * 3600000)) {
+    const legacyPartial = exchange === "okx" && stored?.source === "CoinPaprika unique assets / official listing"
+      && Object.keys(stored.assets || {}).length === 1 && stored.assets.XDP;
+    if (stored && now - stored.checkedAt < (stored.error || stored.partial || legacyPartial ? 300000 : 6 * 3600000)) {
       return now - stored.fetchedAt <= 86400000 ? stored : { ...stored, assets: {} };
     }
     const metadataOnly = !Object.keys(prices).length;
@@ -3775,6 +3778,7 @@ export class BoardStore {
     if (!this.comparisonCatalogPromises.has(exchange)) {
       const pending = (async () => {
         let payload;
+        let partial = false;
         try {
           let assets;
           let sourceName;
@@ -3805,6 +3809,7 @@ export class BoardStore {
               try { coins = await this.comparisonCoinsPromise; }
               catch (error) {
                 if (exchange !== "okx" || !toPositiveNumber(prices.XDP)) throw error;
+                partial = true;
                 coins = [];
               }
               // Identity candidates are not listing/price evidence. A browser must
@@ -3816,7 +3821,12 @@ export class BoardStore {
               sourceName = "CoinPaprika unique assets / official listing";
             }
           }
-          payload = { assets, source: sourceName, fetchedAt: now, checkedAt: now, error: "", candidatesOnly: metadataOnly };
+          if (exchange === "okx" && toPositiveNumber(prices.XDP)) assets.XDP = ["Doppler Finance", "okx-doppler-finance"];
+          if (exchange === "okx" && Object.keys(assets).length === 1 && assets.XDP) partial = true;
+          const retained = partial && stored?.fetchedAt > 0 && stored.fetchedAt <= now && now - stored.fetchedAt <= 86400000;
+          if (retained) assets = { ...stored.assets, ...assets };
+          payload = { assets, source: sourceName, fetchedAt: retained ? stored.fetchedAt : now,
+            checkedAt: now, error: "", candidatesOnly: metadataOnly, ...(partial ? { partial: true } : {}) };
         } catch (error) {
           payload = { assets: now - Number(stored?.fetchedAt || 0) <= 86400000 ? stored?.assets || {} : {},
             fetchedAt: stored?.fetchedAt || 0, checkedAt: now, candidatesOnly: Boolean(stored?.candidatesOnly),
@@ -3841,7 +3851,7 @@ export class BoardStore {
       if (this.comparisonCoinsExpiresAt && now > this.comparisonCoinsExpiresAt) this.comparisonCoinsPromise = null;
       const catalog = additional || exchange === "coinbase" ? await this.readComparisonCatalog(exchange, value?.prices || {}) : null;
       return jsonResponse({ ...value, ...(catalog ? { assets: catalog.assets, catalogAt: catalog.fetchedAt,
-        identityCandidatesOnly: Boolean(catalog.candidatesOnly), identitySource: catalog.source || "",
+        identityCandidatesOnly: Boolean(catalog.candidatesOnly), identityPartial: catalog.partial === true, identitySource: catalog.source || "",
         identityError: catalog.error, identityErrorDetail: catalog.errorDetail || "" } : {}) }, Object.keys(value?.prices || {}).length ? 200 : 503, this.env);
     };
     if (stored && now - stored.checkedAt < (stored.error ? 15000 : 25000)) return respond(stored);
