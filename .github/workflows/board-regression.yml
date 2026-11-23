@@ -11,6 +11,7 @@ on:
       - "test_security_ui.cjs"
       - "test_market_chart.cjs"
       - "test_spot_market_ui.cjs"
+      - "test_coin_issues.cjs"
       - "audit-report.js"
       - "test_audit_report.cjs"
       - "test_audit_ui.cjs"
@@ -36,6 +37,7 @@ on:
       - "test_security_ui.cjs"
       - "test_market_chart.cjs"
       - "test_spot_market_ui.cjs"
+      - "test_coin_issues.cjs"
       - "audit-report.js"
       - "test_audit_report.cjs"
       - "test_audit_ui.cjs"
@@ -91,3 +93,4 @@ jobs:
           node test_security_ui.cjs
           node test_market_chart.cjs
           node test_spot_market_ui.cjs
+          node test_coin_issues.cjs

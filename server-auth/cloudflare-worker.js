@@ -9,6 +9,55 @@ const API_BODY_MAX_BYTES = 256 * 1024;
 const BOARD_POSTS_KEY = "free-board-posts";
 const BOARD_ADMIN_LOGS_KEY = "free-board-admin-logs";
 const BOARD_CATEGORIES_KEY = "free-board-categories";
+const COIN_ISSUES_PREFIX = "coin-issues:";
+const SKY_ISSUE_BODY = `이제 비트코인 하락이 진정되었으니 좀 더 제대로 짚어보는 Sky protocol 사태
+
+지금 Sky (구 메이커다오) 의 stUSDS 가 사실상 디페깅되었습니다.
+
+✔️ 현재 상황
+
+1. Sky 의 창업자가 자신이 발행한 SKY 코인을 담보로 유저들이 예치해놓은 stUSDS 풀에서 스테이블코인을 1000억원 가량 대출해감.
+2. 너무 큰 스테이블코인이 유출되니 스테이블코인 예치자들은 자신의 스테이블코인 회수 불가.
+3. 예치자들이 자신의 돈을 못찾아가니까 이자율이 높아지면서 추가 스테이블코인 예치를 유도하고 있지만, 창업자가 스테이블코인으 다 빼가서 사람들이 무서워서 예치 안하는 중.
+4. stUSDS 예치자들은 지금 계속 손실보는 중.
+
+❓ 근데 뭐가 문제야? 맡겨둔 담보 잘있고 최악의 경우 담보 팔아서 예치자 돈주면 되잖아?
+* Sky 재단이 청산기능을 강제로 꺼놨음.
+
+1. 청산기능이 꺼져있으니 Sky 가격이 아무리 하락해도 청산 (담보를 팔아서 원금을 갚는 상황) 은 벌어지지 않음.
+2. 만약 갑자기 재단이 청산기능을 활성화 시키면 제2의 루나사태 시작.
+3. 지금 stUSDS 풀에 담보로 맡겨진 Sky 코인은 총 1조원이 넘음.
+4. 대출금은 2100억원 정도.
+5. 근데 Sky 코인이 청산이 시작되면, 1조치 코인을 시장에 다팔아도 오더북상 300억정도밖에 안나옴.
+6. 그럼 예치자는 자신의 스테이블코인 예치금액의 15%밖에 회수 못함.
+
+❗️ 와 이거 누가 Sky 악의적으로 공격한거 아님?
+거의 Sky 볼트를 공격한 수준임. 근데 이 사태를 만들어서 돈을 대출해간 사람이 "Sky의 창업자"
+
+요약
+1. Sky 대표가 자신이 찍어낸 Sky 코인을 담보로
+2. 유저들 돈 2000억원을 빌려가서
+3. 안갚아서 유저들 돈 다 묶인상황.
+4. 진짜 끝까지 안갚으면 청산인데
+5. 청산되는 순간 제2의 루나코인 -99% 예정.
+
+🇰🇷 더 큰 문제는 영어 못하는 국내거래소 투자자
+
+1. 지금 이 사태를 소위 말하는 "꾼" 들은 다 알고있고 이해하고 있음 그래서 Sky랑 연쇄청산 조심하는 중.
+2. 근데 업비트, 빗썸에 있는 아저씨들은 영어도 할줄 모르고 그냥 상장되어있으니까 거기서 투자하는거임.
+3. 루나처럼 갑자기 하락 시작하면, 영어를 할줄 아는 해외 투자자들은 "상황을 인지한 상태" 에서 리스크 테이킹을 하겠지만
+4. 한국 투자자들은 그냥 떨어지는 코인 저점인줄 알고 샀다가 투자자피해 발생 가능`;
+
+function coinIssueAsset(value) {
+  const key = String(value || "");
+  if (!/^[A-Z0-9]{1,40}:[a-z0-9]{1,100}$/.test(key)) return "";
+  return ["SKY:sky", "SKY:skyprotocol"].includes(key) ? "SKY:skyprotocol" : key;
+}
+
+function coinIssueSummary(post) {
+  const { id, title, createdAt, updatedAt, revision } = post;
+  return { id, title, createdAt, updatedAt, revision, author: "관리자" };
+}
 const USAGE_STATS_KEY = "usage-stats-v1";
 const NEWS_STORE_KEY = "coinness-news-store-v1";
 const MARKET_DATA_KEY = "market-data-v1";
@@ -1737,7 +1786,8 @@ async function requireGithubOidc(request, env) {
 }
 
 function isProtectedContentPath(url) {
-  return url.pathname === "/api/market-data"
+  return url.pathname === "/api/coin-issues" || url.pathname.startsWith("/api/coin-issues/")
+    || url.pathname === "/api/market-data"
     || url.pathname === "/api/price-difference-fx"
     || url.pathname === "/api/price-difference-quotes"
     || url.pathname === "/api/coinbase-futures"
@@ -2812,6 +2862,99 @@ export class BoardStore {
   async requireActiveAuth(request) {
     if (await this.getActiveSessionClaims(request)) return null;
     return jsonResponse({ error: "auth_required" }, 401, this.env);
+  }
+
+  async seedCoinIssues(asset) {
+    const key = COIN_ISSUES_PREFIX + "index:" + asset;
+    if (asset !== "SKY:skyprotocol" || await this.state.storage.get(key) !== undefined) return;
+    await this.state.storage.transaction(async storage => {
+      if (await storage.get(key) !== undefined) return;
+      const now = Date.now();
+      const post = { id: "sky-initial-issue", title: "Sky protocol 사태 · stUSDS 관련 이슈",
+        body: SKY_ISSUE_BODY, createdAt: now, updatedAt: now, revision: 1 };
+      await storage.put(COIN_ISSUES_PREFIX + "post:" + asset + ":" + post.id, post);
+      await storage.put(key, [coinIssueSummary(post)]);
+    });
+  }
+
+  async handleCoinIssues(request, url) {
+    const claims = await this.getActiveSessionClaims(request);
+    if (!claims) return jsonResponse({ error: "auth_required" }, 401, this.env);
+    const asset = coinIssueAsset(url.searchParams.get("asset"));
+    const match = url.pathname.match(/^\/api\/coin-issues(?:\/([a-z0-9-]{1,64}))?$/);
+    if (!asset || !match) return jsonResponse({ error: "invalid_coin_asset" }, 400, this.env);
+    const id = match[1] || "";
+    const indexKey = COIN_ISSUES_PREFIX + "index:" + asset;
+    if (request.method === "GET") {
+      await this.seedCoinIssues(asset);
+      if (id) {
+        const post = await this.state.storage.get(COIN_ISSUES_PREFIX + "post:" + asset + ":" + id);
+        return post ? this.recordApiResponse(jsonResponse({ post: { ...post, author: "관리자" } }, 200, this.env))
+          : jsonResponse({ error: "issue_not_found" }, 404, this.env);
+      }
+      const index = await this.state.storage.get(indexKey) || [];
+      const page = Math.max(1, Math.min(10, Math.floor(Number(url.searchParams.get("page")) || 1)));
+      return this.recordApiResponse(jsonResponse({
+        items: index.slice((page - 1) * 10, page * 10), page, total: index.length,
+      }, 200, this.env));
+    }
+    if (!["POST", "PUT", "DELETE"].includes(request.method) || (request.method === "POST" ? Boolean(id) : !id)) {
+      return jsonResponse({ error: "method_not_allowed" }, 405, this.env);
+    }
+    if (claims.role !== "admin") return jsonResponse({ error: "admin_required" }, 403, this.env);
+    const body = await parseJsonBody(request);
+    if (typeof body?.adminPassword !== "string" || !body.adminPassword) {
+      return jsonResponse({ error: "admin_password_required" }, 401, this.env);
+    }
+    const denied = await this.checkAdminPassword(request, body.adminPassword);
+    if (denied) return denied;
+    const creating = request.method === "POST";
+    const postId = creating ? String(body.id || "") : id;
+    if (creating && !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(postId)) {
+      return jsonResponse({ error: "invalid_issue_id" }, 400, this.env);
+    }
+    const title = typeof body.title === "string" ? body.title.trim() : "";
+    const text = typeof body.body === "string" ? body.body.replace(/\r\n?/g, "\n").trim() : "";
+    if (request.method !== "DELETE" && (!title || title.length > 120 || !text || text.length > 20000
+      || new TextEncoder().encode(text).length > 80000)) {
+      return jsonResponse({ error: "invalid_issue_text" }, 400, this.env);
+    }
+    await this.seedCoinIssues(asset);
+    const result = await this.state.storage.transaction(async storage => {
+      const postKey = COIN_ISSUES_PREFIX + "post:" + asset + ":" + postId;
+      const old = await storage.get(postKey);
+      const index = await storage.get(indexKey) || [];
+      if (creating && old) return old.title === title && old.body === text
+        ? { post: { ...old, author: "관리자" } } : { error: "issue_conflict", status: 409 };
+      if (!creating && !old) return { error: "issue_not_found", status: 404 };
+      if (!creating && body.revision !== old.revision) return { error: "issue_conflict", status: 409 };
+      if (creating && index.length >= 100) return { error: "issue_limit", status: 409 };
+      if (request.method === "DELETE") {
+        await storage.delete(postKey);
+        await storage.put(indexKey, index.filter(item => item.id !== postId));
+        return { ok: true };
+      }
+      const now = Date.now();
+      const post = { id: postId, title, body: text, createdAt: old?.createdAt || now,
+        updatedAt: now, revision: (old?.revision || 0) + 1 };
+      await storage.put(postKey, post);
+      await storage.put(indexKey, [coinIssueSummary(post), ...index.filter(item => item.id !== postId)]
+        .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)));
+      return { post: { ...post, author: "관리자" } };
+    });
+    return jsonResponse(result.error ? { error: result.error } : result, result.status || (creating ? 201 : 200), this.env);
+  }
+
+  async readCoinIssuesForBackup() {
+    const records = {};
+    let startAfter;
+    for (let page = 0; page < 100; page++) {
+      const batch = await this.state.storage.list({ prefix: COIN_ISSUES_PREFIX, limit: 1000, ...(startAfter ? { startAfter } : {}) });
+      for (const [key, value] of batch) records[key] = value;
+      if (batch.size < 1000) return records;
+      startAfter = [...batch.keys()].at(-1);
+    }
+    throw new Error("coin_issue_backup_too_large");
   }
 
   async getBoardWriteClaims(request) {
@@ -3916,6 +4059,7 @@ export class BoardStore {
         news,
         marketData,
         exchangeHistory,
+        coinIssues: await this.readCoinIssuesForBackup(),
         boardDailyPostCounts: Object.fromEntries(await this.state.storage.list({ prefix: BOARD_DAILY_POST_KEY_PREFIX })),
         media: mediaResult.media,
       },
@@ -5110,6 +5254,10 @@ export class BoardStore {
       }
     }
 
+    if (url.pathname === "/api/coin-issues" || url.pathname.startsWith("/api/coin-issues/")) {
+      return this.handleCoinIssues(request, url);
+    }
+
     if (request.method === "GET" && url.pathname === "/api/market-data") {
       return this.recordApiResponse(await this.handleMarketDataRequest(request, url));
     }
@@ -5637,6 +5785,10 @@ export default {
       if (!env.BOARD_STORE) return jsonResponse({ error: "screen_settings_storage_not_configured" }, 500, env);
       const id = env.BOARD_STORE.idFromName("free-board");
       return env.BOARD_STORE.get(id).fetch(request);
+    }
+    if (url.pathname === "/api/coin-issues" || url.pathname.startsWith("/api/coin-issues/")) {
+      if (!env.BOARD_STORE) return jsonResponse({ error: "coin_issues_storage_unavailable" }, 503, env);
+      return env.BOARD_STORE.get(env.BOARD_STORE.idFromName("free-board")).fetch(request);
     }
     if (url.pathname === "/api/market-data" && request.method === "GET") {
       if (!env.BOARD_STORE) return jsonResponse({ error: "market_data_storage_not_configured" }, 500, env);

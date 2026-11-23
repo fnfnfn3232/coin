@@ -87,6 +87,70 @@ async function fixture({ read = true, write = false } = {}) {
   return { store, storage, member, request, rawRequest, post, adminToken, memberToken, adminPassword, env };
 }
 
+test("coin issues require active login, fresh administrator password and isolate assets", async () => {
+  const f = await fixture({ write: true });
+  const list = "/api/coin-issues?asset=SKY%3Askyprotocol";
+  assert.equal((await f.request(list, "GET", undefined, "")).status, 401);
+  const response = await f.request(list);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("Cache-Control"), /no-store/);
+  const payload = await response.json();
+  assert.equal(payload.total, 1);
+  assert.equal(payload.items[0].body, undefined, "list summaries do not download the full text");
+  const seed = (await (await f.request("/api/coin-issues/sky-initial-issue?asset=SKY:sky")).json()).post;
+  assert.match(seed.body, /스테이블코인을 1000억원/);
+  assert.match(seed.body, /한국 투자자들은 그냥 떨어지는 코인 저점/);
+  assert.equal((await f.request("/api/coin-issues/sky-initial-issue?asset=SKY:otherasset")).status, 404);
+  const id = crypto.randomUUID();
+  const body = { id, title: "An issue", body: "<script>alert(1)</script>\nplain text", adminPassword: f.adminPassword };
+  assert.equal((await f.request(list, "POST", body)).status, 403, "posting approval is not issue-admin permission");
+  assert.equal((await f.request(list, "POST", { ...body, adminPassword: "" }, f.adminToken)).status, 401);
+  assert.equal((await f.request(list, "POST", { ...body, adminPassword: "wrong" }, f.adminToken)).status, 401);
+  const created = (await (await f.request(list, "POST", body, f.adminToken)).json()).post;
+  assert.equal(created.body, body.body);
+  assert.equal(created.adminPassword, undefined);
+  assert.equal(created.revision, 1);
+  await f.request(list, "POST", body, f.adminToken);
+  assert.equal((await (await f.request(list)).json()).total, 2, "retrying one create does not duplicate it");
+  const path = "/api/coin-issues/" + id + "?asset=SKY:skyprotocol";
+  const edited = (await (await f.request(path, "PUT", { ...body, title: "Updated", revision: 1 }, f.adminToken)).json()).post;
+  assert.equal(edited.revision, 2);
+  assert.equal((await f.request(path, "PUT", { ...body, revision: 1 }, f.adminToken)).status, 409);
+  assert.equal((await f.request(path, "DELETE", { adminPassword: f.adminPassword, revision: 1 }, f.adminToken)).status, 409);
+  assert.equal((await f.request(path, "DELETE", { adminPassword: f.adminPassword, revision: 2 }, f.adminToken)).status, 200);
+  assert.equal((await f.request(path)).status, 404);
+  assert.equal((await f.request(list, "POST", { ...body, id: crypto.randomUUID(), body: "x".repeat(20001) }, f.adminToken)).status, 400);
+  assert.equal((await f.request("/api/coin-issues?asset=..%2Fpasswords")).status, 400);
+  assert.equal((await f.storage.get("free-board-posts")).length, 1, "ordinary board data is untouched");
+});
+
+test("coin issue seed stays deleted and durable records are included in backup data", async () => {
+  const f = await fixture();
+  await f.request("/api/coin-issues?asset=SKY:skyprotocol");
+  const records = await f.store.readCoinIssuesForBackup();
+  assert.equal(Object.keys(records).length, 2);
+  assert.match(records["coin-issues:post:SKY:skyprotocol:sky-initial-issue"].body, /Sky protocol/);
+  assert.equal((await f.request("/api/coin-issues/sky-initial-issue?asset=SKY:skyprotocol", "DELETE",
+    { adminPassword: f.adminPassword, revision: 1 }, f.adminToken)).status, 200);
+  assert.equal((await (await f.request("/api/coin-issues?asset=SKY:skyprotocol")).json()).total, 0);
+  assert.equal((await (await f.request("/api/coin-issues?asset=BTC:bitcoin")).json()).total, 0);
+  assert.deepEqual(Object.keys(await f.store.readCoinIssuesForBackup()), ["coin-issues:index:SKY:skyprotocol"]);
+});
+
+test("coin issue concurrent writes preserve pagination and reject retired sessions", async () => {
+  const f = await fixture();
+  const path = "/api/coin-issues?asset=BTC:bitcoin";
+  const writes = await Promise.all(Array.from({ length: 11 }, (_, i) =>
+    f.request(path, "POST", { id: crypto.randomUUID(), title: "Issue " + i,
+      body: "Text", adminPassword: f.adminPassword }, f.adminToken)));
+  assert.ok(writes.every(response => response.status === 201));
+  assert.equal((await (await f.request(path)).json()).items.length, 10);
+  assert.equal((await (await f.request(path + "&page=2")).json()).items.length, 1);
+  f.store.getActiveSessionClaims = async () => null;
+  assert.equal((await f.request(path)).status, 401);
+  assert.equal((await f.store.handleCoinIssues(new Request("https://worker.example" + path), new URL("https://worker.example" + path))).status, 401);
+});
+
 const feeSource = (fee = 12) => ({ protocols: [
   { slug: "base", name: "Base", category: "Chain", protocolType: "chain", total24h: fee, total7d: 80, total30d: null, change_1d: -2, logo: "https://icons.llamao.fi/chains/base.jpg" },
   { slug: "ethereum", name: "Ethereum", category: "Chain", protocolType: "chain", total24h: 200, total7d: 1400, total30d: 6000 },

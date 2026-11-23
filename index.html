@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-numIEuORgao4Rd+S7nrq6h+hlhDIk50PT9ehzBNAXXQ='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-fqaFSkt59N1B00nmeNKJq07j1aadjcrtU7ExjHO+juE='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -7500,7 +7500,12 @@
         </div>
         <button class="coin-info-close" id="coinInfoCloseBtn" type="button">닫기</button>
       </div>
-      <div class="coin-info-body" id="coinInfoBody"></div>
+      <div class="coin-info-tabs" role="tablist" aria-label="코인 정보">
+        <button id="coinIntroTab" type="button" role="tab" aria-controls="coinInfoBody" aria-selected="true">소개</button>
+        <button id="coinIssuesTab" type="button" role="tab" aria-controls="coinIssuesPanel" aria-selected="false" tabindex="-1">뉴스·이슈</button>
+      </div>
+      <div class="coin-info-body" id="coinInfoBody" role="tabpanel" aria-labelledby="coinIntroTab"></div>
+      <div class="coin-issues-panel" id="coinIssuesPanel" role="tabpanel" aria-labelledby="coinIssuesTab" hidden></div>
     </section>
   </div>
 
@@ -7509,6 +7514,29 @@
     <button class="scroll-btn" id="scrollBottomBtn" type="button" aria-label="맨 아래로 이동">↓</button>
   </div>
 
+  <style>
+    .coin-info-tabs { display: flex; gap: 24px; padding: 0 24px; border-bottom: 1px solid var(--line); }
+    .coin-info-tabs button { border: 0; border-radius: 0; background: transparent; padding: 14px 0; font-size: 16px; color: var(--muted); }
+    .coin-info-tabs button[aria-selected="true"] { color: var(--accent); box-shadow: inset 0 -2px var(--accent); }
+    .coin-issues-panel { padding: 24px; min-width: 0; }
+    #coinInfoBody[hidden], #coinIssuesPanel[hidden] { display: none !important; }
+    .coin-issues-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+    .coin-issues-toolbar h3, .coin-issues-article h3 { margin: 0; font-size: 20px; line-height: 1.5; overflow-wrap: anywhere; }
+    .coin-issues-meta { color: var(--muted); font-size: 13px; line-height: 1.6; margin: 8px 0 18px; }
+    .coin-issues-list { list-style: none; margin: 0; padding: 0; }
+    .coin-issues-list li { border-bottom: 1px solid var(--line); padding: 15px 0; }
+    .coin-issues-list button { display: block; width: 100%; text-align: left; border: 0; padding: 0; background: transparent; color: var(--text); font-weight: 700; line-height: 1.6; font-size: 17px; overflow-wrap: anywhere; }
+    .coin-issues-list time { display: block; margin-top: 6px; color: var(--muted); font-size: 13px; }
+    .coin-issue-text { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 16px; line-height: 1.85; margin: 0; }
+    .coin-issue-form { display: grid; gap: 14px; }
+    .coin-issue-form label { display: grid; gap: 7px; font-size: 14px; }
+    .coin-issue-form input, .coin-issue-form textarea { width: 100%; min-width: 0; box-sizing: border-box; font-size: 16px; }
+    .coin-issue-form textarea { min-height: 280px; resize: vertical; line-height: 1.7; }
+    .coin-issue-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    .coin-issues-panel .danger { background: #482b32; border-color: #79434c; color: #ffe1e6; }
+    .coin-issue-error { margin: 12px 0; color: #d0757d; line-height: 1.6; overflow-wrap: anywhere; }
+    @media(max-width: 640px) { .coin-issues-panel { padding: 18px 14px; } .coin-info-tabs { padding: 0 14px; } }
+  </style>
   <script src="./vendor/js-md5.min.js"></script>
   <script src="./comparison-identity.js?v=762328f0a7b3"></script>
   <script src="./app-update.js?v=20261031-1"></script>
@@ -8143,6 +8171,8 @@
       const deleteAuthCloseBtn = document.getElementById("deleteAuthCloseBtn");
       const deleteAuthCancelBtn = document.getElementById("deleteAuthCancelBtn");
       const coinInfoModal = document.getElementById("coinInfoModal");
+      let coinIssuesView = null;
+      const coinIssuesCache = new Map();
       const coinInfoTitle = document.getElementById("coinInfoTitle");
       const coinInfoSubtitle = document.getElementById("coinInfoSubtitle");
       const coinInfoBody = document.getElementById("coinInfoBody");
@@ -14166,6 +14196,8 @@
       }
 
       function clearSiteLoginState() {
+        closeCoinInfo(true);
+        coinIssuesCache.clear();
         publicSpotBoards.clear();
         coinbaseFuturesClient.generation++;
         Object.assign(coinbaseFuturesClient, { rows: null, promise: null, checkedAt: 0, error: "" });
@@ -15478,16 +15510,219 @@
           : renderCoinInfoSection("정보 없음", `<p class="coin-info-text">저장된 코인 정보가 없습니다.</p>`);
       }
 
+      function coinIssueAssetKey(info) {
+        const symbol = String(info.symbol || "").toUpperCase();
+        const canonical = data.coinInfo?.[symbol];
+        const matched = canonical?.englishName && window.BlockscopeComparisonIdentity?.matches(
+          info, { ...canonical, symbol }, { baseBoard: state.board });
+        let name = String((matched && canonical.englishName) || info.englishName || symbol)
+          .normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 100) || symbol.toLowerCase();
+        if (symbol === "SKY" && ["sky", "skyprotocol"].includes(name)) name = "skyprotocol";
+        return `${symbol}:${name}`;
+      }
+
+      function coinIssueDraftChanged() {
+        const form = document.getElementById("coinIssueForm");
+        if (!form || coinIssuesView?.mode !== "edit") return false;
+        return form.elements.title.value !== (coinIssuesView.post?.title || "")
+          || form.elements.body.value !== (coinIssuesView.post?.body || "");
+      }
+
+      function coinIssueDate(at) {
+        return new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", dateStyle: "medium", timeStyle: "short" }).format(at);
+      }
+
+      function coinIssueError(error) {
+        return ({
+          invalid_password: "관리자 비밀번호가 올바르지 않습니다.",
+          admin_password_required: "관리자 비밀번호를 입력해 주세요.",
+          admin_required: "관리자만 변경할 수 있습니다.",
+          issue_conflict: "다른 창에서 변경된 글입니다. 목록에서 다시 열어 주세요.",
+          issue_not_found: "삭제되었거나 존재하지 않는 글입니다.",
+          invalid_issue_text: "제목과 본문 길이를 확인해 주세요.",
+          issue_limit: "이 코인의 글 저장 한도에 도달했습니다.",
+          login_locked: "비밀번호 확인이 잠시 제한되었습니다. 나중에 다시 시도해 주세요.",
+        })[error?.message] || "요청을 완료하지 못했습니다. 저장 요청이었다면 목록에서 결과를 확인해 주세요.";
+      }
+
+      function setCoinInfoTab(issues) {
+        if (issues && document.getElementById("coinIssuesTab").getAttribute("aria-selected") === "true") return;
+        if (!issues && coinIssueDraftChanged() && !window.confirm("작성 중인 내용을 버리고 소개로 이동할까요?")) return;
+        if (coinIssuesView?.busy) return;
+        const intro = document.getElementById("coinIntroTab");
+        const tab = document.getElementById("coinIssuesTab");
+        intro.setAttribute("aria-selected", String(!issues));
+        tab.setAttribute("aria-selected", String(issues));
+        intro.tabIndex = issues ? -1 : 0;
+        tab.tabIndex = issues ? 0 : -1;
+        coinInfoBody.hidden = issues;
+        document.getElementById("coinIssuesPanel").hidden = !issues;
+        if (!issues && coinIssuesView?.mode === "edit") coinIssuesView.mode = "list";
+        if (issues) {
+          if (!coinIssuesView.loaded) loadCoinIssues();
+          else renderCoinIssues();
+        }
+      }
+
+      function renderCoinIssues() {
+        const view = coinIssuesView;
+        const panel = document.getElementById("coinIssuesPanel");
+        if (!view) { panel.replaceChildren(); return; }
+        const admin = siteSessionRole === "admin";
+        const button = (action, text, cls = "") => `<button type="button" class="${cls}" data-coin-issue-action="${action}">${text}</button>`;
+        let content = "";
+        if (view.loading) content = '<p role="status">뉴스·이슈를 불러오는 중입니다.</p>';
+        else if (view.mode === "edit" || view.mode === "delete") {
+          const deleting = view.mode === "delete";
+          content = `<div class="coin-issues-toolbar"><h3>${deleting ? "이슈 삭제" : view.post ? "이슈 수정" : "이슈 작성"}</h3></div>
+            <form id="coinIssueForm" class="coin-issue-form">
+              ${deleting ? `<p>${escapeHtml(view.post.title)} 글을 삭제할까요?</p>` :
+                `<label>제목<input name="title" type="text" maxlength="120" required value="${escapeAttr(view.post?.title || "")}"></label>
+                <label>내용<textarea name="body" maxlength="20000" required>${escapeHtml(view.post?.body || "")}</textarea></label>`}
+              <label>관리자 비밀번호<input name="adminPassword" type="password" autocomplete="current-password" required></label>
+              <div class="coin-issue-actions">${button("cancel", "취소")}<button type="submit" class="${deleting ? "danger" : ""}">${deleting ? "삭제" : "저장"}</button></div>
+            </form>`;
+        } else if (view.mode === "read" && view.post) {
+          content = `<article class="coin-issues-article"><div class="coin-issues-toolbar">${button("list", "목록")}
+              ${admin ? `<div class="coin-issue-actions">${button("edit", "수정")}${button("delete", "삭제", "danger")}</div>` : ""}</div>
+            <h3>${escapeHtml(view.post.title)}</h3><div class="coin-issues-meta">관리자 작성 · ${escapeHtml(coinIssueDate(view.post.createdAt))}
+              ${view.post.revision > 1 ? ` · 수정 ${escapeHtml(coinIssueDate(view.post.updatedAt))}` : ""}</div>
+            <pre class="coin-issue-text">${escapeHtml(view.post.body)}</pre></article>`;
+        } else {
+          content = `<div class="coin-issues-toolbar"><h3>뉴스·이슈</h3>${admin ? button("new", "글쓰기") : ""}</div>
+            ${view.error ? button("retry", "다시 시도") : view.items.length ? `<ul class="coin-issues-list">${view.items.map(post =>
+              `<li><button type="button" data-coin-issue-id="${escapeAttr(post.id)}">${escapeHtml(post.title)}</button>
+                <time datetime="${new Date(post.createdAt).toISOString()}">관리자 · ${escapeHtml(coinIssueDate(post.createdAt))}</time></li>`).join("")}</ul>` : '<p class="muted">등록된 이슈가 없습니다.</p>'}
+            ${view.total > 10 ? `<div class="coin-issue-actions">${view.page > 1 ? button("previous", "이전") : ""}
+              <span>${view.page} / ${Math.ceil(view.total / 10)}</span>${view.page * 10 < view.total ? button("next", "다음") : ""}</div>` : ""}`;
+        }
+        panel.innerHTML = content + '<p id="coinIssueError" class="coin-issue-error" role="alert"></p>';
+        document.getElementById("coinIssueError").textContent = view.error || "";
+      }
+
+      async function loadCoinIssues(id = "") {
+        const view = coinIssuesView;
+        if (!view || !siteAuthConfirmed || isSiteLocked()) return;
+        const request = ++view.request;
+        view.loading = true;
+        view.error = "";
+        renderCoinIssues();
+        const query = `?asset=${encodeURIComponent(view.asset)}&page=${view.page}`;
+        try {
+          const cached = !id && coinIssuesCache.get(view.asset + ":" + view.page);
+          const payload = cached && Date.now() - cached.at < 60000 ? cached.payload :
+            await fetchServerAuth("/api/coin-issues" + (id ? "/" + encodeURIComponent(id) : "") + query, { method: "GET" });
+          if (coinIssuesView !== view || view.request !== request || !siteAuthConfirmed || isSiteLocked()) return;
+          if (id ? !payload.post || typeof payload.post.body !== "string"
+            : !Array.isArray(payload.items) || !Number.isInteger(payload.total)) throw new Error("invalid_issue_response");
+          if (id) { view.post = payload.post; view.mode = "read"; }
+          else {
+            view.items = payload.items;
+            view.total = payload.total;
+            view.mode = "list";
+            coinIssuesCache.set(view.asset + ":" + view.page, { payload, at: Date.now() });
+            if (coinIssuesCache.size > 100) coinIssuesCache.delete(coinIssuesCache.keys().next().value);
+          }
+          view.loaded = true;
+        } catch (error) {
+          if (coinIssuesView !== view || view.request !== request) return;
+          view.error = coinIssueError(error);
+        } finally {
+          if (coinIssuesView === view && view.request === request) { view.loading = false; renderCoinIssues(); }
+        }
+      }
+
+      async function saveCoinIssue(form) {
+        const view = coinIssuesView;
+        if (!view || view.busy || siteSessionRole !== "admin") return;
+        const deleting = view.mode === "delete";
+        const id = view.post?.id || view.newId;
+        const body = { adminPassword: form.elements.adminPassword.value, revision: view.post?.revision };
+        if (!deleting) Object.assign(body, { id, title: form.elements.title.value, body: form.elements.body.value });
+        form.elements.adminPassword.value = "";
+        view.busy = true;
+        view.error = "";
+        for (const key of coinIssuesCache.keys()) if (key.startsWith(view.asset + ":")) coinIssuesCache.delete(key);
+        form.querySelectorAll("button").forEach(button => button.disabled = true);
+        document.getElementById("coinIssueError").textContent = "";
+        try {
+          const payload = await fetchServerAuth("/api/coin-issues" + (view.post ? "/" + encodeURIComponent(id) : "")
+            + "?asset=" + encodeURIComponent(view.asset), {
+              method: deleting ? "DELETE" : view.post ? "PUT" : "POST", body: JSON.stringify(body),
+            });
+          if (coinIssuesView !== view || !siteAuthConfirmed || isSiteLocked()) return;
+          for (const key of coinIssuesCache.keys()) if (key.startsWith(view.asset + ":")) coinIssuesCache.delete(key);
+          view.busy = false;
+          if (deleting) { view.post = null; view.page = 1; await loadCoinIssues(); }
+          else { view.post = payload.post; view.mode = "read"; renderCoinIssues(); }
+        } catch (error) {
+          if (coinIssuesView !== view) return;
+          view.error = coinIssueError(error);
+          document.getElementById("coinIssueError").textContent = view.error;
+        } finally {
+          view.busy = false;
+          if (form.isConnected) form.querySelectorAll("button").forEach(button => button.disabled = false);
+        }
+      }
+
+      document.getElementById("coinIntroTab").addEventListener("click", () => setCoinInfoTab(false));
+      window.addEventListener("beforeunload", event => {
+        if (!coinIssueDraftChanged() && !coinIssuesView?.busy) return;
+        event.preventDefault();
+        event.returnValue = "";
+      });
+      document.getElementById("coinIssuesTab").addEventListener("click", () => setCoinInfoTab(true));
+      document.querySelector(".coin-info-tabs").addEventListener("keydown", event => {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        const issues = event.key === "End" || (event.key !== "Home" && document.getElementById("coinIntroTab").getAttribute("aria-selected") === "true");
+        const tab = document.getElementById(issues ? "coinIssuesTab" : "coinIntroTab");
+        tab.click(); tab.focus();
+      });
+      document.getElementById("coinIssuesPanel").addEventListener("submit", event => {
+        if (event.target.id !== "coinIssueForm") return;
+        event.preventDefault(); saveCoinIssue(event.target);
+      });
+      document.getElementById("coinIssuesPanel").addEventListener("click", event => {
+        const view = coinIssuesView;
+        if (!view || view.busy) return;
+        const post = event.target.closest("[data-coin-issue-id]");
+        if (post) { loadCoinIssues(post.dataset.coinIssueId); return; }
+        const action = event.target.closest("[data-coin-issue-action]")?.dataset.coinIssueAction;
+        if (["new", "edit", "delete"].includes(action) && siteSessionRole !== "admin") return;
+        if (action === "cancel") {
+          if (coinIssueDraftChanged() && !window.confirm("작성 중인 내용을 버릴까요?")) return;
+          view.mode = "list"; loadCoinIssues(view.post?.id || "");
+        } else if (["new", "edit", "delete"].includes(action)) {
+          if (action === "new") { view.post = null; view.newId = crypto.randomUUID(); }
+          view.mode = action === "delete" ? "delete" : "edit";
+          view.error = ""; renderCoinIssues();
+          document.querySelector("#coinIssueForm input")?.focus();
+        } else if (["list", "retry", "previous", "next"].includes(action)) {
+          if (action === "previous") view.page--;
+          if (action === "next") view.page++;
+          loadCoinIssues();
+        }
+      });
+
       function openCoinInfo(symbol, fallbackRow = null) {
+        if (coinIssuesView?.busy || (coinIssueDraftChanged() && !window.confirm("작성 중인 내용을 버리고 다른 코인을 열까요?"))) return;
         const info = getCoinInfo(symbol, fallbackRow);
+        coinIssuesView = { asset: coinIssueAssetKey(info), page: 1, items: [], total: 0, mode: "list",
+          post: null, loaded: false, loading: false, request: 0, busy: false, error: "" };
         coinInfoTitle.innerHTML = renderCoinIdentity(fallbackRow || info, info.koreanName || info.symbol);
         coinInfoSubtitle.textContent = `${info.symbol}${info.englishName ? ` · ${info.englishName}` : ""}`;
         coinInfoBody.innerHTML = renderCoinInfo(info);
+        document.getElementById("coinIssuesPanel").replaceChildren();
+        setCoinInfoTab(false);
         coinInfoModal.classList.remove("hidden");
         coinInfoCloseBtn.focus();
       }
 
-      function closeCoinInfo() {
+      function closeCoinInfo(force = false) {
+        if (force !== true && (coinIssuesView?.busy || (coinIssueDraftChanged() && !window.confirm("작성 중인 내용을 버리고 닫을까요?")))) return;
+        coinIssuesView = null;
+        document.getElementById("coinIssuesPanel").replaceChildren();
         coinInfoModal.classList.add("hidden");
       }
 
