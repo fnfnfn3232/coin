@@ -28,6 +28,7 @@ async function main() {
   let slowAsset = '';
   let releaseSlow;
   let failIssueLists = false;
+  let detailDelayMs = 0;
   try {
     async function start(role, clock = false) {
       const context = await browser.newContext({ viewport: { width: 1440, height: 980 } });
@@ -54,17 +55,24 @@ async function main() {
         if (!url.pathname.startsWith('/api/coin-issues')) return route.fulfill({ json: {}, headers });
         const asset = url.searchParams.get('asset');
         const method = route.request().method();
-        requests.push({ asset, method });
+        const id = url.pathname.split('/')[3];
+        requests.push({ asset, method, id });
         if (asset === slowAsset && method === 'GET') await new Promise(resolve => { releaseSlow = resolve; });
         const records = posts.get(asset) || [];
-        const id = url.pathname.split('/')[3];
         if (method === 'GET') {
           if (id) {
+            if (detailDelayMs) await new Promise(resolve => setTimeout(resolve, detailDelayMs));
             const post = records.find(item => item.id === id);
             return route.fulfill({ json: post ? { post } : { error: 'issue_not_found' }, status: post ? 200 : 404, headers });
           }
           if (failIssueLists) return route.fulfill({ json: { error: 'temporary_failure' }, status: 503, headers });
-          return route.fulfill({ json: { items: records.map(({ body, ...post }) => post), total: records.length, page: 1 }, headers });
+          let remaining = 24 * 1024;
+          const includedPosts = records.slice(0, 10).filter(post => {
+            const bytes = Buffer.byteLength(JSON.stringify(post));
+            if (bytes > 8 * 1024 || bytes > remaining) return false;
+            remaining -= bytes; return true;
+          });
+          return route.fulfill({ json: { items: records.map(({ body, ...post }) => post), includedPosts, total: records.length, page: 1 }, headers });
         }
         const body = route.request().postDataJSON();
         if (role !== 'admin') return route.fulfill({ json: { error: 'admin_required' }, status: 403, headers });
@@ -100,7 +108,18 @@ async function main() {
     assert.match(await page.locator('#coinInfoBody').textContent(), /거래소 공식 소개/);
     assert.equal(requests.length, 0, 'opening the introduction does not fetch every coin issue board');
     await page.locator('#coinIssuesTab').click();
-    await page.getByRole('button', { name: seed.title, exact: true }).click();
+    await page.getByRole('button', { name: seed.title, exact: true }).waitFor();
+    detailDelayMs = 750;
+    const beforeFirstRead = requests.length;
+    const firstRead = await page.evaluate(id => {
+      const start = performance.now();
+      document.querySelector(`[data-coin-issue-id="${id}"]`).click();
+      return { text: document.querySelector('.coin-issue-text')?.textContent, elapsed: performance.now() - start };
+    }, seed.id);
+    assert.equal(firstRead.text, seed.body, 'the first click renders the included body synchronously');
+    assert.ok(firstRead.elapsed < 100, 'opening included text does not wait for the intentionally delayed API');
+    assert.equal(requests.length, beforeFirstRead, 'opening an included article makes no extra HTTP request');
+    detailDelayMs = 0;
     assert.equal(await page.locator('.coin-issue-text').textContent(), seed.body);
     assert.match(await page.locator('.coin-issues-meta').textContent(), /관리자 작성/);
     await page.getByRole('button', { name: '목록', exact: true }).click();
@@ -193,7 +212,9 @@ async function main() {
     const live = await start('admin', true), livePage = live.page;
     await livePage.evaluate(() => openCoinInfo('SKY'));
     await livePage.locator('#coinIssuesTab').click();
+    const autoRequests = requests.filter(request => request.id === automatic.id).length;
     await livePage.getByRole('button', { name: automatic.title, exact: true }).click();
+    assert.equal(requests.filter(request => request.id === automatic.id).length, autoRequests, 'automatic summaries open from the list payload');
     assert.match(await livePage.locator('.coin-issues-meta').textContent(), /코인니스 · 자동등록/);
     assert.equal(await livePage.getByRole('link', { name: '코인니스 원문 보기' }).getAttribute('href'), automatic.sourceUrl);
     assert.equal(await livePage.getByRole('button', { name: '수정', exact: true }).count(), 0);
@@ -203,6 +224,12 @@ async function main() {
     await livePage.locator('#coinInfoModal').screenshot({ path: path.join(screenshotRoot, 'coin-automatic-news-mobile.png') });
     await livePage.setViewportSize({ width: 1440, height: 980 });
     await livePage.getByRole('button', { name: '목록', exact: true }).click();
+    const originalCacheAt = await livePage.evaluate(() => coinIssuesCache.get('SKY:skyprotocol:1').at);
+    await livePage.clock.fastForward(1000);
+    await livePage.getByRole('button', { name: automatic.title, exact: true }).click();
+    await livePage.getByRole('button', { name: '목록', exact: true }).click();
+    assert.equal(await livePage.evaluate(() => coinIssuesCache.get('SKY:skyprotocol:1').at), originalCacheAt,
+      'reopening cached lists does not postpone their freshness deadline');
     const next = { ...automatic, id: 'coinness-123457', title: '추가 자동 뉴스', sourceUrl: 'javascript:alert(1)' };
     posts.set('SKY:skyprotocol', [next, seed, automatic]);
     await livePage.clock.fastForward(61000);
@@ -241,9 +268,46 @@ async function main() {
     const afterClose = requests.length;
     await livePage.clock.fastForward(61000);
     assert.equal(requests.length, afterClose, 'closed modals do not poll coin issue data');
+
+    const long = { ...seed, id: 'long-manual-issue', title: '긴 수동 글', body: '긴 본문입니다.\n'.repeat(1500) };
+    posts.set('SKY:skyprotocol', [seed, long]);
+    await livePage.evaluate(() => { coinIssuesCache.clear(); openCoinInfo('SKY'); });
+    await livePage.locator('#coinIssuesTab').click();
+    const longButton = livePage.getByRole('button', { name: long.title, exact: true });
+    await longButton.waitFor();
+    assert.equal(requests.filter(request => request.id === long.id).length, 0, 'large manual bodies are not bulk-downloaded with the list');
+    detailDelayMs = 250;
+    await longButton.hover();
+    await longButton.click();
+    await livePage.locator('.coin-issue-text').waitFor();
+    assert.equal(await livePage.locator('.coin-issue-text').textContent(), long.body);
+    assert.equal(requests.filter(request => request.id === long.id).length, 1, 'hover and click share one large-body request');
+    await livePage.getByRole('button', { name: '목록', exact: true }).click();
+    const repeat = await livePage.evaluate(id => {
+      document.querySelector(`[data-coin-issue-id="${id}"]`).click();
+      return document.querySelector('.coin-issue-text')?.textContent;
+    }, long.id);
+    assert.equal(repeat, long.body, 'reopening a fetched large article is synchronous');
+    assert.equal(requests.filter(request => request.id === long.id).length, 1);
+    await livePage.getByRole('button', { name: '목록', exact: true }).click();
+    posts.set('SKY:skyprotocol', [seed, { ...long, revision: 2, body: '새로 수정한 긴 글\n'.repeat(1500) }]);
+    await livePage.clock.fastForward(61000);
+    await livePage.waitForFunction(() => coinIssuesView.items.some(post => post.id === 'long-manual-issue' && post.revision === 2));
+    await livePage.getByRole('button', { name: long.title, exact: true }).click();
+    await livePage.waitForFunction(() => document.querySelector('.coin-issue-text')?.textContent.startsWith('새로 수정한 긴 글'));
+    assert.equal(requests.filter(request => request.id === long.id).length, 2, 'new revisions invalidate cached bodies');
+    const expired = await livePage.evaluate(id => {
+      const view = coinIssuesView;
+      localStorage.setItem(LOCK_AUTH_UNTIL_KEY, String(Date.now() - 1));
+      loadCoinIssues(id);
+      return { confirmed: siteAuthConfirmed, details: view.details.size, pending: view.pendingDetails.size,
+        hidden: document.getElementById('coinInfoModal').classList.contains('hidden') };
+    }, seed.id);
+    assert.deepEqual(expired, { confirmed: false, details: 0, pending: 0, hidden: true }, 'expired login cannot open private cached text');
+    assert.equal(await livePage.evaluate(() => coinIssuesCache.size), 0);
     await live.context.close();
     assert.deepEqual(errors, []);
-    console.log('PASS: per-asset issues, admin CRUD, automatic news attribution, safe source URLs, background updates, failure recovery, draft protection, XSS, reload, privacy and desktop/mobile layout');
+    console.log('PASS: synchronous first/repeat article opening without detail HTTP, bounded inline bodies, coalesced long-body prefetch, revision invalidation, admin CRUD, automatic news, XSS, drafts, expiry/logout privacy and responsive layout');
   } finally { await browser.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

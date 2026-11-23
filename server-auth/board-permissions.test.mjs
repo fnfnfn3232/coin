@@ -97,7 +97,7 @@ test("coin issues require active login, fresh administrator password and isolate
   assert.match(response.headers.get("Cache-Control"), /no-store/);
   const payload = await response.json();
   assert.equal(payload.total, 1);
-  assert.equal(payload.items[0].body, undefined, "list summaries do not download the full text");
+  assert.equal(payload.items[0].body, undefined, "summary metadata stays separate from bounded included bodies");
   const seed = (await (await f.request("/api/coin-issues/sky-initial-issue?asset=SKY:sky")).json()).post;
   assert.match(seed.body, /스테이블코인을 1000억원/);
   assert.match(seed.body, /한국 투자자들은 그냥 떨어지는 코인 저점/);
@@ -150,6 +150,55 @@ test("coin issue concurrent writes preserve pagination and reject retired sessio
   f.store.getActiveSessionClaims = async () => null;
   assert.equal((await f.request(path)).status, 401);
   assert.equal((await f.store.handleCoinIssues(new Request("https://worker.example" + path), new URL("https://worker.example" + path))).status, 401);
+});
+
+test("issue lists include only bounded current-page bodies; oversized posts remain available on demand", async () => {
+  const f = await fixture();
+  const path = "/api/coin-issues?asset=BTC:bitcoin";
+  const ids = [];
+  for (let i = 0; i < 12; i++) {
+    const id = crypto.randomUUID(); ids.push(id);
+    const body = i === 11 ? "큰 본문".repeat(3000) : '"'.repeat(3000);
+    assert.equal((await f.request(path, "POST", { id, title: "Issue " + i, body, adminPassword: f.adminPassword }, f.adminToken)).status, 201);
+  }
+  const response = await f.request(path), list = await response.json();
+  assert.match(response.headers.get("Cache-Control"), /no-store/);
+  assert.equal(list.items.length, 10);
+  assert.ok(list.includedPosts.length > 0 && list.includedPosts.length < 10);
+  const bytes = list.includedPosts.map(post => new TextEncoder().encode(JSON.stringify(post)).byteLength);
+  assert.ok(bytes.every(value => value <= 8 * 1024));
+  assert.ok(bytes.reduce((sum, value) => sum + value, 0) <= 24 * 1024, "budget counts serialized UTF-8 bytes, including escaping");
+  assert.ok(list.includedPosts.every(post => list.items.some(item => item.id === post.id && item.revision === post.revision)));
+  assert.ok(list.includedPosts.every(post => post.id !== ids[11]));
+  assert.ok(list.items.every(post => post.body === undefined));
+  const full = await (await f.request("/api/coin-issues/" + ids[11] + "?asset=BTC:bitcoin")).json();
+  assert.equal(full.post.body, "큰 본문".repeat(3000));
+  const second = await (await f.request(path + "&page=2")).json();
+  assert.equal(second.items.length, 2);
+  assert.ok(second.includedPosts.every(post => !list.items.some(item => item.id === post.id)));
+  assert.equal((await f.request(path, "GET", undefined, "")).status, 401);
+});
+
+test("article reads and initialized lists do not wait for news indexing", async () => {
+  const f = await fixture();
+  await f.request("/api/coin-issues?asset=SKY:skyprotocol");
+  let release, calls = 0;
+  const background = new Promise(resolve => { release = resolve; });
+  f.store.syncCoinNewsSafely = () => { calls++; return background; };
+  const tasks = [];
+  f.store.state.waitUntil = task => tasks.push(task);
+  await f.storage.put("coin-issues:auto-sync", { newsAt: 1, marketAt: 1 });
+  let timer;
+  try {
+    const results = await Promise.race([
+      Promise.all([f.request("/api/coin-issues/sky-initial-issue?asset=SKY:skyprotocol"),
+        f.request("/api/coin-issues?asset=SKY:skyprotocol")]),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("reads waited for indexing")), 1000); }),
+    ]);
+    assert.ok(results.every(response => response.status === 200));
+    assert.equal(calls, 1, "only the list schedules one background task; reading a post does not run the importer");
+    assert.equal(tasks.length, 1);
+  } finally { clearTimeout(timer); release({ ok: true }); await Promise.all(tasks); }
 });
 
 async function coinNewsFixture() {

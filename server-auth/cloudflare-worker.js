@@ -12,6 +12,8 @@ const BOARD_CATEGORIES_KEY = "free-board-categories";
 const COIN_ISSUES_PREFIX = "coin-issues:";
 const COIN_NEWS_CRON = "*/10 * * * *";
 const COIN_NEWS_LIMIT = 50;
+const COIN_ISSUE_INLINE_POST_BYTES = 8 * 1024;
+const COIN_ISSUE_INLINE_PAGE_BYTES = 24 * 1024;
 const SKY_ISSUE_BODY = `이제 비트코인 하락이 진정되었으니 좀 더 제대로 짚어보는 Sky protocol 사태
 
 지금 Sky (구 메이커다오) 의 stUSDS 가 사실상 디페깅되었습니다.
@@ -59,6 +61,7 @@ function coinIssueAsset(value) {
 function coinIssueSummary(post) {
   const { id, title, createdAt, updatedAt, revision } = post;
   return { id, title, createdAt, updatedAt, revision,
+    ...(typeof post.body === "string" ? { bodyBytes: new TextEncoder().encode(post.body).byteLength } : {}),
     author: post.source === "coinness" ? "코인니스" : "관리자",
     ...(post.source === "coinness" ? { source: "coinness", sourceUrl: post.sourceUrl } : {}) };
 }
@@ -2966,7 +2969,14 @@ export class BoardStore {
     const id = match[1] || "";
     const indexKey = COIN_ISSUES_PREFIX + "index:" + asset;
     if (request.method === "GET") {
-      const sync = await this.syncCoinNewsSafely();
+      let sync = { ok: true };
+      if (!id) {
+        const initialized = await this.state.storage.get(COIN_ISSUES_PREFIX + "auto-sync");
+        if (initialized && typeof this.state.waitUntil === "function") {
+          this.state.waitUntil(this.syncCoinNewsSafely());
+          sync.ok = this.coinNewsSyncFailed !== true;
+        } else sync = await this.syncCoinNewsSafely();
+      }
       await this.seedCoinIssues(asset);
       const automatic = await this.state.storage.get(COIN_ISSUES_PREFIX + "auto:" + asset) || [];
       if (id) {
@@ -2978,8 +2988,22 @@ export class BoardStore {
       const index = [...(await this.state.storage.get(indexKey) || []), ...automatic.map(coinIssueSummary)]
         .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
       const page = Math.max(1, Math.min(15, Math.floor(Number(url.searchParams.get("page")) || 1)));
+      const items = index.slice((page - 1) * 10, page * 10);
+      const includedPosts = [];
+      let remainingBytes = COIN_ISSUE_INLINE_PAGE_BYTES;
+      for (const item of items) {
+        if (item.bodyBytes > COIN_ISSUE_INLINE_POST_BYTES || remainingBytes <= 0) continue;
+        const stored = automatic.find(post => post.id === item.id)
+          || await this.state.storage.get(COIN_ISSUES_PREFIX + "post:" + asset + ":" + item.id);
+        if (!stored || stored.revision !== item.revision || typeof stored.body !== "string") continue;
+        const post = { ...stored, ...coinIssueSummary(stored) };
+        const bytes = new TextEncoder().encode(JSON.stringify(post)).byteLength;
+        if (bytes > COIN_ISSUE_INLINE_POST_BYTES || bytes > remainingBytes) continue;
+        includedPosts.push(post);
+        remainingBytes -= bytes;
+      }
       return this.recordApiResponse(jsonResponse({
-        items: index.slice((page - 1) * 10, page * 10), page, total: index.length, newsSyncDelayed: !sync.ok,
+        items, includedPosts, page, total: index.length, newsSyncDelayed: !sync.ok,
       }, 200, this.env));
     }
     if (!["POST", "PUT", "DELETE"].includes(request.method) || (request.method === "POST" ? Boolean(id) : !id)) {
@@ -3048,7 +3072,11 @@ export class BoardStore {
 
   async syncCoinNewsSafely() {
     if (!this.coinNewsSyncPromise) {
-      this.coinNewsSyncPromise = this.syncCoinNews().then(() => ({ ok: true })).catch(async error => {
+      this.coinNewsSyncPromise = this.syncCoinNews().then(() => {
+        this.coinNewsSyncFailed = false;
+        return { ok: true };
+      }).catch(async error => {
+        this.coinNewsSyncFailed = true;
         console.error("coin_news_sync_failed", String(error?.message || error).slice(0, 120));
         return { ok: false };
       }).finally(() => { this.coinNewsSyncPromise = null; });

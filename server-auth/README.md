@@ -125,6 +125,8 @@ GET /api/coin-issues/coinness-123456?asset=SKY:skyprotocol
 - Read access requires an active site session. All manual changes and automatic-news deletion require an administrator session and a fresh administrator password. Automatic source text cannot be edited; deleted news IDs stay suppressed on reimport.
 - Issue archives, deletion markers and import checkpoints are included in the encrypted database backup. Failed imports do not advance the checkpoint and are retried; existing entries remain readable.
 - An open issue list checks stored updates once a minute. Reading an article, writing a draft, hidden tabs and closed dialogs do not poll or discard edits.
+- Only the visible page (10 entries) may include short bodies: at most 8 KiB per serialized post and 24 KiB total. These texts open immediately from session memory without another detail request; metadata stays separate. Large manual bodies are fetched on hover/focus or click, with overlapping requests coalesced, never fetched for every coin.
+- Body caches expire after one minute, are invalidated by revisions and mutations, and are cleared on logout. Reading cached entries does not extend their original freshness timestamp. Direct article reads do not run the news importer; initialized list requests reindex in the background.
 
 Logout:
 

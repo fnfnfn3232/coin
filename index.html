@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-GgfphX2DROQO/w4DJMUgn76bqOMni4T5FNKJg9dfshE='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-eGCDdiZXvatFzASkDqZGzq6Xs1p2fM1odDioLjp4fLI='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -15606,28 +15606,76 @@
         document.getElementById("coinIssueError").textContent = view.error || "";
       }
 
-      async function loadCoinIssues(id = "", background = false) {
+      function canReadCoinIssueCache() {
+        if (!siteAuthConfirmed || isSiteLocked()) return false;
+        if ([getLockAuthUntil(), getServerAuthTokenExpiry()].some(until => until > 0 && until <= Date.now())) {
+          handleServerAuthExpired(); return false;
+        }
+        return true;
+      }
+
+      function cachedCoinIssue(view, id) {
+        const cached = view.details.get(id);
+        const age = cached ? Date.now() - cached.at : -1;
+        return age >= 0 && age < 60000 ? cached.post : null;
+      }
+
+      function fetchCoinIssuePost(view, id) {
+        const cached = cachedCoinIssue(view, id);
+        if (cached) return Promise.resolve(cached);
+        if (view.pendingDetails.has(id)) return view.pendingDetails.get(id);
+        const pending = fetchServerAuth("/api/coin-issues/" + encodeURIComponent(id) + "?asset=" + encodeURIComponent(view.asset), { method: "GET" })
+          .then(payload => {
+            const post = payload.post;
+            if (!post || post.id !== id || typeof post.body !== "string") throw new Error("invalid_issue_response");
+            const summary = view.items.find(item => item.id === id);
+            if (coinIssuesView === view && canReadCoinIssueCache() && view.pendingDetails.get(id) === pending
+              && summary?.revision === post.revision) view.details.set(id, { post, at: Date.now() });
+            return post;
+          }).finally(() => { if (view.pendingDetails.get(id) === pending) view.pendingDetails.delete(id); });
+        view.pendingDetails.set(id, pending);
+        return pending;
+      }
+
+      async function loadCoinIssues(id = "", background = false, fresh = false) {
         const view = coinIssuesView;
-        if (!view || !siteAuthConfirmed || isSiteLocked()) return;
+        if (!view || !canReadCoinIssueCache()) return;
         const request = ++view.request;
+        if (id && fresh) { view.details.delete(id); view.pendingDetails.delete(id); }
+        const ready = id && cachedCoinIssue(view, id);
+        if (ready) {
+          Object.assign(view, { post: ready, mode: "read", loaded: true, loading: false, error: "" });
+          renderCoinIssues();
+          return;
+        }
         view.loading = !background;
         view.error = "";
         if (!background) renderCoinIssues();
         const query = `?asset=${encodeURIComponent(view.asset)}&page=${view.page}`;
         try {
-          const cached = !id && coinIssuesCache.get(view.asset + ":" + view.page);
-          const payload = cached && Date.now() - cached.at < 60000 ? cached.payload :
-            await fetchServerAuth("/api/coin-issues" + (id ? "/" + encodeURIComponent(id) : "") + query, { method: "GET" });
+          const cached = !id && !fresh && coinIssuesCache.get(view.asset + ":" + view.page);
+          const payload = id ? { post: await fetchCoinIssuePost(view, id) }
+            : cached && Date.now() - cached.at < 60000 ? cached.payload
+            : await fetchServerAuth("/api/coin-issues" + query, { method: "GET" });
           if (coinIssuesView !== view || view.request !== request || !siteAuthConfirmed || isSiteLocked()) return;
           if (id ? !payload.post || typeof payload.post.body !== "string"
             : !Array.isArray(payload.items) || !Number.isInteger(payload.total)) throw new Error("invalid_issue_response");
           if (id) { view.post = payload.post; view.mode = "read"; }
           else {
+            const validatedAt = cached && payload === cached.payload ? cached.at : Date.now();
+            const included = new Map((Array.isArray(payload.includedPosts) ? payload.includedPosts : [])
+              .filter(post => post && typeof post.body === "string").map(post => [post.id, post]));
+            const details = new Map();
+            for (const item of payload.items) {
+              const post = included.get(item.id) || view.details.get(item.id)?.post;
+              if (post?.revision === item.revision) details.set(item.id, { post, at: validatedAt });
+            }
+            view.details = details;
             view.items = payload.items;
             view.total = payload.total;
             view.newsSyncDelayed = payload.newsSyncDelayed === true;
             view.mode = "list";
-            coinIssuesCache.set(view.asset + ":" + view.page, { payload, at: Date.now() });
+            coinIssuesCache.set(view.asset + ":" + view.page, { payload, at: validatedAt });
             if (coinIssuesCache.size > 100) coinIssuesCache.delete(coinIssuesCache.keys().next().value);
           }
           view.loaded = true;
@@ -15650,6 +15698,8 @@
         form.elements.adminPassword.value = "";
         view.busy = true;
         view.error = "";
+        view.details.clear();
+        view.pendingDetails.clear();
         for (const key of coinIssuesCache.keys()) if (key.startsWith(view.asset + ":")) coinIssuesCache.delete(key);
         form.querySelectorAll("button").forEach(button => button.disabled = true);
         document.getElementById("coinIssueError").textContent = "";
@@ -15699,6 +15749,15 @@
         if (event.target.id !== "coinIssueForm") return;
         event.preventDefault(); saveCoinIssue(event.target);
       });
+      const prefetchCoinIssue = event => {
+        const view = coinIssuesView;
+        const id = event.target.closest("[data-coin-issue-id]")?.dataset.coinIssueId;
+        if (!id || !view || view.busy || view.mode !== "list" || view.pendingDetails.size >= 2 || !navigator.onLine
+          || !canReadCoinIssueCache()) return;
+        fetchCoinIssuePost(view, id).catch(() => {});
+      };
+      document.getElementById("coinIssuesPanel").addEventListener("pointerover", prefetchCoinIssue);
+      document.getElementById("coinIssuesPanel").addEventListener("focusin", prefetchCoinIssue);
       document.getElementById("coinIssuesPanel").addEventListener("click", event => {
         const view = coinIssuesView;
         if (!view || view.busy) return;
@@ -15709,7 +15768,7 @@
         if (action === "edit" && view.post?.source === "coinness") return;
         if (action === "cancel") {
           if (coinIssueDraftChanged() && !window.confirm("작성 중인 내용을 버릴까요?")) return;
-          view.mode = "list"; loadCoinIssues(view.post?.id || "");
+          view.mode = "list"; loadCoinIssues(view.post?.id || "", false, true);
         } else if (["new", "edit", "delete"].includes(action)) {
           view.request++;
           if (action === "new") { view.post = null; view.newId = crypto.randomUUID(); }
@@ -15726,8 +15785,10 @@
       function openCoinInfo(symbol, fallbackRow = null) {
         if (coinIssuesView?.busy || (coinIssueDraftChanged() && !window.confirm("작성 중인 내용을 버리고 다른 코인을 열까요?"))) return;
         const info = getCoinInfo(symbol, fallbackRow);
+        coinIssuesView?.details.clear();
+        coinIssuesView?.pendingDetails.clear();
         coinIssuesView = { asset: coinIssueAssetKey(info), page: 1, items: [], total: 0, mode: "list",
-          post: null, loaded: false, loading: false, request: 0, busy: false, error: "" };
+          post: null, details: new Map(), pendingDetails: new Map(), loaded: false, loading: false, request: 0, busy: false, error: "" };
         coinInfoTitle.innerHTML = renderCoinIdentity(fallbackRow || info, info.koreanName || info.symbol);
         coinInfoSubtitle.textContent = `${info.symbol}${info.englishName ? ` · ${info.englishName}` : ""}`;
         coinInfoBody.innerHTML = renderCoinInfo(info);
@@ -15739,6 +15800,8 @@
 
       function closeCoinInfo(force = false) {
         if (force !== true && (coinIssuesView?.busy || (coinIssueDraftChanged() && !window.confirm("작성 중인 내용을 버리고 닫을까요?")))) return;
+        coinIssuesView?.details.clear();
+        coinIssuesView?.pendingDetails.clear();
         coinIssuesView = null;
         document.getElementById("coinIssuesPanel").replaceChildren();
         coinInfoModal.classList.add("hidden");
