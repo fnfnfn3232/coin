@@ -3231,8 +3231,10 @@ export class BoardStore {
   async fetchTelegramChannel(channel) {
     const response = await fetch(`https://t.me/s/${channel}`, { redirect: "error", signal: AbortSignal.timeout(7000),
       headers: { Accept: "text/html" } });
-    if (!response.ok || !/text\/html/i.test(response.headers.get("Content-Type") || "")) throw new Error("telegram_feed_unavailable");
+    if (!response.ok) throw new Error(`telegram_feed_http_${response.status}`);
+    if (!/text\/html/i.test(response.headers.get("Content-Type") || "")) throw new Error("telegram_feed_content_type");
     const bytes = await readBoundedRequestBody(response, 1024 * 1024);
+    if (!bytes) throw new Error("telegram_feed_too_large");
     const posts = await parseTelegramPreview(new TextDecoder().decode(bytes), channel);
     if (!posts.length) throw new Error("telegram_preview_empty");
     return posts;
@@ -3273,8 +3275,10 @@ export class BoardStore {
               }
             }
             nextStatus[channel] = { checkedAt: now, lastSuccessAt: now, observed: posts.length, matched, error: "" };
-          } catch (_error) {
-            nextStatus[channel] = { ...previous, checkedAt: now, error: "telegram_source_delayed" };
+          } catch (error) {
+            const detail = /^telegram_(?:feed_http_\d{3}|feed_content_type|feed_too_large|preview_empty)$/.test(error?.message || "")
+              ? error.message : ["TimeoutError", "TypeError", "ReferenceError"].includes(error?.name) ? error.name : "parse_or_transport_error";
+            nextStatus[channel] = { ...previous, checkedAt: now, error: "telegram_source_delayed", detail };
           }
           results.push({ channel, ...nextStatus[channel] });
         }
