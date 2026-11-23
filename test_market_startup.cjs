@@ -60,7 +60,8 @@ async function main() {
       } else if (url.pathname === '/api/coin-issues') {
         issueCalls++;
         issueAssets.push(url.searchParams.get('asset'));
-        result = { items: [issue], includedPosts: [issue], total: 1 };
+        result = url.searchParams.get('section') === 'news' ? { items: [], includedPosts: [], total: 0 }
+          : { items: [issue], includedPosts: [issue], total: 1 };
       } else if (url.pathname === '/api/coin-info') {
         if (holdIntroduction) await new Promise(resolve => heldIntroductions.push(resolve));
         const symbol = url.searchParams.get('symbol');
@@ -92,20 +93,20 @@ async function main() {
     if (process.env.MARKET_STARTUP_SCREENSHOTS) await page.locator('#coinInfoModal').screenshot({
       path: path.join(process.env.MARKET_STARTUP_SCREENSHOTS, 'coin-introduction-cached.png') });
     assert.equal(await page.evaluate(() => coinIssuesView.asset), 'BTC:bitcoin');
-    await page.waitForFunction(() => coinIssuesCache.has('BTC:bitcoin:1'));
+    await page.waitForFunction(() => coinIssuesCache.has('BTC:bitcoin:issues:1'));
     assert.equal(await page.evaluate(() => {
       document.getElementById('coinIssuesTab').click();
       return document.getElementById('coinIssuesPanel').textContent.includes('Bitcoin cached issue');
     }), true, 'the issue tab renders its prefetched list in the click task');
     if (process.env.MARKET_STARTUP_SCREENSHOTS) await page.locator('#coinInfoModal').screenshot({
       path: path.join(process.env.MARKET_STARTUP_SCREENSHOTS, 'coin-issues-prefetched.png') });
-    await page.waitForFunction(async () => Boolean(await BlockscopeCoinDetailCache.read('issues:BTC:bitcoin:1', comparisonCacheOwner(), 60000, () => true)));
+    await page.waitForFunction(async () => Boolean(await BlockscopeCoinDetailCache.read('issues2:BTC:bitcoin:issues:1', comparisonCacheOwner(), 60000, () => true)));
     const beforeIssueReload = issueCalls;
     releaseSettings();
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => siteAuthConfirmed && Boolean(marketDataLoadPromise));
     await page.evaluate(() => openCoinInfo('BTC'));
-    await page.waitForFunction(() => coinIssuesCache.has('BTC:bitcoin:1'));
+    await page.waitForFunction(() => coinIssuesCache.has('BTC:bitcoin:issues:1'));
     await page.locator('#coinIssuesTab').click();
     assert.match(await page.locator('#coinIssuesPanel').textContent(), /Bitcoin cached issue/);
     assert.equal(issueCalls, beforeIssueReload, 'reload reuses a fresh owner-bound issue list without a network round trip');

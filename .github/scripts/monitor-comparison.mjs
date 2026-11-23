@@ -34,11 +34,11 @@ try {
 } catch (_error) { report.sourceChecks.coinbase_futures = false; }
 try {
   const resources = await request('?probeComparison=resources');
-  for (const key of ['news', 'l1fees', 'l2fees', 'market_snapshot', 'defillama', 'apywa']) {
+  for (const key of ['news', 'telegram', 'l1fees', 'l2fees', 'market_snapshot', 'defillama', 'apywa']) {
     report.sourceChecks[key] = resources.sourceChecks?.[key] === true;
   }
 } catch (_error) {
-  for (const key of ['news', 'l1fees', 'l2fees', 'market_snapshot', 'defillama', 'apywa']) report.sourceChecks[key] = false;
+  for (const key of ['news', 'telegram', 'l1fees', 'l2fees', 'market_snapshot', 'defillama', 'apywa']) report.sourceChecks[key] = false;
 }
 if (process.env.GITHUB_RUN_ID && process.env.GITHUB_RUN_ATTEMPT) report.reportId = `${process.env.GITHUB_RUN_ID}:${process.env.GITHUB_RUN_ATTEMPT}`;
 const result = await request('?comparisonHealth=1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(report) });

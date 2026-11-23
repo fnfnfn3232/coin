@@ -558,6 +558,20 @@ test("Telegram cron excerpts explicit mentions, coalesces, preserves news and fa
   assert.ok((await f.store.readCoinIssuesForBackup())["coin-issues:telegram-status-v1"]);
 });
 
+test("Coinness and Telegram retain independent bounded archives for the same asset", async () => {
+  const f = await coinNewsFixture();
+  f.store.fetchTelegramChannel = async channel => Array.from({ length: 40 }, (_, i) => ({
+    channel, id: String(i + 1), sourceUrl: `https://t.me/${channel}/${i + 1}`, text: '비트코인 관련 소식', createdAt: Date.now() - 60000,
+  }));
+  await f.store.refreshTelegramIssues();
+  await f.write(Array.from({ length: 60 }, (_, i) => f.news(i + 1, 'BTC 소식', ['BTC'])));
+  await f.store.syncCoinNews();
+  const stored = await f.storage.get('coin-issues:auto:BTC:bitcoin');
+  assert.equal(stored.filter(post => post.source === 'coinness').length, 50);
+  assert.equal(stored.filter(post => post.source === 'telegram').length, 50);
+  assert.equal(stored.length, 100);
+});
+
 const feeSource = (fee = 12) => ({ protocols: [
   { slug: "base", name: "Base", category: "Chain", protocolType: "chain", total24h: fee, total7d: 80, total30d: null, change_1d: -2, logo: "https://icons.llamao.fi/chains/base.jpg" },
   { slug: "ethereum", name: "Ethereum", category: "Chain", protocolType: "chain", total24h: 200, total7d: 1400, total30d: 6000 },

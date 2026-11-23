@@ -12,6 +12,7 @@ on:
       - "test_market_chart.cjs"
       - "test_spot_market_ui.cjs"
       - "test_coin_issues.cjs"
+      - "test_telegram_parser.cjs"
       - "audit-report.js"
       - "test_audit_report.cjs"
       - "test_audit_ui.cjs"
@@ -41,6 +42,7 @@ on:
       - "test_market_chart.cjs"
       - "test_spot_market_ui.cjs"
       - "test_coin_issues.cjs"
+      - "test_telegram_parser.cjs"
       - "audit-report.js"
       - "test_audit_report.cjs"
       - "test_audit_ui.cjs"
@@ -102,3 +104,4 @@ jobs:
           node test_market_chart.cjs
           node test_spot_market_ui.cjs
           node test_coin_issues.cjs
+          node test_telegram_parser.cjs

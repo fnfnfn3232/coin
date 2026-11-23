@@ -56,9 +56,11 @@ async function main() {
         const asset = url.searchParams.get('asset');
         const method = route.request().method();
         const id = url.pathname.split('/')[3];
-        requests.push({ asset, method, id });
-        if (asset === slowAsset && method === 'GET') await new Promise(resolve => { releaseSlow = resolve; });
-        const records = posts.get(asset) || [];
+        const section = url.searchParams.get('section') || 'all';
+        requests.push({ asset, method, id, section });
+        if (asset === slowAsset && method === 'GET' && section === 'issues') await new Promise(resolve => { releaseSlow = resolve; });
+        const allRecords = posts.get(asset) || [];
+        const records = allRecords.filter(post => section === 'all' || section === (post.source === 'coinness' ? 'news' : 'issues'));
         if (method === 'GET') {
           if (id) {
             if (detailDelayMs) await new Promise(resolve => setTimeout(resolve, detailDelayMs));
@@ -79,12 +81,12 @@ async function main() {
         if (body.adminPassword !== 'correct') return route.fulfill({ json: { error: 'invalid_password' }, status: 401, headers });
         const old = records.find(item => item.id === id);
         if (method === 'DELETE') {
-          posts.set(asset, records.filter(item => item.id !== id));
+          posts.set(asset, allRecords.filter(item => item.id !== id));
           return route.fulfill({ json: { ok: true }, headers });
         }
         const post = { id: old?.id || body.id, title: body.title, body: body.body,
           createdAt: old?.createdAt || Date.now(), updatedAt: Date.now(), revision: (old?.revision || 0) + 1, author: '관리자' };
-        posts.set(asset, [post, ...records.filter(item => item.id !== post.id)]);
+        posts.set(asset, [post, ...allRecords.filter(item => item.id !== post.id)]);
         return route.fulfill({ json: { post }, headers });
       });
       const page = await context.newPage();
@@ -106,8 +108,8 @@ async function main() {
     }), ['XLM:stellar', 'AI:sleeplessai', 'AI:gensyn']);
     await page.getByRole('button', { name: '스카이프로토콜 코인 정보 보기' }).click();
     assert.match(await page.locator('#coinInfoBody').textContent(), /거래소 공식 소개/);
-    await page.waitForFunction(() => coinIssuesCache.has('SKY:skyprotocol:1'));
-    assert.equal(requests.length, 1, 'opening the introduction prefetches only that coin issue board');
+    await page.waitForFunction(() => coinIssuesCache.has('SKY:skyprotocol:issues:1') && coinIssuesCache.has('SKY:skyprotocol:news:1'));
+    assert.equal(requests.length, 2, 'opening the introduction prefetches only that coin, one list per section');
     assert.equal(requests[0].asset, 'SKY:skyprotocol');
     await page.locator('#coinIssuesTab').click();
     await page.getByRole('button', { name: seed.title, exact: true }).waitFor();
@@ -135,6 +137,11 @@ async function main() {
       assert.ok(layout.footer && layout.top >= layout.bodyBottom, 'delete follows the article body');
       assert.ok(Math.abs(layout.right - layout.articleRight) < 2, 'delete is right aligned');
       assert.equal(layout.background, 'rgba(0, 0, 0, 0)', 'delete has no red or filled background');
+      const list = await target.locator('.coin-issue-footer [data-coin-issue-action="list"]').evaluate(button => ({
+        x: button.getBoundingClientRect().left, articleX: button.closest('article').getBoundingClientRect().left,
+        y: button.getBoundingClientRect().top, bodyY: button.closest('article').querySelector('.coin-issue-text').getBoundingClientRect().bottom,
+      }));
+      assert.ok(Math.abs(list.x - list.articleX) < 2 && list.y >= list.bodyY, 'list stays at the bottom left');
     }
     await assertQuietDelete(page);
     await page.getByRole('button', { name: '목록', exact: true }).click();
@@ -146,6 +153,9 @@ async function main() {
     await body.fill('첫째 줄\n둘째 줄\n<script>window.__attack = true</script>');
     await page.locator('#coinIssuesTab').click();
     assert.match(await body.inputValue(), /첫째 줄/, 'clicking the selected tab does not discard a draft');
+    page.once('dialog', dialog => dialog.dismiss());
+    await page.locator('#coinNewsTab').click();
+    assert.match(await body.inputValue(), /첫째 줄/, 'declining a tab switch preserves the draft');
     assert.equal(await page.evaluate(() => {
       const event = new Event('beforeunload', { cancelable: true });
       dispatchEvent(event);
@@ -226,7 +236,9 @@ async function main() {
     slowAsset = '';
     const live = await start('admin', true), livePage = live.page;
     await livePage.evaluate(() => openCoinInfo('SKY'));
-    await livePage.locator('#coinIssuesTab').click();
+    await livePage.locator('#coinNewsTab').click();
+    assert.equal(await livePage.getByRole('button', { name: '글쓰기', exact: true }).count(), 0, 'news is automatic only');
+    assert.equal(await livePage.getByRole('button', { name: seed.title, exact: true }).count(), 0, 'manual issues do not leak into news');
     const autoRequests = requests.filter(request => request.id === automatic.id).length;
     await livePage.getByRole('button', { name: automatic.title, exact: true }).click();
     assert.equal(requests.filter(request => request.id === automatic.id).length, autoRequests, 'automatic summaries open from the list payload');
@@ -240,11 +252,11 @@ async function main() {
     await livePage.locator('#coinInfoModal').screenshot({ path: path.join(screenshotRoot, 'coin-automatic-news-mobile.png') });
     await livePage.setViewportSize({ width: 1440, height: 980 });
     await livePage.getByRole('button', { name: '목록', exact: true }).click();
-    const originalCacheAt = await livePage.evaluate(() => coinIssuesCache.get('SKY:skyprotocol:1').at);
+    const originalCacheAt = await livePage.evaluate(() => coinIssuesCache.get('SKY:skyprotocol:news:1').at);
     await livePage.clock.fastForward(1000);
     await livePage.getByRole('button', { name: automatic.title, exact: true }).click();
     await livePage.getByRole('button', { name: '목록', exact: true }).click();
-    assert.equal(await livePage.evaluate(() => coinIssuesCache.get('SKY:skyprotocol:1').at), originalCacheAt,
+    assert.equal(await livePage.evaluate(() => coinIssuesCache.get('SKY:skyprotocol:news:1').at), originalCacheAt,
       'reopening cached lists does not postpone their freshness deadline');
     const next = { ...automatic, id: 'coinness-123457', title: '추가 자동 뉴스', sourceUrl: 'javascript:alert(1)' };
     posts.set('SKY:skyprotocol', [next, seed, automatic]);
@@ -256,8 +268,10 @@ async function main() {
     failIssueLists = true;
     await livePage.clock.fastForward(61000);
     await livePage.getByText('자동 뉴스 연결 지연 · 기존 글은 유지됩니다.').waitFor();
-    assert.equal(await livePage.getByRole('button', { name: seed.title, exact: true }).isVisible(), true);
+    assert.equal(await livePage.getByRole('button', { name: automatic.title, exact: true }).isVisible(), true);
     failIssueLists = false;
+    await livePage.locator('#coinIssuesTab').click();
+    await livePage.getByRole('button', { name: seed.title, exact: true }).waitFor();
     slowAsset = 'SKY:skyprotocol'; releaseSlow = undefined;
     await livePage.clock.fastForward(61000);
     for (let i = 0; !releaseSlow && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 10));
@@ -273,6 +287,7 @@ async function main() {
     assert.equal(requests.length, beforeDraftPoll, 'editing drafts never trigger automatic issue refresh');
     livePage.once('dialog', dialog => dialog.accept());
     await livePage.getByRole('button', { name: '취소', exact: true }).click();
+    await livePage.locator('#coinNewsTab').click();
     await livePage.getByRole('button', { name: automatic.title, exact: true }).click();
     await livePage.getByRole('button', { name: '삭제', exact: true }).click();
     assert.equal(await livePage.locator('#coinIssueForm input[type="password"]').isVisible(), true);
@@ -280,6 +295,30 @@ async function main() {
     await livePage.getByRole('button', { name: '삭제', exact: true }).click();
     await livePage.locator('.coin-issues-list').waitFor();
     assert.equal(await livePage.getByRole('button', { name: automatic.title, exact: true }).count(), 0);
+    const telegram = { ...seed, id: 'telegram-123abc', title: '공개 채널의 SKY 언급', source: 'telegram',
+      sourceName: '@BChoSN', sourceUrl: 'https://t.me/BChoSN/123', body: '짧은 발췌 <script>alert(1)</script>' };
+    posts.set('SKY:skyprotocol', [seed, telegram, next]);
+    await livePage.evaluate(async () => { await invalidateCoinIssueLists(coinIssuesView.asset); });
+    await livePage.locator('#coinIssuesTab').click();
+    await livePage.getByRole('button', { name: telegram.title, exact: true }).click();
+    assert.match(await livePage.locator('.coin-issues-meta').textContent(), /@BChoSN · 발췌 · 자동등록/);
+    assert.equal(await livePage.getByRole('link', { name: '텔레그램 원문 보기' }).getAttribute('href'), telegram.sourceUrl);
+    assert.equal(await livePage.getByRole('button', { name: '수정', exact: true }).count(), 0);
+    assert.equal(await livePage.locator('#coinIssuesPanel script').count(), 0);
+    await assertQuietDelete(livePage);
+    await livePage.locator('#coinInfoModal').screenshot({ path: path.join(screenshotRoot, 'coin-telegram-issue-desktop.png') });
+    await livePage.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await livePage.locator('#coinIssuesPanel').evaluate(el => el.scrollWidth <= el.clientWidth), true);
+    await livePage.locator('#coinInfoModal').screenshot({ path: path.join(screenshotRoot, 'coin-telegram-issue-mobile.png') });
+    await livePage.setViewportSize({ width: 1440, height: 980 });
+    await livePage.locator('#coinIssuesTab').focus();
+    await livePage.keyboard.press('Home');
+    assert.equal(await livePage.locator('#coinIntroTab').getAttribute('aria-selected'), 'true');
+    await livePage.keyboard.press('ArrowRight');
+    assert.equal(await livePage.locator('#coinNewsTab').getAttribute('aria-selected'), 'true');
+    assert.equal(await livePage.getByRole('button', { name: telegram.title, exact: true }).count(), 0);
+    await livePage.keyboard.press('End');
+    assert.equal(await livePage.locator('#coinIssuesTab').getAttribute('aria-selected'), 'true');
     await livePage.locator('#coinInfoCloseBtn').click();
     const afterClose = requests.length;
     await livePage.clock.fastForward(61000);
