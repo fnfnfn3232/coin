@@ -37,20 +37,29 @@ async function main() {
           } };
         }
       };
-      const parse = new Function(channels + helpers + ';return parseTelegramPreview;')();
+      const { parse, validate } = new Function(channels + helpers + ';return {parse:parseTelegramPreview,validate:validateTelegramPage};')();
       const time = new Date(Date.now() - 60000).toISOString();
       const post = (ref, text, date = time) => `<div class="tgme_widget_message" data-post="${ref}">
         <div class="tgme_widget_message_text">${text}</div><a class="tgme_widget_message_date"><time datetime="${date}"></time></a></div>`;
       const html = post('BChoSN/123', '비트코인 <b>BTC</b><br>ETH &amp; &#xC2A4;&#53580;&#51060;&#48660; &lt;script&gt;')
         + post('BChoSN/124', 'SKY <a href="https://evil.test">소식</a>')
         + post('evil/125', '잘못된 채널') + post('BChoSN/not-id', '잘못된 번호')
-        + post('BChoSN/126', '', time) + post('BChoSN/127', '미래', new Date(Date.now() + 86400000).toISOString());
-      return parse(html, 'BChoSN');
+        + post('BChoSN/126', '', time);
+      const valid = validate(await parse(html, 'BChoSN'), 'BChoSN');
+      let futureRejected = false, overflowRejected = false;
+      try { validate(await parse(html + post('BChoSN/127', '미래', new Date(Date.now() + 86400000).toISOString()), 'BChoSN'), 'BChoSN'); }
+      catch (_error) { futureRejected = true; }
+      try { await parse(Array.from({ length: 201 }, (_, i) => post('BChoSN/' + (i + 1), '글')).join(''), 'BChoSN'); }
+      catch (_error) { overflowRejected = true; }
+      return { messages: valid, futureRejected, overflowRejected };
     }, { helpers, channels });
-    assert.equal(result.length, 2);
-    assert.equal(result[0].text, '비트코인 BTC\nETH & 스테이블 <script>');
-    assert.equal(result[0].sourceUrl, 'https://t.me/BChoSN/123');
-    assert.equal(result[1].text, 'SKY 소식');
+    assert.equal(result.messages.length, 3);
+    assert.equal(result.messages[0].text, '비트코인 BTC\nETH & 스테이블 <script>');
+    assert.equal(result.messages[0].sourceUrl, 'https://t.me/BChoSN/123');
+    assert.equal(result.messages[1].text, 'SKY 소식');
+    assert.equal(result.messages[2].text, '', 'media-only messages remain pagination boundaries');
+    assert.equal(result.futureRejected, true);
+    assert.equal(result.overflowRejected, true, 'oversized pages fail instead of silently truncating');
     console.log('PASS: Telegram selector parser handles nested and fragmented text, entities, dates and strict source links');
   } finally { await browser.close(); }
 }

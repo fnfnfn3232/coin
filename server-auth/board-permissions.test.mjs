@@ -517,9 +517,8 @@ test("Telegram cron excerpts explicit mentions, coalesces, preserves news and fa
     await new Promise(resolve => setTimeout(resolve, 2)); active--;
     if (failing) throw new Error("source down");
     const text = corrected ? "이더리움 토큰 업데이트" : "BTC 현물 거래소 동향 " + "짧은 공개 발췌자료 ".repeat(40);
-    return [{ channel, id: "123", sourceUrl: `https://t.me/${channel}/123`, text, createdAt: Date.now() - 60000 },
-      { channel, id: "124", sourceUrl: `https://t.me/${channel}/124`, text: "AI 산업과 가스 가격 동향", createdAt: Date.now() - 60000 },
-      { channel, id: "125", sourceUrl: "https://evil.test/125", text: "비트코인", createdAt: Date.now() - 60000 }];
+    return { messages: [{ channel, id: "123", sourceUrl: `https://t.me/${channel}/123`, text, createdAt: Date.now() - 60000 },
+      { channel, id: "124", sourceUrl: `https://t.me/${channel}/124`, text: "AI 산업과 가스 가격 동향", createdAt: Date.now() - 60000 }] };
   };
   const results = await Promise.all([f.store.refreshTelegramIssues(), f.store.refreshTelegramIssues()]);
   assert.equal(calls, 7); assert.ok(peak <= 3); assert.ok(results.every(result => result.ok));
@@ -560,9 +559,9 @@ test("Telegram cron excerpts explicit mentions, coalesces, preserves news and fa
 
 test("Coinness and Telegram retain independent bounded archives for the same asset", async () => {
   const f = await coinNewsFixture();
-  f.store.fetchTelegramChannel = async channel => Array.from({ length: 40 }, (_, i) => ({
+  f.store.fetchTelegramChannel = async channel => ({ messages: Array.from({ length: 40 }, (_, i) => ({
     channel, id: String(i + 1), sourceUrl: `https://t.me/${channel}/${i + 1}`, text: '비트코인 관련 소식', createdAt: Date.now() - 60000,
-  }));
+  })) });
   await f.store.refreshTelegramIssues();
   await f.write(Array.from({ length: 60 }, (_, i) => f.news(i + 1, 'BTC 소식', ['BTC'])));
   await f.store.syncCoinNews();
@@ -570,6 +569,145 @@ test("Coinness and Telegram retain independent bounded archives for the same ass
   assert.equal(stored.filter(post => post.source === 'coinness').length, 50);
   assert.equal(stored.filter(post => post.source === 'telegram').length, 50);
   assert.equal(stored.length, 100);
+});
+
+async function telegramCursorFixture(cursorId = '100') {
+  const f = await coinNewsFixture(), channel = 'BChoSN', now = Date.now();
+  const names = ['BChoSN', 'umjuninsight', 'deganlululala', 'enjoymyhobby', 'officialunivercityofcrypto', 'JoshuaDeukKOR', 'fireant_crypto'];
+  await f.storage.put('coin-issues:telegram-status-v1', Object.fromEntries(names.map(name => [name, {
+    checkedAt: name === channel ? 1 : now, lastSuccessAt: now - 60000, cursorId, error: '',
+  }])));
+  const status = async () => (await f.storage.get('coin-issues:telegram-status-v1'))[channel];
+  const due = async () => {
+    const value = await f.storage.get('coin-issues:telegram-status-v1'); value[channel].checkedAt = 1;
+    await f.storage.put('coin-issues:telegram-status-v1', value);
+  };
+  const page = (low, high, text = id => 'BTC 현물 소식 ' + id) => ({ messages: Array.from({ length: high - low + 1 }, (_, i) => {
+    const id = String(low + i);
+    return { channel, id, sourceUrl: `https://t.me/${channel}/${id}`, text: text(Number(id)), createdAt: now - 1000 };
+  }) });
+  return { ...f, channel, now, status, due, page };
+}
+
+test('Telegram bursts persist exclusive pagination checkpoints across restarts and minute continuations, including media-only pages', async () => {
+  const f = await telegramCursorFixture(), seen = new Set(), requests = [];
+  let head = 180, store = f.store;
+  const configure = () => {
+    store.fetchTelegramChannel = async (channel, before = '') => {
+      assert.equal(channel, f.channel, 'quiet channels are not fetched every minute');
+      requests.push(before);
+      const high = before ? Number(before) - 1 : head, low = high - 19;
+      return f.page(low, high, id => id >= 141 && id <= 160 ? '' : 'BTC 현물 소식 ' + id);
+    };
+    const merge = store.mergeAutomaticCoinIssues.bind(store);
+    store.mergeAutomaticCoinIssues = async (source, grouped, ids) => {
+      for (const posts of grouped.values()) for (const post of posts) seen.add(Number(post.sourceUrl.split('/').at(-1)));
+      return merge(source, grouped, ids);
+    };
+  };
+  configure();
+  const before = await f.status();
+  assert.equal((await store.refreshTelegramIssues()).ok, false);
+  let status = await f.status();
+  assert.equal(status.cursorId, '100'); assert.equal(status.lastSuccessAt, before.lastSuccessAt);
+  assert.equal(status.pending.targetId, '180'); assert.equal(status.pending.before, '141');
+  assert.deepEqual(requests, ['', '161'], 'each invocation has a finite page budget, not a permanent page cap');
+  await f.due();
+  store = new BoardStore({ storage: f.storage }, f.env); configure();
+  f.env.BOARD_STORE.get = () => store;
+  store.readComparisonFx = async () => { throw new Error('unrelated FX source'); };
+  const tasks = [];
+  await worker.scheduled({ cron: '* * * * *' }, f.env, { waitUntil: task => tasks.push(task) });
+  await Promise.allSettled(tasks);
+  status = await f.status();
+  assert.equal(status.cursorId, '100'); assert.equal(status.pending.before, '101');
+  assert.deepEqual(requests.slice(-2), ['141', '121']);
+  assert.equal((await f.request('/internal/telegram-catchup', 'POST', {}, '')).status, 404);
+  head = 200;
+  await f.due(); await store.refreshTelegramIssues(true);
+  status = await f.status();
+  assert.equal(status.cursorId, '180'); assert.equal(status.pending, null); assert.equal(status.pollSoon, true);
+  await f.due(); assert.equal((await store.refreshTelegramIssues(true)).ok, true);
+  status = await f.status();
+  assert.equal(status.cursorId, '200'); assert.equal(status.pollSoon, false);
+  const expected = Array.from({ length: 100 }, (_, i) => i + 101).filter(id => id < 141 || id > 160);
+  assert.deepEqual([...seen].sort((a, b) => a - b), expected, 'every text-bearing new post was ingested despite a moving head');
+  const count = requests.length;
+  await store.refreshTelegramIssues(true);
+  assert.equal(requests.length, count, 'completed channels return to the ten-minute schedule');
+});
+
+test('Telegram catch-up resumes the last durable page after partial HTTP failure and does not renew success time', async () => {
+  const f = await telegramCursorFixture('10'), requests = [];
+  let failed = true;
+  f.store.fetchTelegramChannel = async (_channel, before = '') => {
+    requests.push(before);
+    if (before === '31' && failed) throw new Error('temporary upstream failure');
+    const high = before ? Number(before) - 1 : 50;
+    return f.page(Math.max(1, high - 19), high);
+  };
+  const previous = await f.status();
+  assert.equal((await f.store.refreshTelegramIssues()).ok, false);
+  let status = await f.status();
+  assert.equal(status.cursorId, '10'); assert.equal(status.pending.before, '31');
+  assert.equal(status.lastSuccessAt, previous.lastSuccessAt); assert.ok(status.error);
+  failed = false; await f.due(); await f.store.refreshTelegramIssues(true);
+  assert.deepEqual(requests, ['', '31', '31', '11']);
+  status = await f.status(); assert.equal(status.cursorId, '50'); assert.equal(status.pending, null);
+  assert.equal(status.error, '');
+});
+
+test('Telegram cursor writes follow successful issue persistence and failed commits replay idempotently', async () => {
+  const f = await telegramCursorFixture('10');
+  f.store.fetchTelegramChannel = async (_channel, before = '') => {
+    const high = before ? Number(before) - 1 : 50;
+    return f.page(Math.max(1, high - 19), high);
+  };
+  const old = await f.status(), put = f.storage.put.bind(f.storage);
+  f.storage.put = async (key, value) => { if (key === 'coin-issues:telegram-status-v1') throw new Error('injected cursor commit failure'); return put(key, value); };
+  await assert.rejects(f.store.refreshTelegramIssues(), /injected cursor commit failure/);
+  assert.deepEqual(await f.status(), old);
+  f.storage.put = put;
+  await f.store.refreshTelegramIssues();
+  let status = await f.status(); assert.equal(status.cursorId, '10'); assert.equal(status.pending.before, '11');
+  const posts = await f.storage.get('coin-issues:auto:BTC:bitcoin');
+  assert.equal(posts.length, 40); assert.ok(posts.every(post => post.revision === 1));
+  await f.due(); await f.store.refreshTelegramIssues(true);
+  status = await f.status(); assert.equal(status.cursorId, '50');
+  const stored = await f.storage.get('coin-issues:auto:BTC:bitcoin');
+  const merge = f.store.mergeAutomaticCoinIssues;
+  await f.due(); f.store.mergeAutomaticCoinIssues = async () => { throw new Error('injected issue write failure'); };
+  const previous = await f.status();
+  await assert.rejects(f.store.refreshTelegramIssues(), /injected issue write failure/);
+  assert.deepEqual(await f.status(), previous);
+  assert.deepEqual(await f.storage.get('coin-issues:auto:BTC:bitcoin'), stored);
+  f.store.mergeAutomaticCoinIssues = merge;
+});
+
+test('Telegram migration uses the previous successful time and invalid/nondecreasing pages never skip a boundary', async () => {
+  const f = await telegramCursorFixture();
+  const all = await f.storage.get('coin-issues:telegram-status-v1'); delete all[f.channel].cursorId;
+  await f.storage.put('coin-issues:telegram-status-v1', all);
+  f.store.fetchTelegramChannel = async (_channel, before = '') => before
+    ? { messages: f.page(1, 20).messages.map(post => ({ ...post, createdAt: f.now - 120000 })) } : f.page(21, 40);
+  assert.equal((await f.store.refreshTelegramIssues()).ok, true);
+  assert.equal((await f.status()).cursorId, '40');
+  for (const malformed of ['foreign', 'duplicate', 'stalled', 'future', 'empty']) {
+    await f.due();
+    f.store.fetchTelegramChannel = async (_channel, before = '') => {
+      if (!before) return f.page(61, 80);
+      if (malformed === 'empty') return { messages: [] };
+      if (malformed === 'stalled') return f.page(61, 80);
+      const page = f.page(41, 60);
+      if (malformed === 'foreign') page.messages[0].sourceUrl = 'https://evil.test/41';
+      if (malformed === 'duplicate') page.messages.push(page.messages[0]);
+      if (malformed === 'future') page.messages[0].createdAt = f.now + 86400000;
+      return page;
+    };
+    assert.equal((await f.store.refreshTelegramIssues()).ok, false);
+    const status = await f.status();
+    assert.equal(status.cursorId, '40'); assert.equal(status.pending.before, '61'); assert.ok(status.error);
+  }
 });
 
 const feeSource = (fee = 12) => ({ protocols: [
@@ -1126,7 +1264,7 @@ test("a delayed primary FX observation switches to a fresh backup without loosen
   } finally { globalThis.fetch = previous; }
 });
 
-test("the minute cron only warms shared FX; it cannot start a daily backup or open an anonymous route", async () => {
+test("the minute cron warms shared FX without fetching quiet Telegram channels, starting backups or opening an anonymous route", async () => {
   const f = await fixture(), tasks = [], previous = globalThis.fetch; let calls = 0;
   globalThis.fetch = async () => { calls++; return Response.json(naverFxSource()); };
   Object.defineProperty(f.env, 'BACKUP_BUCKET', { get() { throw new Error('minute cron must not touch backups'); } });
