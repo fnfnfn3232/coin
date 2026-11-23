@@ -10,7 +10,7 @@ let failed = 0;
 for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", "bybit", "bitget", "okx", "coinbase_futures", "audit", "bootstrap", "delivery", "telegram"]) {
   try {
     let result;
-    const versionAttempts = board === "delivery" ? 25 : 13;
+    const versionAttempts = ["delivery", "telegram"].includes(board) ? 25 : 13;
     for (let attempt = 0; attempt < versionAttempts; attempt += 1) {
       let response;
       for (let transportAttempt = 0; transportAttempt < 3; transportAttempt += 1) {
@@ -27,12 +27,12 @@ for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", 
       if (!response.ok) throw new Error(`probe_http_${response.status}`);
       result = await response.json();
       if (result.implementation === 7 && (board !== "delivery" || (result.deliveryVersion === 1 && result.coinContentVersion === 2))
-        && (board !== "telegram" || result.telegramVersion === 1)) break;
+        && (board !== "telegram" || result.telegramVersion === 2)) break;
       // Active Durable Objects may defer code updates for five minutes.
       if (attempt === versionAttempts - 1) throw new Error("new_worker_not_propagated:" + JSON.stringify({
         implementation: result.implementation, deliveryVersion: result.deliveryVersion, coinContentVersion: result.coinContentVersion, exchange: result.exchange, error: result.error,
       }));
-      await new Promise(resolve => setTimeout(resolve, board === "delivery" ? 15000 : 5000));
+      await new Promise(resolve => setTimeout(resolve, ["delivery", "telegram"].includes(board) ? 15000 : 5000));
     }
     if (board === "audit") {
       const rows = result.local.map(item => {

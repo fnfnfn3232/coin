@@ -3229,7 +3229,7 @@ export class BoardStore {
   }
 
   async fetchTelegramChannel(channel) {
-    const response = await fetch(`https://t.me/s/${channel}`, { redirect: "error", signal: AbortSignal.timeout(7000),
+    const response = await fetch(`https://t.me/s/${channel}`, { redirect: "manual", signal: AbortSignal.timeout(7000),
       headers: { Accept: "text/html" } });
     if (!response.ok) throw new Error(`telegram_feed_http_${response.status}`);
     if (!/text\/html/i.test(response.headers.get("Content-Type") || "")) throw new Error("telegram_feed_content_type");
@@ -4162,7 +4162,7 @@ export class BoardStore {
     }
     if (exchange === "telegram") {
       const result = await this.refreshTelegramIssues();
-      return jsonResponse({ implementation: 7, telegramVersion: 1, exchange, ...result }, 200, this.env);
+      return jsonResponse({ implementation: 7, telegramVersion: 2, exchange, ...result }, 200, this.env);
     }
     if (exchange === "delivery") {
       const market = await this.readMarketData();

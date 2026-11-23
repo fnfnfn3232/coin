@@ -492,6 +492,21 @@ test("the news cron ingests official codes without visitor login or exposing an 
   } finally { globalThis.fetch = previous; }
 });
 
+test("Telegram fetch uses edge-supported manual redirects and rejects foreign redirects and oversized previews", async () => {
+  const f = await fixture(), previous = globalThis.fetch;
+  try {
+    globalThis.fetch = async (url, options) => {
+      assert.equal(url, 'https://t.me/s/BChoSN');
+      assert.equal(options.redirect, 'manual', 'Workers do not implement redirect:error');
+      assert.equal(options.headers.Authorization, undefined);
+      return new Response('', { status: 302, headers: { Location: 'https://evil.test' } });
+    };
+    await assert.rejects(f.store.fetchTelegramChannel('BChoSN'), /telegram_feed_http_302/);
+    globalThis.fetch = async () => new Response('too big', { headers: { 'Content-Type': 'text/html', 'Content-Length': String(2 * 1024 * 1024) } });
+    await assert.rejects(f.store.fetchTelegramChannel('BChoSN'), /telegram_feed_too_large/);
+  } finally { globalThis.fetch = previous; }
+});
+
 test("Telegram cron excerpts explicit mentions, coalesces, preserves news and failed sources, and honors deletion", async () => {
   const f = await coinNewsFixture();
   await f.write([f.news(1, "비트코인 소식", ["BTC"])]);
