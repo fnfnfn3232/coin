@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-LR3qtlhivuFz90JYwHZEAxoELDOg6CbXVoNLeL6YGec='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-TFbfDGspayUbHJftL+s6DBhw9Igr4l+dKbW90ek9GTA='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -15631,7 +15631,7 @@
         const access = coinDetailAccess();
         const pending = Promise.resolve().then(async () => {
           if (!fresh) {
-            const saved = await window.BlockscopeCoinDetailCache?.read("issues2:" + key, access.owner, 60000, access.allowed);
+            const saved = await window.BlockscopeCoinDetailCache?.read("issues3:" + key, access.owner, 60000, access.allowed);
             if (saved && access.allowed() && coinIssuesPending.get(key) === pending) {
               coinIssuesCache.set(key, { payload: saved.payload, at: saved.at });
               return saved.payload;
@@ -15644,7 +15644,7 @@
             const at = Date.now();
             coinIssuesCache.set(key, { payload, at });
             if (coinIssuesCache.size > 100) coinIssuesCache.delete(coinIssuesCache.keys().next().value);
-            window.BlockscopeCoinDetailCache?.write("issues2:" + key, access.owner, payload, at, getServerAuthTokenExpiry(),
+            window.BlockscopeCoinDetailCache?.write("issues3:" + key, access.owner, payload, at, getServerAuthTokenExpiry(),
               () => access.allowed() && coinIssuesCache.get(key)?.payload === payload);
           }
           return payload;
@@ -15700,7 +15700,7 @@
       function invalidateCoinIssueLists(asset) {
         for (const key of coinIssuesCache.keys()) if (key.startsWith(asset + ":")) coinIssuesCache.delete(key);
         for (const key of coinIssuesPending.keys()) if (key.startsWith(asset + ":")) coinIssuesPending.delete(key);
-        return window.BlockscopeCoinDetailCache?.removePrefix(comparisonCacheOwner(), "issues2:" + asset + ":");
+        return window.BlockscopeCoinDetailCache?.removePrefix(comparisonCacheOwner(), "issues3:" + asset + ":");
       }
 
       function coinIssueError(error) {
@@ -15710,6 +15710,7 @@
           admin_required: "관리자만 변경할 수 있습니다.",
           issue_conflict: "다른 창에서 변경된 글입니다. 목록에서 다시 열어 주세요.",
           issue_not_found: "삭제되었거나 존재하지 않는 글입니다.",
+          issue_source_delayed: "원문 연결이 지연되고 있습니다. 잠시 후 다시 열어 주세요.",
           invalid_issue_text: "제목과 본문 길이를 확인해 주세요.",
           issue_limit: "이 코인의 글 저장 한도에 도달했습니다.",
           automatic_issue_read_only: "자동등록 글은 출처를 유지합니다. 의견은 이슈에서 새 글로 작성해 주세요.",
@@ -15753,7 +15754,7 @@
         const admin = siteSessionRole === "admin";
         const heading = view.section === "news" ? "뉴스" : "이슈";
         const attribution = post => post.source === "coinness" ? "코인니스 · 자동등록"
-          : post.source === "telegram" ? `${post.sourceName || "텔레그램"} · 발췌 · 자동등록` : "관리자 작성";
+          : post.source === "telegram" ? `${post.sourceName || "텔레그램"} · ${post.fullText ? "원문" : "발췌"} · 자동등록` : "관리자 작성";
         const button = (action, text, cls = "") => `<button type="button" class="${cls}" data-coin-issue-action="${action}">${text}</button>`;
         let content = "";
         if (view.loading) content = `<p role="status">${heading}를 불러오는 중입니다.</p>`;

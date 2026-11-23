@@ -100,7 +100,7 @@ async function main() {
     }), true, 'the issue tab renders its prefetched list in the click task');
     if (process.env.MARKET_STARTUP_SCREENSHOTS) await page.locator('#coinInfoModal').screenshot({
       path: path.join(process.env.MARKET_STARTUP_SCREENSHOTS, 'coin-issues-prefetched.png') });
-    await page.waitForFunction(async () => Boolean(await BlockscopeCoinDetailCache.read('issues2:BTC:bitcoin:issues:1', comparisonCacheOwner(), 60000, () => true)));
+    await page.waitForFunction(async () => Boolean(await BlockscopeCoinDetailCache.read('issues3:BTC:bitcoin:issues:1', comparisonCacheOwner(), 60000, () => true)));
     const beforeIssueReload = issueCalls;
     releaseSettings();
     await page.reload({ waitUntil: 'domcontentloaded' });
