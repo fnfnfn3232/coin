@@ -112,6 +112,20 @@ GET /api/news?limit=40&offset=0&q=검색어
 Cookie: coin_board_session=...
 ```
 
+Coin introduction issues:
+
+```http
+GET /api/coin-issues?asset=SKY:skyprotocol&page=1
+GET /api/coin-issues/coinness-123456?asset=SKY:skyprotocol
+```
+
+- The `*/10 * * * *` server cron refreshes the shared Coinness preview feed and indexes related articles, even with no visitors. There is no additional API key or desktop task.
+- Matching uses official Coinness `originCodes`/`quickOrderCode` and unique names from the trusted market snapshot. Ambiguous tickers are not guessed; longest project names take precedence over substrings.
+- Each coin retains the latest 50 automatic title/preview/source-link entries separately from its 100 manual issues. Full articles are not copied. Both kinds share the issue list and pagination.
+- Read access requires an active site session. All manual changes and automatic-news deletion require an administrator session and a fresh administrator password. Automatic source text cannot be edited; deleted news IDs stay suppressed on reimport.
+- Issue archives, deletion markers and import checkpoints are included in the encrypted database backup. Failed imports do not advance the checkpoint and are retried; existing entries remain readable.
+- An open issue list checks stored updates once a minute. Reading an article, writing a draft, hidden tabs and closed dialogs do not poll or discard edits.
+
 Logout:
 
 ```http

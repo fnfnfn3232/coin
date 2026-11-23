@@ -27,8 +27,9 @@ async function main() {
   const requests = [];
   let slowAsset = '';
   let releaseSlow;
+  let failIssueLists = false;
   try {
-    async function start(role) {
+    async function start(role, clock = false) {
       const context = await browser.newContext({ viewport: { width: 1440, height: 980 } });
       const expiresAt = Date.now() + 3600000;
       const token = `v3.${Math.floor(expiresAt / 1000)}.issues-test.${role}.owner.0.test`;
@@ -62,6 +63,7 @@ async function main() {
             const post = records.find(item => item.id === id);
             return route.fulfill({ json: post ? { post } : { error: 'issue_not_found' }, status: post ? 200 : 404, headers });
           }
+          if (failIssueLists) return route.fulfill({ json: { error: 'temporary_failure' }, status: 503, headers });
           return route.fulfill({ json: { items: records.map(({ body, ...post }) => post), total: records.length, page: 1 }, headers });
         }
         const body = route.request().postDataJSON();
@@ -78,6 +80,7 @@ async function main() {
         return route.fulfill({ json: { post }, headers });
       });
       const page = await context.newPage();
+      if (clock) await page.clock.install();
       page.on('pageerror', error => errors.push(error.message));
       await page.goto(site);
       await page.waitForFunction(() => siteAuthConfirmed && data.boards.upbit.length);
@@ -181,8 +184,66 @@ async function main() {
     assert.equal(await member.page.getByRole('button', { name: '글쓰기', exact: true }).count(), 0);
     assert.equal(await member.page.getByRole('button', { name: '수정', exact: true }).count(), 0);
     assert.equal(await member.page.getByRole('button', { name: '삭제', exact: true }).count(), 0);
+    await member.context.close();
+
+    const automatic = { id: 'coinness-123456', title: 'SKY 자동 뉴스', body: '요약 <img src=x onerror=alert(1)>',
+      source: 'coinness', sourceUrl: 'https://coinness.com/news/123456', createdAt: now - 1000, updatedAt: now - 1000, revision: 1 };
+    posts.set('SKY:skyprotocol', [seed, automatic]);
+    slowAsset = '';
+    const live = await start('admin', true), livePage = live.page;
+    await livePage.evaluate(() => openCoinInfo('SKY'));
+    await livePage.locator('#coinIssuesTab').click();
+    await livePage.getByRole('button', { name: automatic.title, exact: true }).click();
+    assert.match(await livePage.locator('.coin-issues-meta').textContent(), /코인니스 · 자동등록/);
+    assert.equal(await livePage.getByRole('link', { name: '코인니스 원문 보기' }).getAttribute('href'), automatic.sourceUrl);
+    assert.equal(await livePage.getByRole('button', { name: '수정', exact: true }).count(), 0);
+    assert.equal(await livePage.locator('#coinIssuesPanel img').count(), 0);
+    await livePage.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await livePage.locator('#coinIssuesPanel').evaluate(el => el.scrollWidth <= el.clientWidth), true);
+    await livePage.locator('#coinInfoModal').screenshot({ path: path.join(screenshotRoot, 'coin-automatic-news-mobile.png') });
+    await livePage.setViewportSize({ width: 1440, height: 980 });
+    await livePage.getByRole('button', { name: '목록', exact: true }).click();
+    const next = { ...automatic, id: 'coinness-123457', title: '추가 자동 뉴스', sourceUrl: 'javascript:alert(1)' };
+    posts.set('SKY:skyprotocol', [next, seed, automatic]);
+    await livePage.clock.fastForward(61000);
+    await livePage.getByRole('button', { name: next.title, exact: true }).waitFor();
+    await livePage.getByRole('button', { name: next.title, exact: true }).click();
+    assert.equal(await livePage.getByRole('link', { name: '코인니스 원문 보기' }).count(), 0, 'only canonical Coinness article URLs become links');
+    await livePage.getByRole('button', { name: '목록', exact: true }).click();
+    failIssueLists = true;
+    await livePage.clock.fastForward(61000);
+    await livePage.getByText('자동 뉴스 연결 지연 · 기존 글은 유지됩니다.').waitFor();
+    assert.equal(await livePage.getByRole('button', { name: seed.title, exact: true }).isVisible(), true);
+    failIssueLists = false;
+    slowAsset = 'SKY:skyprotocol'; releaseSlow = undefined;
+    await livePage.clock.fastForward(61000);
+    for (let i = 0; !releaseSlow && i < 100; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(typeof releaseSlow, 'function');
+    await livePage.getByRole('button', { name: '글쓰기', exact: true }).click();
+    await livePage.locator('#coinIssueForm input[name="title"]').fill('작성 중인 제목');
+    await livePage.locator('#coinIssueForm textarea').fill('백그라운드 뉴스가 와도 유지');
+    releaseSlow(); slowAsset = '';
+    await livePage.waitForTimeout(150);
+    assert.equal(await livePage.locator('#coinIssueForm textarea').inputValue(), '백그라운드 뉴스가 와도 유지');
+    const beforeDraftPoll = requests.length;
+    await livePage.clock.fastForward(61000);
+    assert.equal(requests.length, beforeDraftPoll, 'editing drafts never trigger automatic issue refresh');
+    livePage.once('dialog', dialog => dialog.accept());
+    await livePage.getByRole('button', { name: '취소', exact: true }).click();
+    await livePage.getByRole('button', { name: automatic.title, exact: true }).click();
+    await livePage.getByRole('button', { name: '삭제', exact: true }).click();
+    assert.equal(await livePage.locator('#coinIssueForm input[type="password"]').isVisible(), true);
+    await livePage.locator('#coinIssueForm input[type="password"]').fill('correct');
+    await livePage.getByRole('button', { name: '삭제', exact: true }).click();
+    await livePage.locator('.coin-issues-list').waitFor();
+    assert.equal(await livePage.getByRole('button', { name: automatic.title, exact: true }).count(), 0);
+    await livePage.locator('#coinInfoCloseBtn').click();
+    const afterClose = requests.length;
+    await livePage.clock.fastForward(61000);
+    assert.equal(requests.length, afterClose, 'closed modals do not poll coin issue data');
+    await live.context.close();
     assert.deepEqual(errors, []);
-    console.log('PASS: per-asset issues, lazy loading, admin text CRUD, password failures, XSS, reload, stale responses, logout privacy, member read-only and desktop/mobile layout');
+    console.log('PASS: per-asset issues, admin CRUD, automatic news attribution, safe source URLs, background updates, failure recovery, draft protection, XSS, reload, privacy and desktop/mobile layout');
   } finally { await browser.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

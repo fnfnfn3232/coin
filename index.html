@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-fqaFSkt59N1B00nmeNKJq07j1aadjcrtU7ExjHO+juE='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-GgfphX2DROQO/w4DJMUgn76bqOMni4T5FNKJg9dfshE='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -15541,6 +15541,7 @@
           issue_not_found: "삭제되었거나 존재하지 않는 글입니다.",
           invalid_issue_text: "제목과 본문 길이를 확인해 주세요.",
           issue_limit: "이 코인의 글 저장 한도에 도달했습니다.",
+          automatic_issue_read_only: "자동 뉴스는 원문을 유지합니다. 의견은 새 글로 작성해 주세요.",
           login_locked: "비밀번호 확인이 잠시 제한되었습니다. 나중에 다시 시도해 주세요.",
         })[error?.message] || "요청을 완료하지 못했습니다. 저장 요청이었다면 목록에서 결과를 확인해 주세요.";
       }
@@ -15559,7 +15560,8 @@
         document.getElementById("coinIssuesPanel").hidden = !issues;
         if (!issues && coinIssuesView?.mode === "edit") coinIssuesView.mode = "list";
         if (issues) {
-          if (!coinIssuesView.loaded) loadCoinIssues();
+          const cache = coinIssuesCache.get(coinIssuesView.asset + ":" + coinIssuesView.page);
+          if (!coinIssuesView.loaded || (coinIssuesView.mode === "list" && (!cache || Date.now() - cache.at >= 60000))) loadCoinIssues();
           else renderCoinIssues();
         }
       }
@@ -15583,16 +15585,20 @@
               <div class="coin-issue-actions">${button("cancel", "취소")}<button type="submit" class="${deleting ? "danger" : ""}">${deleting ? "삭제" : "저장"}</button></div>
             </form>`;
         } else if (view.mode === "read" && view.post) {
+          const automatic = view.post.source === "coinness";
+          const sourceUrl = automatic && /^https:\/\/coinness\.com\/news\/[1-9]\d*$/.test(view.post.sourceUrl || "") ? view.post.sourceUrl : "";
           content = `<article class="coin-issues-article"><div class="coin-issues-toolbar">${button("list", "목록")}
-              ${admin ? `<div class="coin-issue-actions">${button("edit", "수정")}${button("delete", "삭제", "danger")}</div>` : ""}</div>
-            <h3>${escapeHtml(view.post.title)}</h3><div class="coin-issues-meta">관리자 작성 · ${escapeHtml(coinIssueDate(view.post.createdAt))}
+              ${admin ? `<div class="coin-issue-actions">${automatic ? "" : button("edit", "수정")}${button("delete", "삭제", "danger")}</div>` : ""}</div>
+            <h3>${escapeHtml(view.post.title)}</h3><div class="coin-issues-meta">${automatic ? "코인니스 · 자동등록" : "관리자 작성"} · ${escapeHtml(coinIssueDate(view.post.createdAt))}
               ${view.post.revision > 1 ? ` · 수정 ${escapeHtml(coinIssueDate(view.post.updatedAt))}` : ""}</div>
-            <pre class="coin-issue-text">${escapeHtml(view.post.body)}</pre></article>`;
+            <pre class="coin-issue-text">${escapeHtml(view.post.body)}</pre>
+            ${sourceUrl ? `<p><a href="${escapeAttr(sourceUrl)}" target="_blank" rel="noopener noreferrer">코인니스 원문 보기</a></p>` : ""}</article>`;
         } else {
           content = `<div class="coin-issues-toolbar"><h3>뉴스·이슈</h3>${admin ? button("new", "글쓰기") : ""}</div>
             ${view.error ? button("retry", "다시 시도") : view.items.length ? `<ul class="coin-issues-list">${view.items.map(post =>
               `<li><button type="button" data-coin-issue-id="${escapeAttr(post.id)}">${escapeHtml(post.title)}</button>
-                <time datetime="${new Date(post.createdAt).toISOString()}">관리자 · ${escapeHtml(coinIssueDate(post.createdAt))}</time></li>`).join("")}</ul>` : '<p class="muted">등록된 이슈가 없습니다.</p>'}
+                <time datetime="${new Date(post.createdAt).toISOString()}">${post.source === "coinness" ? "코인니스 · 자동등록" : "관리자"} · ${escapeHtml(coinIssueDate(post.createdAt))}</time></li>`).join("")}</ul>` : '<p class="muted">등록된 이슈가 없습니다.</p>'}
+            ${view.newsSyncDelayed ? '<p class="muted" role="status">자동 뉴스 연결 지연 · 기존 글은 유지됩니다.</p>' : ""}
             ${view.total > 10 ? `<div class="coin-issue-actions">${view.page > 1 ? button("previous", "이전") : ""}
               <span>${view.page} / ${Math.ceil(view.total / 10)}</span>${view.page * 10 < view.total ? button("next", "다음") : ""}</div>` : ""}`;
         }
@@ -15600,13 +15606,13 @@
         document.getElementById("coinIssueError").textContent = view.error || "";
       }
 
-      async function loadCoinIssues(id = "") {
+      async function loadCoinIssues(id = "", background = false) {
         const view = coinIssuesView;
         if (!view || !siteAuthConfirmed || isSiteLocked()) return;
         const request = ++view.request;
-        view.loading = true;
+        view.loading = !background;
         view.error = "";
-        renderCoinIssues();
+        if (!background) renderCoinIssues();
         const query = `?asset=${encodeURIComponent(view.asset)}&page=${view.page}`;
         try {
           const cached = !id && coinIssuesCache.get(view.asset + ":" + view.page);
@@ -15619,6 +15625,7 @@
           else {
             view.items = payload.items;
             view.total = payload.total;
+            view.newsSyncDelayed = payload.newsSyncDelayed === true;
             view.mode = "list";
             coinIssuesCache.set(view.asset + ":" + view.page, { payload, at: Date.now() });
             if (coinIssuesCache.size > 100) coinIssuesCache.delete(coinIssuesCache.keys().next().value);
@@ -15626,7 +15633,8 @@
           view.loaded = true;
         } catch (error) {
           if (coinIssuesView !== view || view.request !== request) return;
-          view.error = coinIssueError(error);
+          if (background) view.newsSyncDelayed = true;
+          else view.error = coinIssueError(error);
         } finally {
           if (coinIssuesView === view && view.request === request) { view.loading = false; renderCoinIssues(); }
         }
@@ -15672,6 +15680,14 @@
         event.returnValue = "";
       });
       document.getElementById("coinIssuesTab").addEventListener("click", () => setCoinInfoTab(true));
+      setInterval(() => {
+        const view = coinIssuesView;
+        if (!view?.loaded || view.mode !== "list" || view.loading || view.busy || document.hidden || !navigator.onLine
+          || !siteAuthConfirmed || isSiteLocked() || coinInfoModal.classList.contains("hidden")
+          || document.getElementById("coinIssuesPanel").hidden) return;
+        const cache = coinIssuesCache.get(view.asset + ":" + view.page);
+        if (!cache || Date.now() - cache.at >= 60000) loadCoinIssues("", true);
+      }, 60000);
       document.querySelector(".coin-info-tabs").addEventListener("keydown", event => {
         if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
         event.preventDefault();
@@ -15690,10 +15706,12 @@
         if (post) { loadCoinIssues(post.dataset.coinIssueId); return; }
         const action = event.target.closest("[data-coin-issue-action]")?.dataset.coinIssueAction;
         if (["new", "edit", "delete"].includes(action) && siteSessionRole !== "admin") return;
+        if (action === "edit" && view.post?.source === "coinness") return;
         if (action === "cancel") {
           if (coinIssueDraftChanged() && !window.confirm("작성 중인 내용을 버릴까요?")) return;
           view.mode = "list"; loadCoinIssues(view.post?.id || "");
         } else if (["new", "edit", "delete"].includes(action)) {
+          view.request++;
           if (action === "new") { view.post = null; view.newId = crypto.randomUUID(); }
           view.mode = action === "delete" ? "delete" : "edit";
           view.error = ""; renderCoinIssues();

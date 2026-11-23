@@ -35,8 +35,9 @@ class MemoryStorage {
     if (Array.isArray(key)) return key.map((item) => this.data.delete(item)).filter(Boolean).length;
     return this.data.delete(key);
   }
-  async list({ prefix = "" } = {}) {
-    return new Map([...this.data].filter(([key]) => key.startsWith(prefix)).map(([key, value]) => [key, structuredClone(value)]));
+  async list({ prefix = "", startAfter = "", limit = Infinity } = {}) {
+    return new Map([...this.data].filter(([key]) => key.startsWith(prefix) && key > startAfter)
+      .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).slice(0, limit).map(([key, value]) => [key, structuredClone(value)]));
   }
   async transaction(callback) {
     const next = this.pending.then(async () => {
@@ -149,6 +150,136 @@ test("coin issue concurrent writes preserve pagination and reject retired sessio
   f.store.getActiveSessionClaims = async () => null;
   assert.equal((await f.request(path)).status, 401);
   assert.equal((await f.store.handleCoinIssues(new Request("https://worker.example" + path), new URL("https://worker.example" + path))).status, 401);
+});
+
+async function coinNewsFixture() {
+  const f = await fixture();
+  await f.store.writeMarketData(new Request("https://worker.example/api/market-data", { method: "POST", body: JSON.stringify({
+    generatedAt: Math.floor(Date.now() / 1000),
+    boards: { bybit: [{ symbol: "AI", englishName: "Sleepless AI", name: "슬립리스에이아이" }] },
+    coinInfo: {
+      SKY: { englishName: "Sky", koreanName: "스카이프로토콜" },
+      BTC: { englishName: "Bitcoin", koreanName: "비트코인" },
+      BCH: { englishName: "Bitcoin Cash", koreanName: "비트코인캐시" },
+      ETH: { englishName: "Ethereum", koreanName: "이더리움" },
+      AI: { englishName: "Gensyn", koreanName: "젠신" },
+      GAS: { englishName: "Gas", koreanName: "가스" },
+    },
+  }) }));
+  const newsAt = Date.now(), published = Math.floor((newsAt - 60000) / 1000);
+  const news = (id, headline, assetSymbols = [], summary = "관련 소식 요약") =>
+    ({ id, headline, assetSymbols, summary, publishAtTs: published + id, sourceName: "Coinness" });
+  const write = items => f.store.writeNewsStore({ fetchedAt: ++f.newsAt, seededAt: newsAt, items });
+  f.newsAt = newsAt;
+  return { ...f, write, news };
+}
+
+test("Coinness tags and unique names attach automatically without ticker or substring collisions", async () => {
+  const f = await coinNewsFixture();
+  await f.write([
+    f.news(1, "SKY 업데이트", ["SKY"]), f.news(2, "AI 산업 투자 확대", ["AI"]),
+    f.news(3, "Sleepless AI 파트너십", ["AI"]), f.news(4, "Gensyn 업데이트", ["AI"]),
+    f.news(5, "Bitcoin Cash 업데이트"), f.news(6, "비트코인은 수요가 증가, 이더리움도 회복"),
+    f.news(7, "가스 가격 상승과 천연가스 투자"), f.news(8, "비트코인캐시의 업데이트"),
+  ]);
+  const list = async asset => (await (await f.request("/api/coin-issues?asset=" + asset)).json()).items;
+  const ids = async asset => (await list(asset)).map(post => post.id);
+  assert.ok((await ids("SKY:skyprotocol")).includes("coinness-1"));
+  assert.deepEqual(await ids("AI:gensyn"), ["coinness-4"]);
+  assert.deepEqual(await ids("AI:sleeplessai"), ["coinness-3"]);
+  assert.deepEqual(await ids("BTC:bitcoin"), ["coinness-6"]);
+  assert.deepEqual(await ids("BCH:bitcoincash"), ["coinness-8", "coinness-5"]);
+  assert.deepEqual(await ids("ETH:ethereum"), ["coinness-6"]);
+  assert.deepEqual(await ids("GAS:gas"), []);
+  assert.equal((await list("BTC:bitcoin"))[0].body, undefined);
+  assert.equal((await list("BTC:bitcoin"))[0].author, "코인니스");
+  const post = (await (await f.request("/api/coin-issues/coinness-1?asset=SKY:skyprotocol")).json()).post;
+  assert.equal(post.source, "coinness");
+  assert.equal(post.sourceUrl, "https://coinness.com/news/1");
+  assert.equal(post.body, "관련 소식 요약");
+  assert.equal((await f.request("/api/coin-issues/coinness-1?asset=BTC:bitcoin")).status, 404);
+});
+
+test("automatic news deduplicates, follows corrections, preserves manual posts and respects administrator deletions", async () => {
+  const f = await coinNewsFixture();
+  const item = f.news(1, "BTC 소식", ["BTC"]);
+  await f.write([item, item]);
+  const path = "/api/coin-issues?asset=BTC:bitcoin";
+  let list = await (await f.request(path)).json();
+  assert.equal(list.total, 1);
+  const original = list.items[0];
+  await f.write([{ ...item, summary: "수정된 요약" }]);
+  list = await (await f.request(path)).json();
+  assert.equal(list.items[0].revision, original.revision + 1);
+  const single = "/api/coin-issues/coinness-1?asset=BTC:bitcoin";
+  assert.equal((await f.request(single, "DELETE", { revision: 1, adminPassword: f.adminPassword }, f.adminToken)).status, 409);
+  assert.equal((await f.request(single, "PUT", { revision: 2, adminPassword: f.adminPassword, body: "override" }, f.adminToken)).status, 409);
+  assert.equal((await f.request(single, "DELETE", { revision: 2, adminPassword: f.adminPassword })).status, 403);
+  assert.equal((await f.request(single, "DELETE", { revision: 2, adminPassword: "" }, f.adminToken)).status, 401);
+  assert.equal((await f.request(single, "DELETE", { revision: 2, adminPassword: f.adminPassword }, f.adminToken)).status, 200);
+  const manual = { id: crypto.randomUUID(), title: "직접 작성", body: "유지할 메모", adminPassword: f.adminPassword };
+  await f.request(path, "POST", manual, f.adminToken);
+  await f.write([item, f.news(2, "다음 뉴스", ["BTC"])]);
+  list = await (await f.request(path)).json();
+  assert.equal(list.total, 2);
+  assert.ok(list.items.some(post => post.id === manual.id));
+  assert.ok(!list.items.some(post => post.id === "coinness-1"));
+  await f.write([item, f.news(2, "관련 자산 정정", ["ETH"])]);
+  assert.equal((await (await f.request(path)).json()).total, 1, "corrected asset tags remove obsolete links");
+  assert.equal((await (await f.request("/api/coin-issues?asset=ETH:ethereum")).json()).total, 1);
+  const backup = await f.store.readCoinIssuesForBackup();
+  assert.deepEqual(backup["coin-issues:hidden:BTC:bitcoin"], ["coinness-1"]);
+  assert.ok(backup["coin-issues:post:BTC:bitcoin:" + manual.id]);
+});
+
+test("automatic news keeps a bounded archive outside manual quota and retries an interrupted sync", async () => {
+  const f = await coinNewsFixture();
+  await f.write(Array.from({ length: 60 }, (_, index) => f.news(index + 1, "BTC 기사 " + index, ["BTC"])));
+  let list = await (await f.request("/api/coin-issues?asset=BTC:bitcoin")).json();
+  assert.equal(list.total, 50);
+  assert.equal(list.items.length, 10);
+  await f.write([f.news(61, "새 기사", ["BTC"])]);
+  await f.request("/api/coin-issues?asset=BTC:bitcoin");
+  assert.equal((await f.storage.get("coin-issues:auto:BTC:bitcoin")).length, 50, "rolling feed pruning does not discard the archive");
+  const read = f.store.readMarketData;
+  f.store.readMarketData = async () => { throw new Error("temporary storage read failure"); };
+  await f.write([f.news(62, "갱신 기사", ["BTC"])]);
+  const previousStamp = await f.storage.get("coin-issues:auto-sync");
+  list = await (await f.request("/api/coin-issues?asset=BTC:bitcoin")).json();
+  assert.equal(list.total, 50);
+  assert.equal(list.newsSyncDelayed, true);
+  assert.deepEqual(await f.storage.get("coin-issues:auto-sync"), previousStamp, "failed sync cannot be marked complete");
+  f.store.readMarketData = read;
+  list = await (await f.request("/api/coin-issues?asset=BTC:bitcoin")).json();
+  assert.equal(list.newsSyncDelayed, false);
+  assert.equal(list.items[0].id, "coinness-62");
+});
+
+test("the news cron ingests official codes without visitor login or exposing an internal route", async () => {
+  const f = await coinNewsFixture(), tasks = [];
+  const previous = globalThis.fetch;
+  let calls = 0;
+  await f.write([]);
+  globalThis.fetch = async url => {
+    calls++;
+    assert.match(String(url), /^https:\/\/api\.coinness\.com\/feed\/v1\/breaking-news\?/);
+    return Response.json([{ id: 99, publishAt: new Date(Date.now() - 1000).toISOString(), title: "시장 소식",
+      content: "<p>출처의 요약 본문</p>", originCodes: ["BTC", "btc", "invalid/code"], quickOrderCode: "BTC" }]);
+  };
+  Object.defineProperty(f.env, "BACKUP_BUCKET", { get() { throw new Error("news cron cannot run backups"); } });
+  try {
+    assert.equal((await f.request("/internal/coin-news-warm", "POST", {}, "")).status, 404);
+    await worker.scheduled({ cron: "*/10 * * * *" }, f.env, { waitUntil: task => tasks.push(task) });
+    await Promise.all(tasks);
+    assert.equal(calls, 1);
+    assert.deepEqual((await f.store.readNewsStore()).items[0].assetSymbols, ["BTC"]);
+    const list = await (await f.request("/api/coin-issues?asset=BTC:bitcoin")).json();
+    assert.equal(list.items[0].id, "coinness-99");
+    assert.equal(calls, 1, "opening an issue reads the shared stored feed, not a new network request");
+    await worker.scheduled({ cron: "*/10 * * * *" }, f.env, { waitUntil: task => tasks.push(task) });
+    await Promise.all(tasks);
+    assert.equal(calls, 1, "the shared news cache also coalesces scheduled checks");
+  } finally { globalThis.fetch = previous; }
 });
 
 const feeSource = (fee = 12) => ({ protocols: [
@@ -304,10 +435,10 @@ test("Coinbase futures use the new public gateway, coalesce refreshes and retain
 test("resource monitoring refreshes shared sources and cannot promote old snapshots or failed caches", async () => {
   const f = await fixture();
   const now = Date.now();
-  let failed = false;
+  let failed = false, newsSyncFailed = false;
   f.store.handleL2FeesRequest = async layer => Response.json({ fetchedAt: now, stale: failed,
     rows: [{ total24h: layer === 'l1' ? 0 : 1 }] });
-  f.store.refreshNewsStore = async () => ({ stale: failed, store: { fetchedAt: now, items: [{ id: 'news' }] } });
+  f.store.refreshNewsStore = async () => ({ stale: failed, coinNewsSynced: !newsSyncFailed, store: { fetchedAt: now, items: [{ id: 'news' }] } });
   const market = { generatedAt: Math.floor(now / 1000), refreshHealth: { components: {
     defillama: { state: 'healthy', lastSuccessAt: Math.floor(now / 1000) },
     apywa: { state: 'healthy', lastSuccessAt: Math.floor(now / 1000) - 3600 },
@@ -315,6 +446,9 @@ test("resource monitoring refreshes shared sources and cannot promote old snapsh
   f.store.readMarketData = async () => market;
   const read = async () => (await (await f.store.probeComparisonSource('resources')).json()).sourceChecks;
   assert.deepEqual(await read(), { l1fees: true, l2fees: true, news: true, market_snapshot: true, defillama: true, apywa: true });
+  newsSyncFailed = true;
+  assert.equal((await read()).news, false, 'a successful feed cannot hide failed coin indexing from the existing news monitor');
+  newsSyncFailed = false;
   failed = true;
   market.generatedAt -= 1801;
   assert.equal(Object.values(await read()).every(value => value === false), true);

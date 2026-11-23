@@ -10,6 +10,8 @@ const BOARD_POSTS_KEY = "free-board-posts";
 const BOARD_ADMIN_LOGS_KEY = "free-board-admin-logs";
 const BOARD_CATEGORIES_KEY = "free-board-categories";
 const COIN_ISSUES_PREFIX = "coin-issues:";
+const COIN_NEWS_CRON = "*/10 * * * *";
+const COIN_NEWS_LIMIT = 50;
 const SKY_ISSUE_BODY = `이제 비트코인 하락이 진정되었으니 좀 더 제대로 짚어보는 Sky protocol 사태
 
 지금 Sky (구 메이커다오) 의 stUSDS 가 사실상 디페깅되었습니다.
@@ -56,7 +58,83 @@ function coinIssueAsset(value) {
 
 function coinIssueSummary(post) {
   const { id, title, createdAt, updatedAt, revision } = post;
-  return { id, title, createdAt, updatedAt, revision, author: "관리자" };
+  return { id, title, createdAt, updatedAt, revision,
+    author: post.source === "coinness" ? "코인니스" : "관리자",
+    ...(post.source === "coinness" ? { source: "coinness", sourceUrl: post.sourceUrl } : {}) };
+}
+
+function coinNewsSymbols(entry) {
+  return [...new Set([...(Array.isArray(entry?.assetSymbols) ? entry.assetSymbols : []),
+    ...(Array.isArray(entry?.originCodes) ? entry.originCodes : []), entry?.quickOrderCode]
+    .filter(value => typeof value === "string" && /^[A-Za-z0-9]{1,40}$/.test(value))
+    .map(value => value.toUpperCase()))].slice(0, 30);
+}
+
+function coinNewsWords(text) {
+  return String(text || "").normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+}
+
+function coinNewsAsset(symbol, name) {
+  const normalized = String(name || symbol).normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 100);
+  return coinIssueAsset(`${String(symbol).toUpperCase()}:${normalized || String(symbol).toLowerCase()}`);
+}
+
+function coinNewsCatalog(market) {
+  const names = new Map(), symbols = new Map();
+  const generic = new Set(["gas", "near", "magic", "world", "open", "layer", "virtual", "가스", "월드", "오픈", "레이어"]);
+  const add = (map, name, asset) => { if (!map.has(name)) map.set(name, new Set()); map.get(name).add(asset); };
+  const register = (symbol, info) => {
+    const asset = coinNewsAsset(symbol, info.englishName || info.name || symbol);
+    if (!asset) return;
+    add(symbols, symbol.toUpperCase(), asset);
+    const aliases = [info.koreanName, info.englishName, info.name,
+      ...Object.values(info.sources || {}).map(source => source?.assetName)];
+    for (const alias of aliases) {
+      for (const part of String(alias || "").split(/[()（）]/)) {
+        const words = coinNewsWords(part), name = words.join(" ");
+        if (!name || words.length > 6 || name.length > 100 || name === symbol.toLowerCase() || generic.has(name)) continue;
+        if (/[가-힣]/.test(name) ? name.replace(/ /g, "").length < 2 : words.length === 1 && name.length < 5) continue;
+        add(names, name, asset);
+      }
+    }
+  };
+  for (const [symbol, info] of Object.entries(market?.coinInfo || {})) register(symbol, info);
+  for (const [board, rows] of Object.entries(market?.boards || {})) {
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const symbol = String(row.symbol || "").toUpperCase(), canonical = market.coinInfo?.[symbol];
+      // Extra spot exchanges can carry a different project with the same ticker.
+      const separate = ["bybit", "bitget"].includes(board) && row.englishName
+        && coinNewsAsset(symbol, row.englishName) !== coinNewsAsset(symbol, canonical?.englishName || row.englishName);
+      register(symbol, canonical && !separate ? canonical : row);
+    }
+  }
+  return { names, symbols };
+}
+
+function matchCoinNews(item, catalog) {
+  const assets = new Set();
+  for (const symbol of coinNewsSymbols(item)) {
+    const candidates = catalog.symbols.get(symbol);
+    if (candidates?.size === 1) assets.add([...candidates][0]);
+  }
+  const words = coinNewsWords(`${item.headline}\n${item.summary}`);
+  const particles = ["으로부터", "에서는", "으로는", "에서", "에게", "으로", "부터", "까지", "보다", "처럼", "은", "는", "이", "가", "을", "를", "의", "와", "과", "에", "도", "로"];
+  for (let start = 0; start < words.length; start++) {
+    for (let length = Math.min(6, words.length - start); length >= 1; length--) {
+      const name = words.slice(start, start + length).join(" ");
+      let candidates = catalog.names.get(name);
+      if (!candidates && /[가-힣]/.test(name)) {
+        for (const suffix of particles) {
+          if (name.endsWith(suffix)) { candidates = catalog.names.get(name.slice(0, -suffix.length)); if (candidates) break; }
+        }
+      }
+      if (!candidates) continue;
+      if (candidates.size === 1) assets.add([...candidates][0]);
+      start += length - 1;
+      break;
+    }
+  }
+  return assets;
 }
 const USAGE_STATS_KEY = "usage-stats-v1";
 const NEWS_STORE_KEY = "coinness-news-store-v1";
@@ -2423,6 +2501,7 @@ function normalizeNewsItem(entry) {
     articleUrl: `https://coinness.com/news/${id}`,
     originUrl: entry?.link ? String(entry.link).trim() : "",
     originTitle: entry?.linkTitle ? String(entry.linkTitle).trim() : "",
+    assetSymbols: coinNewsSymbols(entry),
   };
   return item;
 }
@@ -2444,6 +2523,7 @@ function normalizeStoredNewsItem(entry) {
     articleUrl: cleanBoardText(entry?.articleUrl || entry?.url || entry?.link || `https://coinness.com/news/${id}`, 1000),
     originUrl: cleanBoardText(entry?.originUrl || entry?.sourceUrl || "", 1000),
     originTitle: cleanNewsText(entry?.originTitle || entry?.linkTitle || "").slice(0, 200),
+    assetSymbols: coinNewsSymbols(entry),
   };
   return item;
 }
@@ -2886,16 +2966,20 @@ export class BoardStore {
     const id = match[1] || "";
     const indexKey = COIN_ISSUES_PREFIX + "index:" + asset;
     if (request.method === "GET") {
+      const sync = await this.syncCoinNewsSafely();
       await this.seedCoinIssues(asset);
+      const automatic = await this.state.storage.get(COIN_ISSUES_PREFIX + "auto:" + asset) || [];
       if (id) {
-        const post = await this.state.storage.get(COIN_ISSUES_PREFIX + "post:" + asset + ":" + id);
-        return post ? this.recordApiResponse(jsonResponse({ post: { ...post, author: "관리자" } }, 200, this.env))
+        const post = automatic.find(post => post.id === id)
+          || await this.state.storage.get(COIN_ISSUES_PREFIX + "post:" + asset + ":" + id);
+        return post ? this.recordApiResponse(jsonResponse({ post: { ...post, ...coinIssueSummary(post) } }, 200, this.env))
           : jsonResponse({ error: "issue_not_found" }, 404, this.env);
       }
-      const index = await this.state.storage.get(indexKey) || [];
-      const page = Math.max(1, Math.min(10, Math.floor(Number(url.searchParams.get("page")) || 1)));
+      const index = [...(await this.state.storage.get(indexKey) || []), ...automatic.map(coinIssueSummary)]
+        .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
+      const page = Math.max(1, Math.min(15, Math.floor(Number(url.searchParams.get("page")) || 1)));
       return this.recordApiResponse(jsonResponse({
-        items: index.slice((page - 1) * 10, page * 10), page, total: index.length,
+        items: index.slice((page - 1) * 10, page * 10), page, total: index.length, newsSyncDelayed: !sync.ok,
       }, 200, this.env));
     }
     if (!["POST", "PUT", "DELETE"].includes(request.method) || (request.method === "POST" ? Boolean(id) : !id)) {
@@ -2908,6 +2992,23 @@ export class BoardStore {
     }
     const denied = await this.checkAdminPassword(request, body.adminPassword);
     if (denied) return denied;
+    if (id.startsWith("coinness-")) {
+      if (request.method !== "DELETE") return jsonResponse({ error: "automatic_issue_read_only" }, 409, this.env);
+      const result = await this.state.storage.transaction(async storage => {
+        const key = COIN_ISSUES_PREFIX + "auto:" + asset;
+        const posts = await storage.get(key) || [];
+        const old = posts.find(post => post.id === id);
+        if (!old) return { error: "issue_not_found", status: 404 };
+        if (body.revision !== old.revision) return { error: "issue_conflict", status: 409 };
+        const hiddenKey = COIN_ISSUES_PREFIX + "hidden:" + asset;
+        const hidden = await storage.get(hiddenKey) || [];
+        if (hidden.length >= 1000) return { error: "issue_limit", status: 409 };
+        await storage.put(hiddenKey, [...new Set([...hidden, id])]);
+        await storage.put(key, posts.filter(post => post.id !== id));
+        return { ok: true };
+      });
+      return jsonResponse(result.error ? { error: result.error } : result, result.status || 200, this.env);
+    }
     const creating = request.method === "POST";
     const postId = creating ? String(body.id || "") : id;
     if (creating && !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(postId)) {
@@ -2943,6 +3044,65 @@ export class BoardStore {
       return { post: { ...post, author: "관리자" } };
     });
     return jsonResponse(result.error ? { error: result.error } : result, result.status || (creating ? 201 : 200), this.env);
+  }
+
+  async syncCoinNewsSafely() {
+    if (!this.coinNewsSyncPromise) {
+      this.coinNewsSyncPromise = this.syncCoinNews().then(() => ({ ok: true })).catch(async error => {
+        console.error("coin_news_sync_failed", String(error?.message || error).slice(0, 120));
+        return { ok: false };
+      }).finally(() => { this.coinNewsSyncPromise = null; });
+    }
+    return this.coinNewsSyncPromise;
+  }
+
+  async syncCoinNews() {
+    const news = await this.readNewsStore();
+    const meta = await this.state.storage.get(MARKET_DATA_KEY);
+    if (!news.items.length || !meta?.generatedAt) return;
+    const stamp = { newsAt: news.fetchedAt, marketAt: meta.generatedAt };
+    const previous = await this.state.storage.get(COIN_ISSUES_PREFIX + "auto-sync");
+    if (previous?.newsAt === stamp.newsAt && previous?.marketAt === stamp.marketAt) return;
+    const market = await this.readMarketData();
+    if (!market) throw new Error("coin_news_catalog_unavailable");
+    const catalog = coinNewsCatalog(market), grouped = new Map();
+    for (const item of news.items) {
+      if (!Number.isSafeInteger(item.id) || item.id <= 0 || item.publishAtTs * 1000 > Date.now() + 60000) continue;
+      for (const asset of matchCoinNews(item, catalog)) {
+        if (!grouped.has(asset)) grouped.set(asset, []);
+        grouped.get(asset).push({ id: `coinness-${item.id}`, title: item.headline.slice(0, 240),
+          body: item.summary, source: "coinness", sourceUrl: `https://coinness.com/news/${item.id}`,
+          createdAt: item.publishAtTs * 1000, updatedAt: item.publishAtTs * 1000, revision: 1 });
+      }
+    }
+    // Keep a small archive independently of the rolling shared news feed.
+    const prefix = COIN_ISSUES_PREFIX + "auto:";
+    const knownAssets = new Set(grouped.keys());
+    let startAfter;
+    for (;;) {
+      const batch = await this.state.storage.list({ prefix, limit: 100, ...(startAfter ? { startAfter } : {}) });
+      for (const key of batch.keys()) knownAssets.add(key.slice(prefix.length));
+      if (batch.size < 100) break;
+      startAfter = [...batch.keys()].at(-1);
+    }
+    const currentIds = new Set(news.items.map(item => `coinness-${item.id}`));
+    for (const asset of knownAssets) {
+      await this.state.storage.transaction(async storage => {
+        const key = prefix + asset, old = await storage.get(key) || [];
+        const hidden = new Set(await storage.get(COIN_ISSUES_PREFIX + "hidden:" + asset) || []);
+        const byId = new Map(old.filter(post => !currentIds.has(post.id) && !hidden.has(post.id)).map(post => [post.id, post]));
+        for (const post of grouped.get(asset) || []) {
+          if (hidden.has(post.id)) continue;
+          const previous = old.find(item => item.id === post.id);
+          const changed = previous && (previous.title !== post.title || previous.body !== post.body || previous.createdAt !== post.createdAt);
+          byId.set(post.id, previous && !changed ? previous : { ...post,
+            revision: previous ? previous.revision + 1 : 1, updatedAt: changed ? Date.now() : post.updatedAt });
+        }
+        const next = [...byId.values()].sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)).slice(0, COIN_NEWS_LIMIT);
+        if (JSON.stringify(old) !== JSON.stringify(next)) await storage.put(key, next);
+      });
+    }
+    await this.state.storage.put(COIN_ISSUES_PREFIX + "auto-sync", stamp);
   }
 
   async readCoinIssuesForBackup() {
@@ -3701,7 +3861,7 @@ export class BoardStore {
       } catch (_) { sourceChecks.l1fees = sourceChecks.l2fees = false; }
       try {
         const news = await this.refreshNewsStore();
-        sourceChecks.news = !news.stale && news.store.items.length > 0 && news.store.fetchedAt <= Date.now() + 5000
+        sourceChecks.news = news.coinNewsSynced !== false && !news.stale && news.store.items.length > 0 && news.store.fetchedAt <= Date.now() + 5000
           && Date.now() - news.store.fetchedAt <= Math.max(getNewsCacheMs(this.env) * 2, 20 * 60000);
       } catch (_) { sourceChecks.news = false; }
       const market = await this.readMarketData();
@@ -3827,7 +3987,8 @@ export class BoardStore {
       }
       const result = await this.loadNewsStore(force);
       await this.state.storage.put("news-refresh-status-v1", { failedAt: result.stale ? Date.now() : 0 });
-      return result;
+      const sync = await this.syncCoinNewsSafely();
+      return { ...result, coinNewsSynced: sync.ok };
     })().finally(() => { this.newsRefreshPromise = null; });
     return this.newsRefreshPromise;
   }
@@ -5142,6 +5303,11 @@ export class BoardStore {
     const url = new URL(request.url);
     const postId = decodeURIComponent(url.pathname.replace(/^\/api\/board\/posts\/?/, ""));
 
+    if (request.method === "POST" && url.hostname === "board-store" && url.pathname === "/internal/coin-news-warm") {
+      const result = await this.refreshNewsStore();
+      return jsonResponse({ ok: !result.stale && result.coinNewsSynced === true, fetchedAt: result.store.fetchedAt }, 200, this.env);
+    }
+
     if (request.method === "POST" && url.hostname === "board-store" && url.pathname === "/internal/comparison-fx-warm") {
       const fx = await this.readComparisonFx();
       return jsonResponse({ ok: comparisonFxUsable(fx) && !fx.stale, source: fx.source, asOf: fx.asOf }, 200, this.env);
@@ -5849,6 +6015,12 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
+    if (event?.cron === COIN_NEWS_CRON) {
+      if (!env.BOARD_STORE) return;
+      ctx.waitUntil(env.BOARD_STORE.get(env.BOARD_STORE.idFromName("free-board")).fetch(new Request(
+        "https://board-store/internal/coin-news-warm", { method: "POST" })));
+      return;
+    }
     if (event?.cron === COMPARISON_FX_WARM_CRON) {
       if (!env.BOARD_STORE) return;
       ctx.waitUntil(env.BOARD_STORE.get(env.BOARD_STORE.idFromName("free-board")).fetch(new Request(
