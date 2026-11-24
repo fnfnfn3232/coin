@@ -3312,7 +3312,23 @@ export class BoardStore {
   }
 
   async repairTelegramIssue(post, asset, original = null) {
-    const source = original || await this.fetchTelegramOriginal(post.sourceUrl);
+    if (original) return this.applyTelegramIssueRepair(post, asset, original);
+    this.telegramIssueRepairs ||= new Map();
+    const key = asset + ":" + post.id;
+    if (this.telegramIssueRepairs.has(key)) return this.telegramIssueRepairs.get(key);
+    const pending = (async () => {
+      const posts = await this.state.storage.get(COIN_ISSUES_PREFIX + "auto:" + asset) || [];
+      const current = posts.find(item => item.id === post.id && item.sourceUrl === post.sourceUrl && item.source === "telegram");
+      if (!current) return null;
+      const entry = current.fullText && current.bodyKey && await this.state.storage.get(current.bodyKey);
+      if (entry?.sourceUrl === current.sourceUrl && typeof entry.body === "string") return current;
+      return this.applyTelegramIssueRepair(current, asset, await this.fetchTelegramOriginal(current.sourceUrl));
+    })().finally(() => { if (this.telegramIssueRepairs.get(key) === pending) this.telegramIssueRepairs.delete(key); });
+    this.telegramIssueRepairs.set(key, pending);
+    return pending;
+  }
+
+  async applyTelegramIssueRepair(post, asset, source) {
     const prepared = await this.makeTelegramIssuePost(source, post.id);
     return this.state.storage.transaction(async storage => {
       const key = COIN_ISSUES_PREFIX + "auto:" + asset, posts = await storage.get(key) || [];
