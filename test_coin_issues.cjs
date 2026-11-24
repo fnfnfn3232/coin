@@ -68,13 +68,15 @@ async function main() {
             return route.fulfill({ json: post ? { post } : { error: 'issue_not_found' }, status: post ? 200 : 404, headers });
           }
           if (failIssueLists) return route.fulfill({ json: { error: 'temporary_failure' }, status: 503, headers });
+          const page = Math.max(1, Math.min(Math.ceil(records.length / 10) || 1, Number(url.searchParams.get('page')) || 1));
+          const currentPage = records.slice((page - 1) * 10, page * 10);
           let remaining = 24 * 1024;
-          const includedPosts = records.slice(0, 10).filter(post => {
+          const includedPosts = currentPage.filter(post => {
             const bytes = Buffer.byteLength(JSON.stringify(post));
             if (bytes > 8 * 1024 || bytes > remaining) return false;
             remaining -= bytes; return true;
           });
-          return route.fulfill({ json: { items: records.map(({ body, ...post }) => post), includedPosts, total: records.length, page: 1 }, headers });
+          return route.fulfill({ json: { items: currentPage.map(({ body, ...post }) => post), includedPosts, total: records.length, page }, headers });
         }
         const body = route.request().postDataJSON();
         if (role !== 'admin') return route.fulfill({ json: { error: 'admin_required' }, status: 403, headers });
@@ -364,6 +366,29 @@ async function main() {
     assert.deepEqual(expired, { confirmed: false, details: 0, pending: 0, hidden: true }, 'expired login cannot open private cached text');
     assert.equal(await livePage.evaluate(() => coinIssuesCache.size), 0);
     await live.context.close();
+    const many = Array.from({ length: 230 }, (_, i) => ({ ...seed, id: 'manual-page-' + i, title: '보관된 수동 이슈 ' + i,
+      body: '계속 보존되는 본문 ' + i, createdAt: now - i * 1000 }));
+    posts.set('SKY:skyprotocol', many);
+    detailDelayMs = 0;
+    const paged = await start('admin');
+    await paged.page.evaluate(() => openCoinInfo('SKY'));
+    await paged.page.locator('#coinIssuesTab').click();
+    await paged.page.getByRole('button', { name: many[0].title, exact: true }).waitFor();
+    for (let i = 0; i < 21; i++) {
+      await paged.page.getByRole('button', { name: '다음', exact: true }).click();
+      await paged.page.getByRole('button', { name: many[(i + 1) * 10].title, exact: true }).waitFor();
+    }
+    assert.equal(await paged.page.evaluate(() => coinIssuesView.page), 22);
+    await paged.page.getByRole('button', { name: '다음', exact: true }).click();
+    await paged.page.getByRole('button', { name: many[229].title, exact: true }).click();
+    assert.equal(await paged.page.locator('.coin-issue-text').textContent(), many[229].body);
+    await paged.page.getByRole('button', { name: '목록', exact: true }).click();
+    posts.set('SKY:skyprotocol', many.slice(0, 205));
+    await paged.page.evaluate(() => loadCoinIssues('', false, true));
+    await paged.page.getByRole('button', { name: many[204].title, exact: true }).waitFor();
+    assert.equal(await paged.page.evaluate(() => coinIssuesView.page), 21, 'server page clamping also corrects the visible page number');
+    assert.equal(await paged.page.locator('[data-coin-issue-id]').count(), 5);
+    await paged.context.close();
     assert.deepEqual(errors, []);
     console.log('PASS: synchronous first/repeat article opening without detail HTTP, bounded inline bodies, coalesced long-body prefetch, revision invalidation, admin CRUD, automatic news, XSS, drafts, expiry/logout privacy and responsive layout');
   } finally { await browser.close(); }

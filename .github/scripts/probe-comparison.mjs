@@ -26,11 +26,12 @@ for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", 
       }
       if (!response.ok) throw new Error(`probe_http_${response.status}`);
       result = await response.json();
-      if (result.implementation === 7 && (board !== "delivery" || (result.deliveryVersion === 1 && result.coinContentVersion === 3))
+      if (result.implementation === 7 && (board !== "delivery" || (result.deliveryVersion === 1 && result.coinContentVersion === 3 && result.coinRetentionVersion === 1))
         && (board !== "telegram" || result.telegramVersion === 4 && result.channels?.some(channel => channel.channel === "shrimp_notice"))) break;
       // Active Durable Objects may defer code updates for five minutes.
       if (attempt === versionAttempts - 1) throw new Error("new_worker_not_propagated:" + JSON.stringify({
-        implementation: result.implementation, deliveryVersion: result.deliveryVersion, coinContentVersion: result.coinContentVersion, exchange: result.exchange, error: result.error,
+        implementation: result.implementation, deliveryVersion: result.deliveryVersion, coinContentVersion: result.coinContentVersion,
+        coinRetentionVersion: result.coinRetentionVersion, exchange: result.exchange, error: result.error,
       }));
       await new Promise(resolve => setTimeout(resolve, ["delivery", "telegram"].includes(board) ? 15000 : 5000));
     }

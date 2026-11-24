@@ -11,7 +11,7 @@ const BOARD_ADMIN_LOGS_KEY = "free-board-admin-logs";
 const BOARD_CATEGORIES_KEY = "free-board-categories";
 const COIN_ISSUES_PREFIX = "coin-issues:";
 const COIN_NEWS_CRON = "*/10 * * * *";
-const COIN_NEWS_LIMIT = 50;
+const COIN_NEWS_LIMIT = 100;
 const TELEGRAM_CHANNELS = ["BChoSN", "umjuninsight", "deganlululala", "enjoymyhobby", "officialunivercityofcrypto", "JoshuaDeukKOR", "fireant_crypto", "shrimp_notice"];
 // Full-text republication authorized by the site owner for these specific channels.
 const TELEGRAM_REPUBLISH_CHANNELS = new Set(["BChoSN", "umjuninsight", "deganlululala", "enjoymyhobby", "officialunivercityofcrypto", "JoshuaDeukKOR", "fireant_crypto", "shrimp_notice"]);
@@ -3122,7 +3122,8 @@ export class BoardStore {
       const index = [...(await this.state.storage.get(indexKey) || []), ...automatic.map(coinIssueSummary)]
         .filter(belongs)
         .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
-      const page = Math.max(1, Math.min(20, Math.floor(Number(url.searchParams.get("page")) || 1)));
+      const requestedPage = Math.floor(Number(url.searchParams.get("page")) || 1);
+      const page = Number.isSafeInteger(requestedPage) ? Math.max(1, Math.min(Math.max(1, Math.ceil(index.length / 10)), requestedPage)) : 1;
       const items = index.slice((page - 1) * 10, page * 10);
       const includedPosts = [];
       let remainingBytes = COIN_ISSUE_INLINE_PAGE_BYTES;
@@ -3190,7 +3191,6 @@ export class BoardStore {
         ? { post: { ...old, author: "관리자" } } : { error: "issue_conflict", status: 409 };
       if (!creating && !old) return { error: "issue_not_found", status: 404 };
       if (!creating && body.revision !== old.revision) return { error: "issue_conflict", status: 409 };
-      if (creating && index.length >= 100) return { error: "issue_limit", status: 409 };
       if (request.method === "DELETE") {
         await storage.delete(postKey);
         await storage.put(indexKey, index.filter(item => item.id !== postId));
@@ -4374,7 +4374,8 @@ export class BoardStore {
       const bytes = value => new TextEncoder().encode(JSON.stringify(value)).byteLength;
       const publicFullBytes = bytes({ ...marketDataWithoutRefreshHistory(market), comparisonBootstrap: bootstrap });
       const marketBytes = bytes({ ...marketDataForScope(market, "market"), comparisonBootstrap: bootstrap });
-      return jsonResponse({ implementation: 7, deliveryVersion: 1, coinContentVersion: 3, exchange, warmSnapshotMs, publicFullBytes, marketBytes,
+      return jsonResponse({ implementation: 7, deliveryVersion: 1, coinContentVersion: 3, coinRetentionVersion: 1,
+        automaticIssueLimit: COIN_NEWS_LIMIT, manualIssueCountLimit: null, exchange, warmSnapshotMs, publicFullBytes, marketBytes,
         reductionPercent: Math.round((1 - marketBytes / publicFullBytes) * 100),
         sectionBytes: Object.fromEntries(["futures", "ranking", "audit", "search"].map(scope => [scope,
           bytes({ ...marketDataForScope(market, scope, true), comparisonBootstrap: bootstrap })])),

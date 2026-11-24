@@ -110,6 +110,9 @@ test("scoped snapshots retain comparison identity while excluding unrelated data
   assert.equal(scoped.upbitAudit, undefined);
   const delivery = await (await f.store.probeComparisonSource('delivery')).json();
   assert.equal(delivery.deliveryVersion, 1);
+  assert.equal(delivery.coinRetentionVersion, 1);
+  assert.equal(delivery.automaticIssueLimit, 100);
+  assert.equal(delivery.manualIssueCountLimit, null);
   assert.ok(delivery.marketBytes < delivery.publicFullBytes * 0.1);
   assert.doesNotMatch(JSON.stringify(delivery), /INTRODUCTION|private incident|description/);
   const delta = await (await f.request('/api/market-data?scope=futures&baseSince=100')).json();
@@ -312,6 +315,34 @@ test("coin issue concurrent writes preserve pagination and reject retired sessio
   assert.equal((await f.store.handleCoinIssues(new Request("https://worker.example" + path), new URL("https://worker.example" + path))).status, 401);
 });
 
+test('manual coin issues have no count quota and every page beyond twenty remains readable, editable and backed up', async () => {
+  const f = await fixture(), base = '/api/coin-issues?asset=BTC:bitcoin&section=issues', ids = [];
+  for (let i = 0; i < 205; i++) {
+    const id = crypto.randomUUID(); ids.push(id);
+    const response = await f.request(base, 'POST', { id, title: 'Manual ' + i, body: 'Keep manual text ' + i, adminPassword: f.adminPassword }, f.adminToken);
+    assert.equal(response.status, 201, 'manual creation must still work after one hundred posts');
+  }
+  const seen = new Set();
+  for (let page = 1; page <= 21; page++) {
+    const payload = await (await f.request(base + '&page=' + page)).json();
+    assert.equal(payload.total, 205); assert.equal(payload.page, page);
+    assert.equal(payload.items.length, page === 21 ? 5 : 10);
+    for (const post of payload.items) { assert.ok(!seen.has(post.id)); seen.add(post.id); }
+    assert.ok(payload.includedPosts.reduce((sum, post) => sum + Buffer.byteLength(JSON.stringify(post)), 0) <= 24 * 1024);
+  }
+  assert.deepEqual(seen, new Set(ids));
+  const beyond = await (await f.request(base + '&page=999999')).json();
+  assert.equal(beyond.page, 21); assert.equal(beyond.items.length, 5);
+  const first = '/api/coin-issues/' + ids[0] + '?asset=BTC:bitcoin&section=issues';
+  assert.equal((await (await f.request(first)).json()).post.body, 'Keep manual text 0');
+  assert.equal((await f.request(first, 'PUT', { title: 'Edited old manual', body: 'Preserved edit', revision: 1, adminPassword: f.adminPassword }, f.adminToken)).status, 200);
+  assert.equal((await f.request(first, 'DELETE', { revision: 2, adminPassword: f.adminPassword }, f.adminToken)).status, 200);
+  const last = await (await f.request(base + '&page=21')).json();
+  assert.equal(last.total, 204); assert.equal(last.items.length, 4);
+  assert.equal((await f.store.readCoinIssuesForBackup())['coin-issues:index:BTC:bitcoin'].length, 204);
+  const hidden = await f.request(base, 'GET', undefined, ''); assert.equal(hidden.status, 401);
+});
+
 test("issue lists include only bounded current-page bodies; oversized posts remain available on demand", async () => {
   const f = await fixture();
   const path = "/api/coin-issues?asset=BTC:bitcoin";
@@ -375,7 +406,7 @@ async function coinNewsFixture() {
       GAS: { englishName: "Gas", koreanName: "가스" },
     },
   }) }));
-  const newsAt = Date.now(), published = Math.floor((newsAt - 60000) / 1000);
+  const newsAt = Date.now(), published = Math.floor((newsAt - 600000) / 1000);
   const news = (id, headline, assetSymbols = [], summary = "관련 소식 요약") =>
     ({ id, headline, assetSymbols, summary, publishAtTs: published + id, sourceName: "Coinness" });
   const write = items => f.store.writeNewsStore({ fetchedAt: ++f.newsAt, seededAt: newsAt, items });
@@ -443,25 +474,28 @@ test("automatic news deduplicates, follows corrections, preserves manual posts a
 
 test("automatic news keeps a bounded archive outside manual quota and retries an interrupted sync", async () => {
   const f = await coinNewsFixture();
-  await f.write(Array.from({ length: 60 }, (_, index) => f.news(index + 1, "BTC 기사 " + index, ["BTC"])));
+  await f.write(Array.from({ length: 110 }, (_, index) => f.news(index + 1, "BTC 기사 " + index, ["BTC"])));
   let list = await (await f.request("/api/coin-issues?asset=BTC:bitcoin")).json();
-  assert.equal(list.total, 50);
+  assert.equal(list.total, 100);
+  assert.equal(list.items[0].id, 'coinness-110');
+  const last = await (await f.request('/api/coin-issues?asset=BTC:bitcoin&section=news&page=10')).json();
+  assert.equal(last.items.at(-1).id, 'coinness-11', 'only the ten oldest automatic items were pruned');
   assert.equal(list.items.length, 10);
-  await f.write([f.news(61, "새 기사", ["BTC"])]);
+  await f.write([f.news(111, "새 기사", ["BTC"])]);
   await f.request("/api/coin-issues?asset=BTC:bitcoin");
-  assert.equal((await f.storage.get("coin-issues:auto:BTC:bitcoin")).length, 50, "rolling feed pruning does not discard the archive");
+  assert.equal((await f.storage.get("coin-issues:auto:BTC:bitcoin")).length, 100, "rolling feed pruning does not discard the archive");
   const read = f.store.readMarketData;
   f.store.readMarketData = async () => { throw new Error("temporary storage read failure"); };
-  await f.write([f.news(62, "갱신 기사", ["BTC"])]);
+  await f.write([f.news(112, "갱신 기사", ["BTC"])]);
   const previousStamp = await f.storage.get("coin-issues:auto-sync");
   list = await (await f.request("/api/coin-issues?asset=BTC:bitcoin")).json();
-  assert.equal(list.total, 50);
+  assert.equal(list.total, 100);
   assert.equal(list.newsSyncDelayed, true);
   assert.deepEqual(await f.storage.get("coin-issues:auto-sync"), previousStamp, "failed sync cannot be marked complete");
   f.store.readMarketData = read;
   list = await (await f.request("/api/coin-issues?asset=BTC:bitcoin")).json();
   assert.equal(list.newsSyncDelayed, false);
-  assert.equal(list.items[0].id, "coinness-62");
+  assert.equal(list.items[0].id, "coinness-112");
 });
 
 test("the news cron ingests official codes without visitor login or exposing an internal route", async () => {
@@ -566,12 +600,12 @@ test("Coinness and Telegram retain independent bounded archives for the same ass
     channel, id: String(i + 1), sourceUrl: `https://t.me/${channel}/${i + 1}`, text: '비트코인 관련 소식', createdAt: Date.now() - 60000,
   })) });
   await f.store.refreshTelegramIssues();
-  await f.write(Array.from({ length: 60 }, (_, i) => f.news(i + 1, 'BTC 소식', ['BTC'])));
+  await f.write(Array.from({ length: 110 }, (_, i) => f.news(i + 1, 'BTC 소식', ['BTC'])));
   await f.store.syncCoinNews();
   const stored = await f.storage.get('coin-issues:auto:BTC:bitcoin');
-  assert.equal(stored.filter(post => post.source === 'coinness').length, 50);
-  assert.equal(stored.filter(post => post.source === 'telegram').length, 50);
-  assert.equal(stored.length, 100);
+  assert.equal(stored.filter(post => post.source === 'coinness').length, 100);
+  assert.equal(stored.filter(post => post.source === 'telegram').length, 100);
+  assert.equal(stored.length, 200);
 });
 
 async function telegramCursorFixture(cursorId = '100') {

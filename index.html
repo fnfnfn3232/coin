@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-bwXvdzPZT2lwb6wS7rAxpiOcqS1Fnbbl5gFiyW7QnZ4='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-S9wXUsZ6wjogGQTKxGKhRoetjCJAy7Dvt8WmvIRpIJg='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -15859,6 +15859,7 @@
             view.details = details;
             view.items = payload.items;
             view.total = payload.total;
+            if (Number.isSafeInteger(payload.page) && payload.page >= 1 && payload.page <= Math.max(1, Math.ceil(payload.total / 10))) view.page = payload.page;
             view.newsSyncDelayed = payload.newsSyncDelayed === true;
             view.mode = "list";
             coinIssuesCache.set(coinIssueListKey(view.asset, view.page, view.section), { payload, at: validatedAt });
