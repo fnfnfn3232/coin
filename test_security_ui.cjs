@@ -14,7 +14,7 @@ async function main() {
   assert.throws(() => withScriptPolicy(html), /Unexpected inline scripts/);
   const snapshot = require('./test_market_fixture.cjs')();
   const tokenKey = 'fdv_server_auth_token_v1', sessionKey = 'fdv_server_auth_session_token_v1';
-  let authenticated = true, loginCalls = 0, emailRequests = 0, blockedNetwork = 0;
+  let authenticated = true, loginCalls = 0, emailRequests = 0, blockedNetwork = 0, apiRequests = 0;
   const expiry = Date.now() + 24 * 3600000;
   const oldToken = `v3.${Math.floor(expiry / 1000)}.legacy.admin.owner.0.test-signature`;
   const newToken = oldToken.replace('legacy', 'new-session');
@@ -46,6 +46,7 @@ async function main() {
         if (url.hostname === 'untrusted.example') blockedNetwork++;
         return route.fulfill({ body: 'window.__remoteScript = true;', contentType: 'text/javascript' });
       }
+      apiRequests++;
       let result = {}, status = 200;
       if (url.pathname === '/api/session') { result = authenticated ? session() : { error: 'auth_required' }; status = authenticated ? 200 : 401; }
       else if (url.pathname === '/api/login') {
@@ -119,7 +120,26 @@ async function main() {
       }
     }
     assert.deepEqual(errors, []);
+    await page.close();
+    const beforeFraming = apiRequests;
+    for (const sandbox of [null, 'allow-scripts', 'allow-scripts allow-same-origin']) {
+      const embedded = await context.newPage();
+      await embedded.setContent(`<iframe ${sandbox === null ? '' : `sandbox="${sandbox}"`} src="https://fnfnfn3232.github.io/coin/"></iframe>`);
+      const frame = embedded.frames().find(item => item.url().startsWith('https://fnfnfn3232.github.io/coin/'));
+      assert.ok(frame);
+      await frame.waitForSelector('body', { state: 'attached' });
+      assert.equal(await frame.locator('#lockPasswordInput').isVisible(), false, 'embedded login controls must never be usable');
+      assert.equal(await frame.evaluate(() => getComputedStyle(document.body).display), 'none');
+      await embedded.close();
+    }
+    assert.equal(apiRequests, beforeFraming, 'framed pages cannot restore a session or start authenticated APIs');
+    const noScripts = await browser.newContext({ javaScriptEnabled: false });
+    const disabled = await noScripts.newPage();
+    await disabled.setContent(original);
+    assert.equal(await disabled.locator('#lockPasswordInput').isVisible(), false, 'script-disabled framing fails closed');
+    await noScripts.close();
     console.log('PASS: strict CSP blocks injected scripts/handlers/remote code/base replacement; token migration, same-tab reload, logout, password-only login, fixed expiry and mobile layout remain functional');
+    console.log('PASS: normal and sandboxed cross-origin frames hide login controls, make no API calls and fail closed without scripts');
   } finally { await browser.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

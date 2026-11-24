@@ -1,0 +1,2 @@
+#!/bin/sh
+node .github/scripts/verify-commit-privacy.cjs --identity

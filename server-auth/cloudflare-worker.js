@@ -3038,14 +3038,79 @@ export class BoardStore {
       .slice(0, MEMBER_MAX_ITEMS);
   }
 
-  async writeMembers(members) {
+  async writeMembers(members, storage = this.state.storage) {
     const normalized = (Array.isArray(members) ? members : [])
       .map((member) => normalizeMemberRecord(member))
       .filter(Boolean)
       .sort((a, b) => b.requestedAt - a.requestedAt)
       .slice(0, MEMBER_MAX_ITEMS);
-    await this.state.storage.put(MEMBERS_KEY, normalized);
+    await storage.put(MEMBERS_KEY, normalized);
     return normalized;
+  }
+
+  async mutateMembers(update) {
+    return this.state.storage.transaction(async storage => {
+      const members = await this.readMembers(storage);
+      const result = update(members);
+      if (result?.error) return result;
+      await this.writeMembers(members, storage);
+      return { ...result, members };
+    });
+  }
+
+  async consumeEmailOtp(requestId, code, purpose) {
+    const suppliedHash = await getEmailOtpHash(requestId, code, this.env);
+    const prefix = purpose === "password-reset" ? MEMBER_PASSWORD_RESET_KEY_PREFIX : EMAIL_OTP_KEY_PREFIX;
+    const expired = purpose === "password-reset" ? "password_reset_expired" : "email_otp_expired";
+    const invalid = purpose === "password-reset" ? "invalid_password_reset" : "invalid_email_otp";
+    // Consuming the code, checking its current generation and counting failures are one commit.
+    return this.state.storage.transaction(async storage => {
+      const key = prefix + requestId, record = await storage.get(key);
+      if (!record || Number(record.expiresAt) <= Date.now()
+        || record.currentKey && await storage.get(record.currentKey) !== requestId) {
+        await storage.delete(key);
+        await clearCurrentEmailOtp(storage, record, requestId);
+        return { error: expired };
+      }
+      if (purpose !== "password-reset" && record.purpose !== purpose
+        || purpose === "login" && !["admin", "member"].includes(record.role)) return { error: invalid };
+      const attempts = Math.max(0, Math.floor(Number(record.attempts) || 0));
+      if (attempts >= EMAIL_OTP_VERIFY_LIMIT || !timingSafeEqual(String(record.codeHash || ""), suppliedHash)) {
+        const nextAttempts = attempts + 1;
+        if (nextAttempts >= EMAIL_OTP_VERIFY_LIMIT) {
+          await storage.delete(key);
+          await clearCurrentEmailOtp(storage, record, requestId);
+          return { error: "email_otp_attempts_exceeded" };
+        }
+        await storage.put(key, { ...record, attempts: nextAttempts });
+        return { error: invalid, remainingAttempts: EMAIL_OTP_VERIFY_LIMIT - nextAttempts };
+      }
+      await storage.delete(key);
+      await clearCurrentEmailOtp(storage, record, requestId);
+      if (purpose === "password-reset") {
+        const member = (await this.readMembers(storage)).find(item => item.id === record.memberId && item.email === record.email && item.status === "active");
+        if (!member) return { error: invalid };
+        record.authVersion = member.authVersion;
+      }
+      return { record };
+    });
+  }
+
+  async reserveEmailOtpSend(rateKey, globalKey) {
+    return this.state.storage.transaction(async storage => {
+      const now = Date.now(), rate = await storage.get(rateKey) || {}, globalRate = await storage.get(globalKey) || {};
+      const retryAt = Math.max(Number(rate.lastSentAt || 0), Number(globalRate.lastSentAt || 0)) + EMAIL_OTP_RESEND_COOLDOWN_MS;
+      if (retryAt > now) return jsonResponse({ error: "email_otp_rate_limited", retryAfterSeconds: Math.ceil((retryAt - now) / 1000) }, 429, this.env);
+      const inWindow = now - Number(rate.windowStartedAt || 0) < 3600000;
+      const inGlobalWindow = now - Number(globalRate.windowStartedAt || 0) < 3600000;
+      const count = inWindow ? Number(rate.count || 0) : 0, globalCount = inGlobalWindow ? Number(globalRate.count || 0) : 0;
+      if (count >= EMAIL_OTP_HOURLY_LIMIT || globalCount >= EMAIL_OTP_GLOBAL_HOURLY_LIMIT) {
+        return jsonResponse({ error: "email_otp_hourly_limit", retryAfterSeconds: 3600 }, 429, this.env);
+      }
+      await storage.put(rateKey, { windowStartedAt: inWindow ? rate.windowStartedAt : now, count: count + 1, lastSentAt: now });
+      await storage.put(globalKey, { windowStartedAt: inGlobalWindow ? globalRate.windowStartedAt : now, count: globalCount + 1, lastSentAt: now });
+      return null;
+    });
   }
 
   async getActiveSessionClaims(request) {
@@ -4524,7 +4589,7 @@ export class BoardStore {
         cursor.toArray();
         return cursor.rowsRead;
       }) : 0;
-      return jsonResponse({ implementation: 7, deliveryVersion: 1, coinContentVersion: 3, coinRetentionVersion: 2,
+      return jsonResponse({ implementation: 7, securityVersion: 1, deliveryVersion: 1, coinContentVersion: 3, coinRetentionVersion: 2,
         coinContentIndexVersion: 1, coinContentRead: { totalNews: contentPage.total, pageItems: contentPage.records.length,
           pageRowsRead: contentPage.rowsRead, detailRowsRead, pageRecordBytes: bytes(contentPage.records), legacyAutomaticArrayBytes: bytes(legacy) },
         coinNewsLimit: COIN_NEWS_LIMIT, telegramIssueLimit: COIN_TELEGRAM_LIMIT, manualIssueCountLimit: null, exchange, warmSnapshotMs, publicFullBytes, marketBytes,
@@ -5194,56 +5259,12 @@ export class BoardStore {
     const now = Date.now();
     const clientIpHash = await sha256Hex(getForwardedLoginClientIp(request));
     const rateKey = `${EMAIL_OTP_RATE_KEY_PREFIX}${clientIpHash}`;
-    const rate = {
-      windowStartedAt: 0,
-      count: 0,
-      lastSentAt: 0,
-      ...((await this.state.storage.get(rateKey)) || {}),
-    };
-    const globalRate = {
-      windowStartedAt: 0,
-      count: 0,
-      lastSentAt: 0,
-      ...((await this.state.storage.get(EMAIL_OTP_GLOBAL_RATE_KEY)) || {}),
-    };
-    const retryAt = Math.max(
-      Number(rate.lastSentAt) + EMAIL_OTP_RESEND_COOLDOWN_MS,
-      Number(globalRate.lastSentAt) + EMAIL_OTP_RESEND_COOLDOWN_MS
-    );
-    if (retryAt > now) {
-      const retryAfterSeconds = Math.max(1, Math.ceil((retryAt - now) / 1000));
-      return jsonResponse({ error: "email_otp_rate_limited", retryAfterSeconds }, 429, this.env);
-    }
-
-    const windowStartedAt = Number(rate.windowStartedAt) || now;
-    const inCurrentWindow = now - windowStartedAt < 60 * 60 * 1000;
-    const hourlyCount = inCurrentWindow ? Math.max(0, Math.floor(Number(rate.count) || 0)) : 0;
-    if (hourlyCount >= EMAIL_OTP_HOURLY_LIMIT) {
-      const retryAfterSeconds = Math.max(1, Math.ceil((windowStartedAt + 60 * 60 * 1000 - now) / 1000));
-      return jsonResponse({ error: "email_otp_hourly_limit", retryAfterSeconds }, 429, this.env);
-    }
-    const globalWindowStartedAt = Number(globalRate.windowStartedAt) || now;
-    const inGlobalWindow = now - globalWindowStartedAt < 60 * 60 * 1000;
-    const globalHourlyCount = inGlobalWindow ? Math.max(0, Math.floor(Number(globalRate.count) || 0)) : 0;
-    if (globalHourlyCount >= EMAIL_OTP_GLOBAL_HOURLY_LIMIT) {
-      const retryAfterSeconds = Math.max(1, Math.ceil((globalWindowStartedAt + 60 * 60 * 1000 - now) / 1000));
-      return jsonResponse({ error: "email_otp_hourly_limit", retryAfterSeconds }, 429, this.env);
-    }
+    const rateDenied = await this.reserveEmailOtpSend(rateKey, EMAIL_OTP_GLOBAL_RATE_KEY);
+    if (rateDenied) return rateDenied;
 
     const requestId = crypto.randomUUID();
     const sentAt = Date.now();
     const expiresAt = sentAt + EMAIL_OTP_TTL_MS;
-    await this.state.storage.put(rateKey, {
-      windowStartedAt: inCurrentWindow ? windowStartedAt : now,
-      count: hourlyCount + 1,
-      lastSentAt: sentAt,
-    });
-    await this.state.storage.put(EMAIL_OTP_GLOBAL_RATE_KEY, {
-      windowStartedAt: inGlobalWindow ? globalWindowStartedAt : sentAt,
-      count: globalHourlyCount + 1,
-      lastSentAt: sentAt,
-    });
-
     const currentKey = await getEmailOtpCurrentKey(recipient || requestedEmail || requestId, "login");
     const previousRequestId = String(await this.state.storage.get(currentKey) || "");
     const code = generateEmailOtpCode();
@@ -5297,49 +5318,19 @@ export class BoardStore {
       return jsonResponse({ error: "invalid_email_otp" }, 401, this.env);
     }
 
-    const otpKey = `${EMAIL_OTP_KEY_PREFIX}${requestId}`;
-    const record = await this.state.storage.get(otpKey);
-    if (!record || Number(record.expiresAt) <= Date.now()) {
-      await this.state.storage.delete(otpKey);
-      await clearCurrentEmailOtp(this.state.storage, record, requestId);
-      return jsonResponse({ error: "email_otp_expired" }, 401, this.env);
-    }
-    if (record.purpose !== "login" || !["admin", "member"].includes(record.role)) {
-      await this.state.storage.delete(otpKey);
-      await clearCurrentEmailOtp(this.state.storage, record, requestId);
-      return jsonResponse({ error: "invalid_email_otp" }, 401, this.env);
-    }
-
-    const attempts = Math.max(0, Math.floor(Number(record.attempts) || 0));
-    const valid = timingSafeEqual(
-      String(record.codeHash || ""),
-      await getEmailOtpHash(requestId, code, this.env)
-    );
-    if (!valid) {
-      const nextAttempts = attempts + 1;
-      if (nextAttempts >= EMAIL_OTP_VERIFY_LIMIT) {
-        await this.state.storage.delete(otpKey);
-        await clearCurrentEmailOtp(this.state.storage, record, requestId);
-        return jsonResponse({ error: "email_otp_attempts_exceeded" }, 401, this.env);
-      }
-      await this.state.storage.put(otpKey, { ...record, attempts: nextAttempts });
-      return jsonResponse({
-        error: "invalid_email_otp",
-        remainingAttempts: EMAIL_OTP_VERIFY_LIMIT - nextAttempts,
-      }, 401, this.env);
-    }
-
-    await this.state.storage.delete(otpKey);
-    await clearCurrentEmailOtp(this.state.storage, record, requestId);
+    const consumed = await this.consumeEmailOtp(requestId, code, "login");
+    if (consumed.error) return jsonResponse(consumed, 401, this.env);
+    const { record } = consumed;
     if (record.role === "member") {
-      const members = await this.readMembers();
-      const member = members.find((item) => item.id === record.subject);
-      if (!member || member.status !== "active") {
-        return jsonResponse({ error: "member_not_approved" }, 403, this.env);
-      }
-      member.lastLoginAt = Date.now();
-      member.updatedAt = Date.now();
-      await this.writeMembers(members);
+      const result = await this.mutateMembers(members => {
+        const member = members.find(item => item.id === record.subject && item.status === "active");
+        if (!member) return { error: "member_not_approved" };
+        member.lastLoginAt = Date.now();
+        member.updatedAt = Date.now();
+        return { member };
+      });
+      if (result.error) return jsonResponse({ error: result.error }, 403, this.env);
+      const { member } = result;
       record.authVersion = member.authVersion;
       record.boardReadApproved = member.boardReadApproved === true;
       record.boardWriteApproved = member.boardWriteApproved === true;
@@ -5416,17 +5407,14 @@ export class BoardStore {
     });
 
     const passwordCredentials = await createMemberPasswordCredentials(password);
-    const members = await this.readMembers();
-    const existingMember = members.find((item) => item.email === email);
+    const emailHash = await sha256Hex(email);
     const isOwnerAccount = Boolean(getAllowedEmailLoginDestination(email, this.env));
-    if (!existingMember && !isOwnerAccount) {
-      if (members.length >= MEMBER_MAX_ITEMS) {
-        return jsonResponse({ ok: true, status: "pending" }, 200, this.env);
-      }
+    await this.mutateMembers(members => {
+      if (members.some(item => item.email === email) || isOwnerAccount || members.length >= MEMBER_MAX_ITEMS) return {};
       members.push(normalizeMemberRecord({
         id: crypto.randomUUID(),
         email,
-        emailHash: await sha256Hex(email),
+        emailHash,
         ...passwordCredentials,
         authVersion: 1,
         status: "pending",
@@ -5434,8 +5422,8 @@ export class BoardStore {
         emailVerifiedAt: 0,
         updatedAt: now,
       }));
-      await this.writeMembers(members);
-    }
+      return {};
+    });
 
     // Always return the same response so this endpoint cannot be used to enumerate accounts.
     return jsonResponse({ ok: true, status: "pending" }, 200, this.env);
@@ -5460,37 +5448,8 @@ export class BoardStore {
     const clientIpHash = await sha256Hex(getForwardedLoginClientIp(request));
     const emailHash = await sha256Hex(email);
     const rateKey = `${EMAIL_OTP_RATE_KEY_PREFIX}signup:${clientIpHash}:${emailHash}`;
-    const rate = {
-      windowStartedAt: 0,
-      count: 0,
-      lastSentAt: 0,
-      ...((await this.state.storage.get(rateKey)) || {}),
-    };
-    const globalRate = {
-      windowStartedAt: 0,
-      count: 0,
-      lastSentAt: 0,
-      ...((await this.state.storage.get(EMAIL_OTP_SIGNUP_GLOBAL_RATE_KEY)) || {}),
-    };
-    const retryAt = Math.max(
-      Number(rate.lastSentAt) + EMAIL_OTP_RESEND_COOLDOWN_MS,
-      Number(globalRate.lastSentAt) + EMAIL_OTP_RESEND_COOLDOWN_MS
-    );
-    if (retryAt > now) {
-      return jsonResponse({
-        error: "email_otp_rate_limited",
-        retryAfterSeconds: Math.max(1, Math.ceil((retryAt - now) / 1000)),
-      }, 429, this.env);
-    }
-    const windowStartedAt = Number(rate.windowStartedAt) || now;
-    const inCurrentWindow = now - windowStartedAt < 60 * 60 * 1000;
-    const hourlyCount = inCurrentWindow ? Math.max(0, Math.floor(Number(rate.count) || 0)) : 0;
-    const globalWindowStartedAt = Number(globalRate.windowStartedAt) || now;
-    const inGlobalWindow = now - globalWindowStartedAt < 60 * 60 * 1000;
-    const globalHourlyCount = inGlobalWindow ? Math.max(0, Math.floor(Number(globalRate.count) || 0)) : 0;
-    if (hourlyCount >= EMAIL_OTP_HOURLY_LIMIT || globalHourlyCount >= EMAIL_OTP_GLOBAL_HOURLY_LIMIT) {
-      return jsonResponse({ error: "email_otp_hourly_limit", retryAfterSeconds: 3600 }, 429, this.env);
-    }
+    const rateDenied = await this.reserveEmailOtpSend(rateKey, EMAIL_OTP_SIGNUP_GLOBAL_RATE_KEY);
+    if (rateDenied) return rateDenied;
 
     const requestId = crypto.randomUUID();
     const sentAt = Date.now();
@@ -5499,16 +5458,6 @@ export class BoardStore {
     const previousRequestId = String(await this.state.storage.get(currentKey) || "");
     const code = generateEmailOtpCode();
     const ownerAccount = Boolean(getAllowedEmailLoginDestination(email, this.env));
-    await this.state.storage.put(rateKey, {
-      windowStartedAt: inCurrentWindow ? windowStartedAt : now,
-      count: hourlyCount + 1,
-      lastSentAt: sentAt,
-    });
-    await this.state.storage.put(EMAIL_OTP_SIGNUP_GLOBAL_RATE_KEY, {
-      windowStartedAt: inGlobalWindow ? globalWindowStartedAt : sentAt,
-      count: globalHourlyCount + 1,
-      lastSentAt: sentAt,
-    });
     try {
       await sendSignupEmailOtp(code, requestId, email, this.env);
     } catch (error) {
@@ -5553,61 +5502,42 @@ export class BoardStore {
     }
     const passwordError = getMemberPasswordError(password);
     if (passwordError) return jsonResponse({ error: passwordError }, 400, this.env);
-    const otpKey = `${EMAIL_OTP_KEY_PREFIX}${requestId}`;
-    const record = await this.state.storage.get(otpKey);
-    if (!record || record.purpose !== "signup" || Number(record.expiresAt) <= Date.now()) {
-      await this.state.storage.delete(otpKey);
-      await clearCurrentEmailOtp(this.state.storage, record, requestId);
-      return jsonResponse({ error: "email_otp_expired" }, 401, this.env);
-    }
-    const attempts = Math.max(0, Math.floor(Number(record.attempts) || 0));
-    const valid = timingSafeEqual(String(record.codeHash || ""), await getEmailOtpHash(requestId, code, this.env));
-    if (!valid) {
-      const nextAttempts = attempts + 1;
-      if (nextAttempts >= EMAIL_OTP_VERIFY_LIMIT) {
-        await this.state.storage.delete(otpKey);
-        await clearCurrentEmailOtp(this.state.storage, record, requestId);
-        return jsonResponse({ error: "email_otp_attempts_exceeded" }, 401, this.env);
-      }
-      await this.state.storage.put(otpKey, { ...record, attempts: nextAttempts });
-      return jsonResponse({
-        error: "invalid_email_otp",
-        remainingAttempts: EMAIL_OTP_VERIFY_LIMIT - nextAttempts,
-      }, 401, this.env);
-    }
-
-    await this.state.storage.delete(otpKey);
-    await clearCurrentEmailOtp(this.state.storage, record, requestId);
+    const consumed = await this.consumeEmailOtp(requestId, code, "signup");
+    if (consumed.error) return jsonResponse(consumed, 401, this.env);
+    const { record } = consumed;
     if (record.ownerAccount) {
       return jsonResponse({ ok: true, status: "owner" }, 200, this.env);
     }
     const passwordCredentials = await createMemberPasswordCredentials(password);
+    const emailHash = record.emailHash || await sha256Hex(record.email);
     const now = Date.now();
-    const members = await this.readMembers();
-    let member = members.find((item) => item.email === record.email);
-    if (!member) {
-      member = normalizeMemberRecord({
-        id: crypto.randomUUID(),
-        email: record.email,
-        emailHash: record.emailHash || await sha256Hex(record.email),
-        ...passwordCredentials,
-        authVersion: 1,
-        status: "pending",
-        requestedAt: now,
-        emailVerifiedAt: now,
-        updatedAt: now,
-      });
-      members.push(member);
-    } else if (member.status !== "active" && member.status !== "revoked") {
-      member.status = "pending";
-      member.requestedAt = now;
-      member.emailVerifiedAt = now;
-      member.updatedAt = now;
-      member.rejectedAt = 0;
-      Object.assign(member, passwordCredentials);
-      member.authVersion = Math.max(1, member.authVersion + 1);
-    }
-    await this.writeMembers(members);
+    const result = await this.mutateMembers(members => {
+      let member = members.find((item) => item.email === record.email);
+      if (!member) {
+        member = normalizeMemberRecord({
+          id: crypto.randomUUID(),
+          email: record.email,
+          emailHash,
+          ...passwordCredentials,
+          authVersion: 1,
+          status: "pending",
+          requestedAt: now,
+          emailVerifiedAt: now,
+          updatedAt: now,
+        });
+        members.push(member);
+      } else if (member.status !== "active" && member.status !== "revoked") {
+        member.status = "pending";
+        member.requestedAt = now;
+        member.emailVerifiedAt = now;
+        member.updatedAt = now;
+        member.rejectedAt = 0;
+        Object.assign(member, passwordCredentials);
+        member.authVersion = Math.max(1, member.authVersion + 1);
+      }
+      return { member };
+    });
+    const { member } = result;
 
     if (member.status === "pending") {
       await Promise.all(getEmailLoginDestinations(this.env).map((recipient, index) =>
@@ -5636,12 +5566,8 @@ export class BoardStore {
     const emailHash = await sha256Hex(email || "invalid");
     const attemptKey = `${MEMBER_PASSWORD_ATTEMPT_KEY_PREFIX}${clientIpHash}:${emailHash}`;
     const now = Date.now();
-    let attempt = normalizeLoginAttemptRecord(await this.state.storage.get(attemptKey));
+    const attempt = normalizeLoginAttemptRecord(await this.state.storage.get(attemptKey));
     if (attempt.lockedUntil > now) return loginLockedResponse(attempt, this.env);
-    if (attempt.lockedUntil && attempt.lockedUntil <= now) {
-      attempt = normalizeLoginAttemptRecord(null);
-      await this.state.storage.delete(attemptKey);
-    }
 
     const members = await this.readMembers();
     const member = members.find((item) => item.email === email);
@@ -5656,34 +5582,44 @@ export class BoardStore {
       && member?.status === "active"
       && passwordValid
     );
-    if (!loginValid) {
-      const failures = Math.min(LOGIN_FAILURE_LIMIT, attempt.failures + 1);
-      const nextAttempt = {
-        failures,
-        lockedUntil: failures >= LOGIN_FAILURE_LIMIT ? now + LOGIN_LOCK_MS : 0,
-        updatedAt: now,
-      };
-      await this.state.storage.put(attemptKey, nextAttempt);
-      if (nextAttempt.lockedUntil > now) return loginLockedResponse(nextAttempt, this.env);
-      return jsonResponse({
-        error: "invalid_member_credentials",
-        remainingAttempts: Math.max(0, LOGIN_FAILURE_LIMIT - failures),
-      }, 401, this.env);
-    }
-
-    await this.state.storage.delete(attemptKey);
-    if (member.passwordIterations < MEMBER_PASSWORD_ITERATIONS) {
-      Object.assign(member, await createMemberPasswordCredentials(password, { validate: false }));
-    }
-    member.lastLoginAt = now;
-    member.updatedAt = now;
-    await this.writeMembers(members);
+    const upgraded = loginValid && member.passwordIterations < MEMBER_PASSWORD_ITERATIONS
+      ? await createMemberPasswordCredentials(password, { validate: false }) : null;
+    const result = await this.state.storage.transaction(async storage => {
+      const at = Date.now();
+      let currentAttempt = normalizeLoginAttemptRecord(await storage.get(attemptKey));
+      if (currentAttempt.lockedUntil > at) return { locked: currentAttempt };
+      if (currentAttempt.lockedUntil) currentAttempt = normalizeLoginAttemptRecord(null);
+      const currentMembers = await this.readMembers(storage);
+      const current = currentMembers.find(item => item.id === member?.id && item.email === email);
+      const unchanged = current && current.status === "active" && current.authVersion === member.authVersion
+        && current.passwordHash === member.passwordHash && current.passwordSalt === member.passwordSalt
+        && current.passwordIterations === member.passwordIterations;
+      if (!loginValid || !unchanged) {
+        const failures = Math.min(LOGIN_FAILURE_LIMIT, currentAttempt.failures + 1);
+        const nextAttempt = {
+          failures,
+          lockedUntil: failures >= LOGIN_FAILURE_LIMIT ? at + LOGIN_LOCK_MS : 0,
+          updatedAt: at,
+        };
+        await storage.put(attemptKey, nextAttempt);
+        return nextAttempt.lockedUntil > at ? { locked: nextAttempt } : { error: "invalid_member_credentials", remainingAttempts: Math.max(0, LOGIN_FAILURE_LIMIT - failures) };
+      }
+      await storage.delete(attemptKey);
+      if (upgraded) Object.assign(current, upgraded);
+      current.lastLoginAt = at;
+      current.updatedAt = at;
+      await this.writeMembers(currentMembers, storage);
+      return { member: current };
+    });
+    if (result.locked) return loginLockedResponse(result.locked, this.env);
+    if (result.error) return jsonResponse(result, 401, this.env);
+    const authenticated = result.member;
     const claims = {
       role: "member",
-      subject: member.id,
-      authVersion: member.authVersion,
-      boardReadApproved: member.boardReadApproved === true,
-      boardWriteApproved: member.boardWriteApproved === true,
+      subject: authenticated.id,
+      authVersion: authenticated.authVersion,
+      boardReadApproved: authenticated.boardReadApproved === true,
+      boardWriteApproved: authenticated.boardWriteApproved === true,
     };
     const token = await createSessionToken(this.env, claims);
     const headers = new Headers(jsonResponse({ ok: true }, 200, this.env).headers);
@@ -5709,23 +5645,8 @@ export class BoardStore {
     const emailHash = await sha256Hex(email);
     const clientIpHash = await sha256Hex(getForwardedLoginClientIp(request));
     const rateKey = `${EMAIL_OTP_RATE_KEY_PREFIX}password-reset:${clientIpHash}:${emailHash}`;
-    const rate = { windowStartedAt: 0, count: 0, lastSentAt: 0, ...((await this.state.storage.get(rateKey)) || {}) };
-    const globalRate = { windowStartedAt: 0, count: 0, lastSentAt: 0, ...((await this.state.storage.get(MEMBER_PASSWORD_RESET_GLOBAL_RATE_KEY)) || {}) };
-    const retryAt = Math.max(Number(rate.lastSentAt) + EMAIL_OTP_RESEND_COOLDOWN_MS, Number(globalRate.lastSentAt) + EMAIL_OTP_RESEND_COOLDOWN_MS);
-    if (retryAt > now) {
-      return jsonResponse({ error: "email_otp_rate_limited", retryAfterSeconds: Math.max(1, Math.ceil((retryAt - now) / 1000)) }, 429, this.env);
-    }
-    const windowStartedAt = Number(rate.windowStartedAt) || now;
-    const globalWindowStartedAt = Number(globalRate.windowStartedAt) || now;
-    const inWindow = now - windowStartedAt < 60 * 60 * 1000;
-    const inGlobalWindow = now - globalWindowStartedAt < 60 * 60 * 1000;
-    const count = inWindow ? Math.max(0, Math.floor(Number(rate.count) || 0)) : 0;
-    const globalCount = inGlobalWindow ? Math.max(0, Math.floor(Number(globalRate.count) || 0)) : 0;
-    if (count >= EMAIL_OTP_HOURLY_LIMIT || globalCount >= EMAIL_OTP_GLOBAL_HOURLY_LIMIT) {
-      return jsonResponse({ error: "email_otp_hourly_limit", retryAfterSeconds: 3600 }, 429, this.env);
-    }
-    await this.state.storage.put(rateKey, { windowStartedAt: inWindow ? windowStartedAt : now, count: count + 1, lastSentAt: now });
-    await this.state.storage.put(MEMBER_PASSWORD_RESET_GLOBAL_RATE_KEY, { windowStartedAt: inGlobalWindow ? globalWindowStartedAt : now, count: globalCount + 1, lastSentAt: now });
+    const rateDenied = await this.reserveEmailOtpSend(rateKey, MEMBER_PASSWORD_RESET_GLOBAL_RATE_KEY);
+    if (rateDenied) return rateDenied;
 
     const requestId = crypto.randomUUID();
     const expiresAt = now + MEMBER_PASSWORD_RESET_TTL_MS;
@@ -5768,33 +5689,18 @@ export class BoardStore {
     }
     const passwordError = getMemberPasswordError(newPassword);
     if (passwordError) return jsonResponse({ error: passwordError }, 400, this.env);
-    const key = `${MEMBER_PASSWORD_RESET_KEY_PREFIX}${requestId}`;
-    const record = await this.state.storage.get(key);
-    if (!record || Number(record.expiresAt) <= Date.now()) {
-      await this.state.storage.delete(key);
-      await clearCurrentEmailOtp(this.state.storage, record, requestId);
-      return jsonResponse({ error: "password_reset_expired" }, 401, this.env);
-    }
-    const valid = timingSafeEqual(String(record.codeHash || ""), await getEmailOtpHash(requestId, code, this.env));
-    if (!valid) {
-      const attempts = Math.max(0, Math.floor(Number(record.attempts) || 0)) + 1;
-      if (attempts >= EMAIL_OTP_VERIFY_LIMIT) {
-        await this.state.storage.delete(key);
-        await clearCurrentEmailOtp(this.state.storage, record, requestId);
-        return jsonResponse({ error: "email_otp_attempts_exceeded" }, 401, this.env);
-      }
-      await this.state.storage.put(key, { ...record, attempts });
-      return jsonResponse({ error: "invalid_password_reset", remainingAttempts: EMAIL_OTP_VERIFY_LIMIT - attempts }, 401, this.env);
-    }
-    const members = await this.readMembers();
-    const member = members.find((item) => item.id === record.memberId && item.email === record.email && item.status === "active");
-    if (!member) return jsonResponse({ error: "invalid_password_reset" }, 401, this.env);
-    Object.assign(member, await createMemberPasswordCredentials(newPassword));
-    member.authVersion = Math.max(1, member.authVersion + 1);
-    member.updatedAt = Date.now();
-    await this.writeMembers(members);
-    await this.state.storage.delete(key);
-    await clearCurrentEmailOtp(this.state.storage, record, requestId);
+    const consumed = await this.consumeEmailOtp(requestId, code, "password-reset");
+    if (consumed.error) return jsonResponse(consumed, 401, this.env);
+    const { record } = consumed, credentials = await createMemberPasswordCredentials(newPassword);
+    const result = await this.mutateMembers(members => {
+      const member = members.find(item => item.id === record.memberId && item.email === record.email && item.status === "active" && item.authVersion === record.authVersion);
+      if (!member) return { error: "invalid_password_reset" };
+      Object.assign(member, credentials);
+      member.authVersion++;
+      member.updatedAt = Date.now();
+      return {};
+    });
+    if (result.error) return jsonResponse({ error: result.error }, 401, this.env);
     return jsonResponse({ ok: true }, 200, this.env);
   }
 
@@ -5803,64 +5709,68 @@ export class BoardStore {
     const authResponse = await this.requireAdminAuth(request, body);
     if (authResponse) return authResponse;
     const action = decodeURIComponent(url.pathname.replace(/^\/api\/admin\/members\/?/, "")) || "list";
-    let members = await this.readMembers();
     if (action === "list") {
+      const members = await this.readMembers();
       return jsonResponse({ members: members.map(publicAdminMember).filter(Boolean) }, 200, this.env);
     }
     const memberId = String(body?.memberId || "").trim();
-    const member = members.find((item) => item.id === memberId);
-    if (!member) return jsonResponse({ error: "member_not_found" }, 404, this.env);
     const now = Date.now();
-    if (action === "approve" || action === "restore") {
-      if (!member.passwordSalt || !member.passwordHash) {
-        return jsonResponse({ error: "member_password_not_set" }, 409, this.env);
+    const result = await this.mutateMembers(members => {
+      const member = members.find((item) => item.id === memberId);
+      if (!member) return { error: "member_not_found", status: 404 };
+      if (action === "approve" || action === "restore") {
+        if (!member.passwordSalt || !member.passwordHash) {
+          return { error: "member_password_not_set", status: 409 };
+        }
+        member.status = "active";
+        member.approvedAt = now;
+        member.rejectedAt = 0;
+        member.revokedAt = 0;
+        member.boardReadApproved = true;
+        member.boardWriteApproved = false;
+        member.boardWriteApprovedAt = 0;
+      } else if (action === "board-approve") {
+        if (member.status !== "active") {
+          return { error: "member_not_active", status: 409 };
+        }
+        member.boardReadApproved = true;
+      } else if (action === "board-revoke") {
+        member.boardReadApproved = false;
+        member.boardWriteApproved = false;
+        member.boardWriteApprovedAt = 0;
+      } else if (action === "board-write-approve") {
+        if (member.status !== "active" || !member.boardReadApproved) {
+          return { error: "board_access_approval_required", status: 409 };
+        }
+        member.boardWriteApproved = true;
+        member.boardWriteApprovedAt = now;
+      } else if (action === "board-write-revoke") {
+        member.boardWriteApproved = false;
+        member.boardWriteApprovedAt = 0;
+      } else if (action === "reject") {
+        member.status = "rejected";
+        member.rejectedAt = now;
+        member.boardReadApproved = false;
+        member.boardWriteApproved = false;
+        member.boardWriteApprovedAt = 0;
+      } else if (action === "revoke") {
+        member.status = "revoked";
+        member.revokedAt = now;
+        member.boardReadApproved = false;
+        member.boardWriteApproved = false;
+        member.boardWriteApprovedAt = 0;
+      } else if (action === "delete") {
+        members.splice(members.indexOf(member), 1);
+        return { deleted: true };
+      } else {
+        return { error: "invalid_member_action", status: 400 };
       }
-      member.status = "active";
-      member.approvedAt = now;
-      member.rejectedAt = 0;
-      member.revokedAt = 0;
-      member.boardReadApproved = true;
-      member.boardWriteApproved = false;
-      member.boardWriteApprovedAt = 0;
-    } else if (action === "board-approve") {
-      if (member.status !== "active") {
-        return jsonResponse({ error: "member_not_active" }, 409, this.env);
-      }
-      member.boardReadApproved = true;
-    } else if (action === "board-revoke") {
-      member.boardReadApproved = false;
-      member.boardWriteApproved = false;
-      member.boardWriteApprovedAt = 0;
-    } else if (action === "board-write-approve") {
-      if (member.status !== "active" || !member.boardReadApproved) {
-        return jsonResponse({ error: "board_access_approval_required" }, 409, this.env);
-      }
-      member.boardWriteApproved = true;
-      member.boardWriteApprovedAt = now;
-    } else if (action === "board-write-revoke") {
-      member.boardWriteApproved = false;
-      member.boardWriteApprovedAt = 0;
-    } else if (action === "reject") {
-      member.status = "rejected";
-      member.rejectedAt = now;
-      member.boardReadApproved = false;
-      member.boardWriteApproved = false;
-      member.boardWriteApprovedAt = 0;
-    } else if (action === "revoke") {
-      member.status = "revoked";
-      member.revokedAt = now;
-      member.boardReadApproved = false;
-      member.boardWriteApproved = false;
-      member.boardWriteApprovedAt = 0;
-    } else if (action === "delete") {
-      members = members.filter((item) => item.id !== memberId);
-      await this.writeMembers(members);
-      return jsonResponse({ ok: true, members: members.map(publicAdminMember).filter(Boolean) }, 200, this.env);
-    } else {
-      return jsonResponse({ error: "invalid_member_action" }, 400, this.env);
-    }
-    member.updatedAt = now;
-    await this.writeMembers(members);
+      member.updatedAt = now;
+      return { member };
+    });
+    if (result.error) return jsonResponse({ error: result.error }, result.status, this.env);
+    const { members, member } = result;
+    if (result.deleted) return jsonResponse({ ok: true, members: members.map(publicAdminMember).filter(Boolean) }, 200, this.env);
     const boardStatusMessages = {
       "board-approve": ["board read access approved", "You can now read the board and download attachments. Posting requires separate administrator approval."],
       "board-revoke": ["board access revoked", "Your board access has been revoked. Your site membership remains active."],

@@ -8,6 +8,7 @@ on:
     paths:
       - "server-auth/**"
       - "comparison-identity.js"
+      - ".github/scripts/verify-commit-privacy.cjs"
       - ".github/scripts/probe-comparison.mjs"
       - ".github/workflows/deploy-worker.yml"
 
@@ -29,7 +30,9 @@ jobs:
           node-version: "22"
 
       - name: Verify board permissions and security
-        run: node --test test_comparison_health.cjs comparison-identity.test.cjs server-auth/board-permissions.test.mjs server-auth/security-regression.test.mjs
+        run: |
+          node .github/scripts/verify-commit-privacy.cjs
+          node --test test_comparison_health.cjs comparison-identity.test.cjs server-auth/board-permissions.test.mjs server-auth/security-regression.test.mjs
 
       - name: Write Worker config
         working-directory: server-auth

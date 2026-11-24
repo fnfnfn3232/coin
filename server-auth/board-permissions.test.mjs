@@ -9,6 +9,8 @@ const {
   BoardStore,
   createMemberPasswordCredentials,
   createSessionToken,
+  getEmailOtpHash,
+  getEmailOtpCurrentKey,
   deriveMemberPasswordHash,
   MEMBER_PASSWORD_ITERATIONS,
   normalizeMemberRecord,
@@ -24,7 +26,7 @@ const {
   comparisonFxUsable,
   verifyMemberPassword,
 } = await import(
-  `data:text/javascript;base64,${Buffer.from(`${source}\nexport { createMemberPasswordCredentials, createSessionToken, deriveMemberPasswordHash, MEMBER_PASSWORD_ITERATIONS, normalizeMemberRecord, normalizeL2Fees, normalizeL1Fees, normalizeAdditionalSpotQuotes, normalizeComparisonCatalog, normalizeGateComparisonCatalog, normalizeUniqueCoinCatalog, normalizeComparisonFx, normalizeNaverComparisonFx, normalizeYahooComparisonFx, comparisonFxUsable, verifyMemberPassword };\n//# sourceURL=cloudflare-worker-under-test.mjs`).toString("base64")}`
+  `data:text/javascript;base64,${Buffer.from(`${source}\nexport { createMemberPasswordCredentials, createSessionToken, getEmailOtpHash, getEmailOtpCurrentKey, deriveMemberPasswordHash, MEMBER_PASSWORD_ITERATIONS, normalizeMemberRecord, normalizeL2Fees, normalizeL1Fees, normalizeAdditionalSpotQuotes, normalizeComparisonCatalog, normalizeGateComparisonCatalog, normalizeUniqueCoinCatalog, normalizeComparisonFx, normalizeNaverComparisonFx, normalizeYahooComparisonFx, comparisonFxUsable, verifyMemberPassword };\n//# sourceURL=cloudflare-worker-under-test.mjs`).toString("base64")}`
 );
 
 class MemoryStorage {
@@ -126,6 +128,128 @@ async function fixture({ read = true, write = false } = {}) {
   return { store, storage, member, request, rawRequest, post, adminToken, memberToken, adminPassword, env };
 }
 
+test('member login commits recheck current membership, credentials and permissions after password verification', async () => {
+  for (const action of ['revoke', 'board-revoke', 'board-write-revoke', 'delete', 'password-change', 'unrelated-signup']) {
+    const f = await fixture({ write: true }), password = 'MemberAudit123';
+    Object.assign(f.member, await createMemberPasswordCredentials(password));
+    await f.storage.put('site-members-v1', [f.member]);
+    const read = f.store.readMembers.bind(f.store);
+    let started, release, first = true;
+    const ready = new Promise(resolve => { started = resolve; }), gate = new Promise(resolve => { release = resolve; });
+    f.store.readMembers = async storage => {
+      const result = await read(storage);
+      if (!storage && first) { first = false; started(); await gate; }
+      return result;
+    };
+    const login = f.request('/api/login/member/password', 'POST', { email: f.member.email, password }, '');
+    await ready;
+    if (action === 'password-change') {
+      const credentials = await createMemberPasswordCredentials('ChangedPassword123');
+      await f.store.mutateMembers(members => { Object.assign(members[0], credentials); members[0].authVersion++; return {}; });
+    } else if (action === 'unrelated-signup') {
+      assert.equal((await f.request('/api/signup/request', 'POST', { email: 'new@example.com', password: 'AnotherPassword123' }, '')).status, 200);
+    } else assert.equal((await f.request('/api/admin/members/' + action, 'POST', { memberId: f.member.id, adminPassword: f.adminPassword }, f.adminToken)).status, 200);
+    release();
+    const response = await login, members = await f.storage.get('site-members-v1');
+    if (['revoke', 'delete', 'password-change'].includes(action)) {
+      assert.equal(response.status, 401, action);
+      assert.equal((await f.request('/api/market-data')).status, 401, 'old session cannot recover revoked membership or credentials');
+    } else {
+      assert.equal(response.status, 200, action);
+      const claims = await response.json();
+      if (action === 'board-revoke') { assert.equal(claims.boardReadApproved, false); assert.equal(claims.boardWriteApproved, false); }
+      if (action === 'board-write-revoke') { assert.equal(claims.boardReadApproved, true); assert.equal(claims.boardWriteApproved, false); }
+      if (action === 'unrelated-signup') assert.ok(members.some(member => member.email === 'new@example.com'));
+    }
+    if (action === 'revoke') assert.equal(members[0].status, 'revoked');
+    if (action === 'delete') assert.equal(members.length, 0);
+    if (action === 'password-change') assert.equal(await verifyMemberPassword('ChangedPassword123', members[0]), true);
+  }
+});
+
+test('concurrent administrator member changes cannot restore another revoked account', async () => {
+  const f = await fixture();
+  const second = { ...f.member, id: crypto.randomUUID(), email: 'other@example.com' };
+  await f.storage.put('site-members-v1', [f.member, second]);
+  const responses = await Promise.all([f.member, second].map(member => f.request('/api/admin/members/revoke', 'POST', { memberId: member.id, adminPassword: f.adminPassword }, f.adminToken)));
+  assert.ok(responses.every(response => response.status === 200));
+  assert.ok((await f.storage.get('site-members-v1')).every(member => member.status === 'revoked'));
+});
+
+test('email login, signup and password reset codes are single-use under concurrent verification and have atomic attempt limits', async () => {
+  for (const purpose of ['login', 'signup', 'password-reset']) {
+    const f = await fixture();
+    Object.assign(f.env, { RESEND_API_KEY: 'test-unused', OTP_EMAIL_TO: 'owner@example.com', OTP_EMAIL_FROM: 'Login <login@example.com>' });
+    const call = body => {
+      const request = new Request('https://worker.example/api/audit-code', { method: 'POST', body: JSON.stringify(body) });
+      return purpose === 'login' ? f.store.handleEmailOtpVerify(request)
+        : purpose === 'signup' ? f.store.handleSignupOtpVerify(request) : f.store.handleMemberPasswordResetConfirm(request);
+    };
+    const seed = async () => {
+      const requestId = crypto.randomUUID(), code = '123456';
+      const prefix = purpose === 'password-reset' ? 'member-password-reset:' : 'email-login-otp:';
+      const currentKey = await getEmailOtpCurrentKey(f.member.email, purpose);
+      await f.storage.put(prefix + requestId, { purpose, role: 'admin', subject: 'owner', ownerAccount: true,
+        memberId: f.member.id, email: f.member.email, expiresAt: Date.now() + 60000, attempts: 0, currentKey,
+        codeHash: await getEmailOtpHash(requestId, code, f.env) });
+      await f.storage.put(currentKey, requestId);
+      return { requestId, code, prefix, currentKey, password: 'SignupAudit123', newPassword: 'ResetAudit123' };
+    };
+    const first = await seed();
+    const responses = await Promise.all(Array.from({ length: 8 }, () => call(first)));
+    assert.equal(responses.filter(response => response.status === 200).length, 1, purpose);
+    assert.equal(await f.storage.get(first.prefix + first.requestId), undefined);
+    assert.equal(await f.storage.get(first.currentKey), undefined);
+    const second = await seed();
+    const rejected = await Promise.all(Array.from({ length: 8 }, () => call({ ...second, code: '000000' })));
+    assert.ok(rejected.every(response => response.status === 401));
+    const bodies = await Promise.all(rejected.map(response => response.json()));
+    assert.deepEqual(bodies.filter(body => body.remainingAttempts).map(body => body.remainingAttempts).sort(), [1, 2, 3, 4]);
+    assert.equal((await call(second)).status, 401, 'correct code cannot revive an exhausted challenge');
+    const third = await seed();
+    const newer = crypto.randomUUID(); await f.storage.put(third.currentKey, newer);
+    assert.equal((await call(third)).status, 401, 'a replaced code cannot authenticate');
+    assert.equal(await f.storage.get(third.currentKey), newer, 'rejecting the old code cannot delete the new one');
+  }
+});
+
+test('concurrent email-code requests reserve their shared cooldown before contacting the provider', async () => {
+  const previousFetch = globalThis.fetch;
+  try {
+    for (const purpose of ['login', 'signup', 'password-reset']) {
+      const f = await fixture();
+      Object.assign(f.env, { RESEND_API_KEY: 'test-unused', OTP_EMAIL_TO: 'owner@example.com', OTP_EMAIL_FROM: 'Login <login@example.com>' });
+      let calls = 0;
+      globalThis.fetch = async url => { assert.equal(url, 'https://api.resend.com/emails'); calls++; return Response.json({ id: 'test-delivery' }); };
+      const email = purpose === 'login' ? 'owner@example.com' : purpose === 'signup' ? 'new@example.com' : f.member.email;
+      const responses = await Promise.all(Array.from({ length: 8 }, () => {
+        const request = new Request('https://worker.example/api/audit-send', { method: 'POST', body: JSON.stringify({ email }) });
+        return purpose === 'login' ? f.store.handleEmailOtpRequest(request)
+          : purpose === 'signup' ? f.store.handleSignupOtpRequest(request) : f.store.handleMemberPasswordResetRequest(request);
+      }));
+      assert.equal(responses.filter(response => response.status === 200).length, 1, purpose);
+      assert.equal(responses.filter(response => response.status === 429).length, 7, purpose);
+      assert.equal(calls, 1, purpose);
+    }
+  } finally { globalThis.fetch = previousFetch; }
+});
+
+test('password reset cannot restore a revoked member while deriving new credentials', async () => {
+  const f = await fixture(), requestId = crypto.randomUUID(), code = '123456';
+  await f.storage.put('member-password-reset:' + requestId, { memberId: f.member.id, email: f.member.email,
+    expiresAt: Date.now() + 60000, attempts: 0, codeHash: await getEmailOtpHash(requestId, code, f.env) });
+  const consume = f.store.consumeEmailOtp.bind(f.store);
+  let started, release;
+  const ready = new Promise(resolve => { started = resolve; }), gate = new Promise(resolve => { release = resolve; });
+  f.store.consumeEmailOtp = async (...args) => { const result = await consume(...args); started(); await gate; return result; };
+  const pending = f.request('/api/member/password/reset/confirm', 'POST', { requestId, code, newPassword: 'ChangedAudit123' }, '');
+  await ready;
+  assert.equal((await f.request('/api/admin/members/revoke', 'POST', { memberId: f.member.id, adminPassword: f.adminPassword }, f.adminToken)).status, 200);
+  release();
+  assert.equal((await pending).status, 401);
+  assert.equal((await f.storage.get('site-members-v1'))[0].status, 'revoked');
+});
+
 test("scoped snapshots retain comparison identity while excluding unrelated datasets and private history", async () => {
   const f = await fixture();
   const payload = { generatedAt: 100, boards: { upbit: [{ symbol: "BTC", priceKrw: 100, circulatingSupply: 2 }] },
@@ -150,6 +274,7 @@ test("scoped snapshots retain comparison identity while excluding unrelated data
   assert.equal(delivery.deliveryVersion, 1);
   assert.equal(delivery.coinRetentionVersion, 2);
   assert.equal(delivery.coinContentIndexVersion, 1);
+  assert.equal(delivery.securityVersion, 1);
   assert.equal(delivery.coinContentRead.pageItems, 0);
   assert.equal(delivery.coinContentRead.detailRowsRead, 0);
   assert.equal(delivery.coinNewsLimit, 500);

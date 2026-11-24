@@ -8,6 +8,8 @@ on:
       - "index.html"
       - "app-update.js"
       - "security-policy.cjs"
+      - ".github/scripts/verify-commit-privacy.cjs"
+      - ".githooks/pre-commit"
       - "test_security_ui.cjs"
       - "test_market_chart.cjs"
       - "test_spot_market_ui.cjs"
@@ -38,6 +40,8 @@ on:
       - "index.html"
       - "app-update.js"
       - "security-policy.cjs"
+      - ".github/scripts/verify-commit-privacy.cjs"
+      - ".githooks/pre-commit"
       - "test_security_ui.cjs"
       - "test_market_chart.cjs"
       - "test_spot_market_ui.cjs"
@@ -82,6 +86,7 @@ jobs:
           node-version: "22"
       - name: Verify permissions, sessions and uploads
         run: |
+          node .github/scripts/verify-commit-privacy.cjs
           node security-policy.cjs
           node --test test_audit_report.cjs test_app_update.cjs test_futures_health.mjs test_comparison_health.cjs comparison-identity.test.cjs server-auth/board-permissions.test.mjs server-auth/security-regression.test.mjs
       - name: Install isolated browser test tools
