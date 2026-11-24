@@ -3072,8 +3072,8 @@ export class BoardStore {
         await clearCurrentEmailOtp(storage, record, requestId);
         return { error: expired };
       }
-      if (purpose !== "password-reset" && record.purpose !== purpose
-        || purpose === "login" && !["admin", "member"].includes(record.role)) return { error: invalid };
+      if ((purpose !== "password-reset" && record.purpose !== purpose)
+        || (purpose === "login" && !["admin", "member"].includes(record.role))) return { error: invalid };
       const attempts = Math.max(0, Math.floor(Number(record.attempts) || 0));
       if (attempts >= EMAIL_OTP_VERIFY_LIMIT || !timingSafeEqual(String(record.codeHash || ""), suppliedHash)) {
         const nextAttempts = attempts + 1;
@@ -3103,7 +3103,8 @@ export class BoardStore {
       if (retryAt > now) return jsonResponse({ error: "email_otp_rate_limited", retryAfterSeconds: Math.ceil((retryAt - now) / 1000) }, 429, this.env);
       const inWindow = now - Number(rate.windowStartedAt || 0) < 3600000;
       const inGlobalWindow = now - Number(globalRate.windowStartedAt || 0) < 3600000;
-      const count = inWindow ? Number(rate.count || 0) : 0, globalCount = inGlobalWindow ? Number(globalRate.count || 0) : 0;
+      const count = inWindow ? Math.max(0, Math.floor(Number(rate.count) || 0)) : 0;
+      const globalCount = inGlobalWindow ? Math.max(0, Math.floor(Number(globalRate.count) || 0)) : 0;
       if (count >= EMAIL_OTP_HOURLY_LIMIT || globalCount >= EMAIL_OTP_GLOBAL_HOURLY_LIMIT) {
         return jsonResponse({ error: "email_otp_hourly_limit", retryAfterSeconds: 3600 }, 429, this.env);
       }
