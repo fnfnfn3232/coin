@@ -29,6 +29,7 @@ const {
 
 class MemoryStorage {
   data = new Map();
+  changed = new Set();
   pending = Promise.resolve();
   constructor(shared = { db: new DatabaseSync(':memory:'), queries: [] }) {
     this.shared = shared;
@@ -41,9 +42,10 @@ class MemoryStorage {
     } };
   }
   async get(key) { return structuredClone(this.data.get(key)); }
-  async put(key, value) { this.data.set(key, structuredClone(value)); }
+  async put(key, value) { this.data.set(key, structuredClone(value)); this.changed.add(key); }
   async delete(key) {
-    if (Array.isArray(key)) return key.map((item) => this.data.delete(item)).filter(Boolean).length;
+    if (Array.isArray(key)) return (await Promise.all(key.map(item => this.delete(item)))).filter(Boolean).length;
+    this.changed.add(key);
     return this.data.delete(key);
   }
   async list({ prefix = "", startAfter = "", limit = Infinity } = {}) {
@@ -58,7 +60,10 @@ class MemoryStorage {
       try {
         const result = await callback(transaction);
         this.shared.db.exec('RELEASE storage_transaction');
-        this.data = transaction.data;
+        for (const key of transaction.changed) {
+          if (transaction.data.has(key)) this.data.set(key, transaction.data.get(key));
+          else this.data.delete(key);
+        }
         return result;
       } catch (error) {
         this.shared.db.exec('ROLLBACK TO storage_transaction; RELEASE storage_transaction');
@@ -69,6 +74,21 @@ class MemoryStorage {
     return next;
   }
 }
+
+test('storage fixture transactions cannot erase unrelated writes from concurrent scheduled tasks', async () => {
+  const storage = new MemoryStorage();
+  let release, started;
+  const gate = new Promise(resolve => { release = resolve; });
+  const ready = new Promise(resolve => { started = resolve; });
+  const pending = storage.transaction(async transaction => {
+    started(); await gate; await transaction.put('indexed', true);
+  });
+  await ready;
+  await storage.put('parallel-fx', { source: 'naver_hana' });
+  release(); await pending;
+  assert.equal((await storage.get('parallel-fx')).source, 'naver_hana');
+  assert.equal(await storage.get('indexed'), true);
+});
 
 async function fixture({ read = true, write = false } = {}) {
   const storage = new MemoryStorage();
