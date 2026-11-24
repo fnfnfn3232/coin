@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
 
 const source = await readFile(new URL("./cloudflare-worker.js", import.meta.url), "utf8");
 const {
@@ -29,6 +30,16 @@ const {
 class MemoryStorage {
   data = new Map();
   pending = Promise.resolve();
+  constructor(shared = { db: new DatabaseSync(':memory:'), queries: [] }) {
+    this.shared = shared;
+    this.sql = { exec: (query, ...bindings) => {
+      const statement = shared.db.prepare(query);
+      const rows = statement.columns().length ? statement.all(...bindings) : [];
+      const written = statement.columns().length ? 0 : Number(statement.run(...bindings).changes);
+      shared.queries.push({ query, bindings, returned: rows.length });
+      return { toArray: () => rows, [Symbol.iterator]: () => rows[Symbol.iterator](), rowsRead: rows.length, rowsWritten: written };
+    } };
+  }
   async get(key) { return structuredClone(this.data.get(key)); }
   async put(key, value) { this.data.set(key, structuredClone(value)); }
   async delete(key) {
@@ -41,11 +52,18 @@ class MemoryStorage {
   }
   async transaction(callback) {
     const next = this.pending.then(async () => {
-      const transaction = new MemoryStorage();
+      const transaction = new MemoryStorage(this.shared);
       transaction.data = structuredClone(this.data);
-      const result = await callback(transaction);
-      this.data = transaction.data;
-      return result;
+      this.shared.db.exec('SAVEPOINT storage_transaction');
+      try {
+        const result = await callback(transaction);
+        this.shared.db.exec('RELEASE storage_transaction');
+        this.data = transaction.data;
+        return result;
+      } catch (error) {
+        this.shared.db.exec('ROLLBACK TO storage_transaction; RELEASE storage_transaction');
+        throw error;
+      }
     });
     this.pending = next.catch(() => {});
     return next;
@@ -111,6 +129,9 @@ test("scoped snapshots retain comparison identity while excluding unrelated data
   const delivery = await (await f.store.probeComparisonSource('delivery')).json();
   assert.equal(delivery.deliveryVersion, 1);
   assert.equal(delivery.coinRetentionVersion, 2);
+  assert.equal(delivery.coinContentIndexVersion, 1);
+  assert.equal(delivery.coinContentRead.pageItems, 0);
+  assert.equal(delivery.coinContentRead.detailRowsRead, 0);
   assert.equal(delivery.coinNewsLimit, 500);
   assert.equal(delivery.telegramIssueLimit, 100);
   assert.equal(delivery.manualIssueCountLimit, null);
@@ -270,6 +291,7 @@ test("coin content separates news and issues before pagination without moving or
   const automatic = Array.from({ length: 12 }, (_, i) => ({ id: `coinness-${100 + i}`, title: `News ${i}`, body: `Summary ${i}`,
     source: 'coinness', sourceUrl: `https://coinness.com/news/${100 + i}`, revision: 1, createdAt: Date.now() + i, updatedAt: Date.now() + i }));
   await f.storage.put('coin-issues:auto:BTC:bitcoin', automatic);
+  f.store.syncCoinAutomaticIndex('BTC:bitcoin', [], automatic);
   const news = await (await f.request(base + '&section=news')).json();
   assert.equal(news.section, 'news');
   assert.equal(news.total, 12);
@@ -388,9 +410,102 @@ test("article reads and initialized lists do not wait for news indexing", async 
       new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("reads waited for indexing")), 1000); }),
     ]);
     assert.ok(results.every(response => response.status === 200));
-    assert.equal(calls, 1, "only the list schedules one background task; reading a post does not run the importer");
-    assert.equal(tasks.length, 1);
+    assert.equal(calls, 0, "visitor reads never schedule source indexing");
+    assert.equal(tasks.length, 0);
   } finally { clearTimeout(timer); release({ ok: true }); await Promise.all(tasks); }
+});
+
+test('coin SQL projection migrates once, reads only the requested page and survives restart or canonical backup restore', async () => {
+  const f = await fixture(), asset = 'BTC:bitcoin', now = Date.now();
+  const automatic = Array.from({ length: 600 }, (_, i) => ({ id: (i < 500 ? 'coinness-' : 'telegram-') + i,
+    title: 'Article ' + i, body: 'x'.repeat(2000), source: i < 500 ? 'coinness' : 'telegram',
+    sourceUrl: i < 500 ? 'https://coinness.com/news/' + i : 'https://t.me/BChoSN/' + i,
+    createdAt: now - i, updatedAt: now - i, revision: 1 }));
+  const manual = Array.from({ length: 240 }, (_, i) => ({ id: crypto.randomUUID(), title: 'Manual ' + i,
+    createdAt: now - i, updatedAt: now - i, revision: 1 }));
+  await f.storage.put('coin-issues:auto:' + asset, automatic);
+  await f.storage.put('coin-issues:index:' + asset, manual);
+  for (const summary of manual) await f.storage.put('coin-issues:post:' + asset + ':' + summary.id, { ...summary, body: 'Keep me' });
+  const backup = await f.store.readCoinIssuesForBackup();
+  await Promise.all([f.store.ensureCoinContentAsset(asset), f.store.ensureCoinContentAsset(asset)]);
+  assert.equal(f.storage.shared.queries.filter(q => q.query.startsWith('INSERT INTO coin_content_assets')).length, 1);
+  assert.deepEqual(await f.store.readCoinIssuesForBackup(), backup, 'indexing never rewrites canonical or backup records');
+  const plan = f.storage.shared.db.prepare('EXPLAIN QUERY PLAN SELECT summary_json, post_json FROM coin_content_entries WHERE asset = ? AND section = ? ORDER BY created_at DESC, id ASC LIMIT 10 OFFSET ?').all(asset, 'news', 0);
+  assert.match(JSON.stringify(plan), /coin_content_page/);
+  assert.doesNotMatch(JSON.stringify(plan), /TEMP B-TREE/);
+  const get = MemoryStorage.prototype.get, reads = [];
+  MemoryStorage.prototype.get = async function(key) { reads.push(key); return get.call(this, key); };
+  try {
+    const restarted = new BoardStore({ storage: f.storage }, f.env);
+    const first = await restarted.readCoinContentPage(asset, 'news', 1);
+    assert.equal(first.total, 500); assert.equal(first.records.length, 10);
+    assert.equal(JSON.parse(first.records[0].summary_json).id, 'coinness-0');
+    const last = await restarted.readCoinContentPage(asset, 'news', 50);
+    assert.equal(last.records.length, 10); assert.equal(JSON.parse(last.records.at(-1).summary_json).id, 'coinness-499');
+    assert.equal((await restarted.readCoinContentPage(asset, 'issues', 1)).total, 340);
+    assert.equal((await restarted.readCoinAutomaticPost(asset, 'coinness-300')).body, automatic[300].body);
+    assert.deepEqual(reads, [], 'warm page/detail reads never deserialize complete KV arrays');
+    assert.ok(Buffer.byteLength(JSON.stringify(first.records)) < Buffer.byteLength(JSON.stringify(automatic)) / 20);
+  } finally { MemoryStorage.prototype.get = get; }
+  const restoredStorage = new MemoryStorage();
+  for (const [key, value] of Object.entries(backup)) await restoredStorage.put(key, value);
+  const restored = new BoardStore({ storage: restoredStorage }, f.env);
+  assert.equal((await restored.readCoinContentPage(asset, 'all', 1)).total, 840);
+  assert.deepEqual(await restored.readCoinIssuesForBackup(), backup);
+  const denied = await fixture();
+  assert.equal((await denied.request('/api/coin-issues?asset=BTC:bitcoin', 'GET', undefined, '')).status, 401);
+  assert.equal(denied.storage.shared.queries.length, 0, 'authorization precedes migration and SQL access');
+  assert.equal((await (await denied.request('/api/coin-issues?asset=UNKNOWN:unknown')).json()).total, 0);
+  assert.equal(denied.storage.shared.db.prepare('SELECT count(*) AS n FROM coin_content_assets').get().n, 0, 'empty read-only views cannot accumulate persistent asset rows');
+  const sky = await fixture();
+  await sky.request('/api/coin-issues?asset=SKY:skyprotocol');
+  const skyGet = sky.storage.get;
+  sky.storage.get = async key => {
+    assert.notEqual(key, 'coin-issues:index:SKY:skyprotocol', 'warm SKY reads do not reload its full manual index');
+    return skyGet.call(sky.storage, key);
+  };
+  assert.equal((await sky.request('/api/coin-issues?asset=SKY:skyprotocol')).status, 200);
+});
+
+test('coin projection and canonical writes roll back together after manual and automatic SQL failures', async () => {
+  const f = await fixture(), asset = 'BTC:bitcoin', path = '/api/coin-issues?asset=' + asset;
+  await f.store.ensureCoinContentAsset(asset, true);
+  const exec = f.storage.sql.exec;
+  f.storage.sql.exec = (query, ...bindings) => {
+    if (query.startsWith('UPDATE coin_content_assets')) throw new Error('injected_sql_failure');
+    return exec(query, ...bindings);
+  };
+  const id = crypto.randomUUID();
+  await assert.rejects(f.request(path, 'POST', { id, title: 'Rollback', body: 'No partial save', adminPassword: f.adminPassword }, f.adminToken), /injected_sql_failure/);
+  assert.equal(await f.storage.get('coin-issues:post:' + asset + ':' + id), undefined);
+  assert.equal((await f.store.readCoinContentPage(asset, 'issues', 1)).total, 0);
+  const article = { id: 'coinness-1', title: 'News', body: 'Body', source: 'coinness', sourceUrl: 'https://coinness.com/news/1', createdAt: Date.now(), updatedAt: Date.now(), revision: 1 };
+  await assert.rejects(f.store.mergeAutomaticCoinIssues('coinness', new Map([[asset, [article]]]), new Set([article.id])), /injected_sql_failure/);
+  assert.equal(await f.storage.get('coin-issues:auto:' + asset), undefined);
+  assert.equal((await f.store.readCoinContentPage(asset, 'news', 1)).total, 0);
+  assert.equal(f.storage.shared.db.prepare('SELECT count(*) AS n FROM coin_content_entries').get().n, 0);
+  f.storage.sql.exec = exec;
+  assert.equal((await f.request(path, 'POST', { id, title: 'Retry', body: 'Saved once', adminPassword: f.adminPassword }, f.adminToken)).status, 201);
+  assert.equal((await f.store.readCoinContentPage(asset, 'issues', 1)).total, 1);
+});
+
+test('automatic imports use reverse associations and do not scan unrelated coins after bootstrap', async () => {
+  const f = await fixture(), now = Date.now();
+  const article = { id: 'coinness-1', title: 'News', body: 'Body', source: 'coinness', sourceUrl: 'https://coinness.com/news/1', createdAt: now, updatedAt: now, revision: 1 };
+  for (let i = 0; i < 80; i++) await f.storage.put('coin-issues:auto:UNRELATED' + i + ':token', [{ ...article, id: 'coinness-' + (i + 100) }]);
+  await f.store.mergeAutomaticCoinIssues('coinness', new Map([['BTC:bitcoin', [article]]]), new Set([article.id]));
+  const list = f.storage.list;
+  f.storage.list = async () => { throw new Error('unexpected_full_catalog_scan'); };
+  const get = MemoryStorage.prototype.get, reads = [];
+  MemoryStorage.prototype.get = async function(key) { reads.push(key); return get.call(this, key); };
+  try {
+    const result = await f.store.mergeAutomaticCoinIssues('coinness', new Map([['ETH:ethereum', [article]]]), new Set([article.id]));
+    assert.deepEqual(result, { affectedAssets: 2, changedAssets: 2 });
+    assert.ok(reads.every(key => !key.includes('UNRELATED')));
+    assert.equal((await f.store.readCoinContentPage('BTC:bitcoin', 'news', 1)).total, 0);
+    assert.equal((await f.store.readCoinContentPage('ETH:ethereum', 'news', 1)).total, 1);
+    assert.deepEqual(await f.store.mergeAutomaticCoinIssues('coinness', new Map([['ETH:ethereum', [article]]]), new Set([article.id])), { affectedAssets: 1, changedAssets: 0 });
+  } finally { MemoryStorage.prototype.get = get; f.storage.list = list; }
 });
 
 async function coinNewsFixture() {
@@ -410,7 +525,10 @@ async function coinNewsFixture() {
   const newsAt = Date.now(), published = Math.floor((newsAt - 600000) / 1000);
   const news = (id, headline, assetSymbols = [], summary = "관련 소식 요약") =>
     ({ id, headline, assetSymbols, summary, publishAtTs: published + id, sourceName: "Coinness" });
-  const write = items => f.store.writeNewsStore({ fetchedAt: ++f.newsAt, seededAt: newsAt, items });
+  const write = async items => {
+    await f.store.writeNewsStore({ fetchedAt: ++f.newsAt, seededAt: newsAt, items });
+    await f.store.syncCoinNewsSafely();
+  };
   f.newsAt = newsAt;
   return { ...f, write, news };
 }
@@ -496,6 +614,7 @@ test("automatic news keeps a bounded archive outside manual quota and retries an
   assert.equal(list.newsSyncDelayed, true);
   assert.deepEqual(await f.storage.get("coin-issues:auto-sync"), previousStamp, "failed sync cannot be marked complete");
   f.store.readMarketData = read;
+  await f.store.syncCoinNewsSafely();
   list = await (await f.request("/api/coin-issues?asset=BTC:bitcoin")).json();
   assert.equal(list.newsSyncDelayed, false);
   assert.equal(list.items[0].id, "coinness-512");
@@ -818,7 +937,7 @@ test('unavailable Telegram originals never masquerade as full text or resurrect 
   assert.deepEqual(await f.storage.get('coin-issues:auto:BTC:bitcoin'), [legacy]);
   const pending = await f.store.repairTelegramArchive(); assert.equal(pending.complete, false); assert.equal(pending.pending, 1);
   f.store.fetchTelegramChannel = async () => {
-    await f.storage.put('coin-issues:auto:BTC:bitcoin', []);
+    assert.equal((await f.request(path, 'DELETE', { revision: 1, adminPassword: f.adminPassword }, f.adminToken)).status, 200);
     return { messages: [{ channel: 'BChoSN', id: '10', sourceUrl: legacy.sourceUrl, text: '원문 전체', createdAt: now - 1000 }] };
   };
   response = await f.request(path); assert.equal(response.status, 503);
@@ -836,11 +955,11 @@ test('full-body cleanup protects shared references and recent writes while event
   const orphan = 'coin-issues:telegram-body:orphan', fresh = 'coin-issues:telegram-body:fresh';
   await f.storage.put(orphan, { body: 'unused', lastUsedAt: 1 });
   await f.storage.put(fresh, { body: 'pending write', lastUsedAt: now });
-  await f.store.cleanupTelegramBodies(await f.store.mergeAutomaticCoinIssues('coinness', new Map(), new Set()));
+  await f.store.cleanupTelegramBodies();
   assert.ok(await f.storage.get(first.bodyKey), 'another coin still references the old immutable version');
   assert.equal(await f.storage.get(orphan), undefined); assert.ok(await f.storage.get(fresh));
   await f.store.repairTelegramIssue(first, 'ETH:ethereum', changed);
-  await f.store.cleanupTelegramBodies(await f.store.mergeAutomaticCoinIssues('coinness', new Map(), new Set()));
+  await f.store.cleanupTelegramBodies();
   assert.equal(await f.storage.get(first.bodyKey), undefined);
 });
 

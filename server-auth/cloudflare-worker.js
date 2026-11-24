@@ -3075,9 +3075,127 @@ export class BoardStore {
     return jsonResponse({ error: "auth_required" }, 401, this.env);
   }
 
+  coinContentSql() {
+    const sql = this.state.storage.sql;
+    if (!sql) throw new Error("coin_content_sql_unavailable");
+    if (!this.coinContentSchemaReady) {
+      sql.exec("CREATE TABLE IF NOT EXISTS coin_content_assets (asset TEXT PRIMARY KEY, manual_total INTEGER NOT NULL, news_total INTEGER NOT NULL, telegram_total INTEGER NOT NULL)");
+      sql.exec("CREATE TABLE IF NOT EXISTS coin_content_entries (asset TEXT NOT NULL, id TEXT NOT NULL, source TEXT NOT NULL, section TEXT NOT NULL, created_at INTEGER NOT NULL, summary_json TEXT NOT NULL, post_json TEXT, body_key TEXT, PRIMARY KEY(asset, id))");
+      sql.exec("CREATE INDEX IF NOT EXISTS coin_content_page ON coin_content_entries(asset, section, created_at DESC, id ASC)");
+      sql.exec("CREATE INDEX IF NOT EXISTS coin_content_source_id ON coin_content_entries(source, id, asset)");
+      sql.exec("CREATE INDEX IF NOT EXISTS coin_content_body ON coin_content_entries(body_key) WHERE body_key IS NOT NULL");
+      sql.exec("CREATE INDEX IF NOT EXISTS coin_content_repair ON coin_content_entries(asset, id) WHERE source = 'telegram' AND body_key IS NULL");
+      sql.exec("CREATE TABLE IF NOT EXISTS coin_content_state (name TEXT PRIMARY KEY, value INTEGER NOT NULL)");
+      this.coinContentSchemaReady = true;
+    }
+    return sql;
+  }
+
+  coinContentAssetReady(asset) {
+    return this.coinContentSql().exec("SELECT 1 FROM coin_content_assets WHERE asset = ?", asset).toArray().length > 0;
+  }
+
+  putCoinContentEntry(asset, post, manual = false) {
+    const summary = manual ? post : coinIssueSummary(post), source = manual ? "manual" : post.source;
+    this.coinContentSql().exec(`INSERT INTO coin_content_entries(asset, id, source, section, created_at, summary_json, post_json, body_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(asset, id) DO UPDATE SET source=excluded.source,
+      section=excluded.section, created_at=excluded.created_at, summary_json=excluded.summary_json,
+      post_json=excluded.post_json, body_key=excluded.body_key`,
+    asset, post.id, source, source === "coinness" ? "news" : "issues", post.createdAt,
+    JSON.stringify(summary), manual ? null : JSON.stringify(post), post.bodyKey || null);
+  }
+
+  syncCoinManualIndex(asset, index, post = null, removedId = "") {
+    if (post) this.putCoinContentEntry(asset, coinIssueSummary(post), true);
+    if (removedId) this.coinContentSql().exec("DELETE FROM coin_content_entries WHERE asset = ? AND id = ?", asset, removedId);
+    this.coinContentSql().exec("UPDATE coin_content_assets SET manual_total = ? WHERE asset = ?", index.length, asset);
+  }
+
+  syncCoinAutomaticIndex(asset, old, next) {
+    const oldById = new Map(old.map(post => [post.id, post])), ids = new Set(next.map(post => post.id));
+    for (const post of old) if (!ids.has(post.id)) this.coinContentSql().exec("DELETE FROM coin_content_entries WHERE asset = ? AND id = ?", asset, post.id);
+    for (const post of next) if (JSON.stringify(oldById.get(post.id)) !== JSON.stringify(post)) this.putCoinContentEntry(asset, post);
+    this.coinContentSql().exec("UPDATE coin_content_assets SET news_total = ?, telegram_total = ? WHERE asset = ?",
+      next.filter(post => post.source === "coinness").length, next.filter(post => post.source === "telegram").length, asset);
+  }
+
+  async ensureCoinContentAsset(asset, createEmpty = false) {
+    if (this.coinContentAssetReady(asset)) return true;
+    this.coinContentMigrations ||= new Map();
+    if (this.coinContentMigrations.has(asset)) {
+      const ready = await this.coinContentMigrations.get(asset);
+      return !ready && createEmpty ? this.ensureCoinContentAsset(asset, true) : ready;
+    }
+    // The SQL projection is rebuildable; canonical KV records and backup keys stay unchanged.
+    const pending = this.state.storage.transaction(async storage => {
+      if (this.coinContentAssetReady(asset)) return true;
+      const manualValue = await storage.get(COIN_ISSUES_PREFIX + "index:" + asset);
+      const automaticValue = await storage.get(COIN_ISSUES_PREFIX + "auto:" + asset);
+      if (manualValue === undefined && automaticValue === undefined && !createEmpty) return false;
+      const manual = manualValue || [], automatic = automaticValue || [];
+      for (const post of manual) this.putCoinContentEntry(asset, post, true);
+      for (const post of automatic) this.putCoinContentEntry(asset, post);
+      this.coinContentSql().exec("INSERT INTO coin_content_assets(asset, manual_total, news_total, telegram_total) VALUES (?, ?, ?, ?)",
+        asset, manual.length, automatic.filter(post => post.source === "coinness").length, automatic.filter(post => post.source === "telegram").length);
+      return true;
+    }).finally(() => this.coinContentMigrations.delete(asset));
+    this.coinContentMigrations.set(asset, pending);
+    return pending;
+  }
+
+  async ensureCoinAutomaticCatalog() {
+    if (this.coinContentSql().exec("SELECT value FROM coin_content_state WHERE name = 'automatic_catalog'").toArray()[0]?.value === 1) return;
+    if (this.coinAutomaticCatalogPromise) return this.coinAutomaticCatalogPromise;
+    this.coinAutomaticCatalogPromise = (async () => {
+      let startAfter;
+      for (;;) {
+        const batch = await this.state.storage.list({ prefix: COIN_ISSUES_PREFIX + "auto:", limit: 25, ...(startAfter ? { startAfter } : {}) });
+        for (const key of batch.keys()) await this.ensureCoinContentAsset(key.slice((COIN_ISSUES_PREFIX + "auto:").length));
+        if (batch.size < 25) break;
+        startAfter = [...batch.keys()].at(-1);
+      }
+      await this.state.storage.transaction(async () => {
+        this.coinContentSql().exec("INSERT OR REPLACE INTO coin_content_state(name, value) VALUES ('automatic_catalog', 1)");
+      });
+    })().finally(() => { this.coinAutomaticCatalogPromise = null; });
+    return this.coinAutomaticCatalogPromise;
+  }
+
+  async readCoinContentPage(asset, section, requested) {
+    if (!await this.ensureCoinContentAsset(asset)) return { page: 1, total: 0, records: [], rowsRead: 0 };
+    return this.state.storage.transaction(async () => {
+      const sql = this.coinContentSql(), counts = sql.exec("SELECT manual_total, news_total, telegram_total FROM coin_content_assets WHERE asset = ?", asset).toArray()[0];
+      const total = section === "news" ? counts.news_total : counts.manual_total + counts.telegram_total + (section === "all" ? counts.news_total : 0);
+      const page = Number.isSafeInteger(requested) ? Math.max(1, Math.min(Math.max(1, Math.ceil(total / 10)), requested)) : 1;
+      const cursor = section === "all"
+        ? sql.exec("SELECT summary_json, post_json FROM coin_content_entries WHERE asset = ? ORDER BY created_at DESC, id ASC LIMIT 10 OFFSET ?", asset, (page - 1) * 10)
+        : sql.exec("SELECT summary_json, post_json FROM coin_content_entries WHERE asset = ? AND section = ? ORDER BY created_at DESC, id ASC LIMIT 10 OFFSET ?", asset, section, (page - 1) * 10);
+      const records = cursor.toArray();
+      return { page, total, records, rowsRead: cursor.rowsRead };
+    });
+  }
+
+  async readCoinAutomaticPost(asset, id) {
+    if (!await this.ensureCoinContentAsset(asset)) return null;
+    return this.state.storage.transaction(async () => {
+      const record = this.coinContentSql().exec("SELECT post_json FROM coin_content_entries WHERE asset = ? AND id = ? AND source <> 'manual'", asset, id).toArray()[0];
+      return record ? JSON.parse(record.post_json) : null;
+    });
+  }
+
+  coinContentCatalog(market) {
+    if (this.coinContentCatalogMarket !== market) {
+      this.coinContentCatalogMarket = market;
+      this.coinContentCatalogValue = coinNewsCatalog(market);
+    }
+    return this.coinContentCatalogValue;
+  }
+
   async seedCoinIssues(asset) {
     const key = COIN_ISSUES_PREFIX + "index:" + asset;
-    if (asset !== "SKY:skyprotocol" || await this.state.storage.get(key) !== undefined) return;
+    if (asset !== "SKY:skyprotocol" || this.skyIssuesSeedChecked) return;
+    if (await this.state.storage.get(key) !== undefined) { this.skyIssuesSeedChecked = true; return; }
+    this.coinContentSql();
     await this.state.storage.transaction(async storage => {
       if (await storage.get(key) !== undefined) return;
       const now = Date.now();
@@ -3085,7 +3203,9 @@ export class BoardStore {
         body: SKY_ISSUE_BODY, createdAt: now, updatedAt: now, revision: 1 };
       await storage.put(COIN_ISSUES_PREFIX + "post:" + asset + ":" + post.id, post);
       await storage.put(key, [coinIssueSummary(post)]);
+      if (this.coinContentAssetReady(asset)) this.syncCoinManualIndex(asset, [coinIssueSummary(post)], post);
     });
+    this.skyIssuesSeedChecked = true;
   }
 
   async handleCoinIssues(request, url) {
@@ -3100,19 +3220,10 @@ export class BoardStore {
     const belongs = post => section === "all" || (post.source === "coinness" ? "news" : "issues") === section;
     const indexKey = COIN_ISSUES_PREFIX + "index:" + asset;
     if (request.method === "GET") {
-      let sync = { ok: true };
-      if (!id && section !== "issues") {
-        const initialized = await this.state.storage.get(COIN_ISSUES_PREFIX + "auto-sync");
-        if (initialized && typeof this.state.waitUntil === "function") {
-          this.state.waitUntil(this.syncCoinNewsSafely());
-          sync.ok = this.coinNewsSyncFailed !== true;
-        } else sync = await this.syncCoinNewsSafely();
-      }
       await this.seedCoinIssues(asset);
-      const automatic = await this.state.storage.get(COIN_ISSUES_PREFIX + "auto:" + asset) || [];
       if (id) {
-        const post = automatic.find(post => post.id === id)
-          || await this.state.storage.get(COIN_ISSUES_PREFIX + "post:" + asset + ":" + id);
+        const post = id.startsWith("coinness-") || id.startsWith("telegram-") ? await this.readCoinAutomaticPost(asset, id)
+          : await this.state.storage.get(COIN_ISSUES_PREFIX + "post:" + asset + ":" + id);
         if (!post || !belongs(post)) return jsonResponse({ error: "issue_not_found" }, 404, this.env);
         try {
           const resolved = await this.readCoinIssueBody(post, asset, true);
@@ -3120,18 +3231,16 @@ export class BoardStore {
           return this.recordApiResponse(jsonResponse({ post: { ...resolved, ...coinIssueSummary(resolved) } }, 200, this.env));
         } catch (_error) { return jsonResponse({ error: "issue_source_delayed" }, 503, this.env); }
       }
-      const index = [...(await this.state.storage.get(indexKey) || []), ...automatic.map(coinIssueSummary)]
-        .filter(belongs)
-        .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
       const requestedPage = Math.floor(Number(url.searchParams.get("page")) || 1);
-      const page = Number.isSafeInteger(requestedPage) ? Math.max(1, Math.min(Math.max(1, Math.ceil(index.length / 10)), requestedPage)) : 1;
-      const items = index.slice((page - 1) * 10, page * 10);
+      const { page, total, records } = await this.readCoinContentPage(asset, section, requestedPage);
+      const items = records.map(record => JSON.parse(record.summary_json));
       const includedPosts = [];
       let remainingBytes = COIN_ISSUE_INLINE_PAGE_BYTES;
-      for (const item of items) {
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
         if (item.bodyBytes > COIN_ISSUE_INLINE_POST_BYTES || remainingBytes <= 0) continue;
-        const stored = automatic.find(post => post.id === item.id)
-          || await this.state.storage.get(COIN_ISSUES_PREFIX + "post:" + asset + ":" + item.id);
+        const stored = records[i].post_json ? JSON.parse(records[i].post_json)
+          : await this.state.storage.get(COIN_ISSUES_PREFIX + "post:" + asset + ":" + item.id);
         if (!stored || stored.revision !== item.revision || typeof stored.body !== "string") continue;
         const resolved = await this.readCoinIssueBody(stored, asset);
         if (!resolved) continue;
@@ -3142,7 +3251,7 @@ export class BoardStore {
         remainingBytes -= bytes;
       }
       return this.recordApiResponse(jsonResponse({
-        items, includedPosts, page, section, total: index.length, newsSyncDelayed: !sync.ok,
+        items, includedPosts, page, section, total, newsSyncDelayed: this.coinNewsSyncFailed === true,
       }, 200, this.env));
     }
     if (!["POST", "PUT", "DELETE"].includes(request.method) || (request.method === "POST" ? Boolean(id) : !id)) {
@@ -3157,6 +3266,7 @@ export class BoardStore {
     if (denied) return denied;
     if (id.startsWith("coinness-") || id.startsWith("telegram-")) {
       if (request.method !== "DELETE") return jsonResponse({ error: "automatic_issue_read_only" }, 409, this.env);
+      await this.ensureCoinContentAsset(asset, true);
       const result = await this.state.storage.transaction(async storage => {
         const key = COIN_ISSUES_PREFIX + "auto:" + asset;
         const posts = await storage.get(key) || [];
@@ -3167,7 +3277,9 @@ export class BoardStore {
         const hidden = await storage.get(hiddenKey) || [];
         if (hidden.length >= 1000) return { error: "issue_limit", status: 409 };
         await storage.put(hiddenKey, [...new Set([...hidden, id])]);
-        await storage.put(key, posts.filter(post => post.id !== id));
+        const next = posts.filter(post => post.id !== id);
+        await storage.put(key, next);
+        this.syncCoinAutomaticIndex(asset, posts, next);
         return { ok: true };
       });
       return jsonResponse(result.error ? { error: result.error } : result, result.status || 200, this.env);
@@ -3184,6 +3296,7 @@ export class BoardStore {
       return jsonResponse({ error: "invalid_issue_text" }, 400, this.env);
     }
     await this.seedCoinIssues(asset);
+    await this.ensureCoinContentAsset(asset, true);
     const result = await this.state.storage.transaction(async storage => {
       const postKey = COIN_ISSUES_PREFIX + "post:" + asset + ":" + postId;
       const old = await storage.get(postKey);
@@ -3193,16 +3306,20 @@ export class BoardStore {
       if (!creating && !old) return { error: "issue_not_found", status: 404 };
       if (!creating && body.revision !== old.revision) return { error: "issue_conflict", status: 409 };
       if (request.method === "DELETE") {
+        const next = index.filter(item => item.id !== postId);
         await storage.delete(postKey);
-        await storage.put(indexKey, index.filter(item => item.id !== postId));
+        await storage.put(indexKey, next);
+        this.syncCoinManualIndex(asset, next, null, postId);
         return { ok: true };
       }
       const now = Date.now();
       const post = { id: postId, title, body: text, createdAt: old?.createdAt || now,
         updatedAt: now, revision: (old?.revision || 0) + 1 };
       await storage.put(postKey, post);
-      await storage.put(indexKey, [coinIssueSummary(post), ...index.filter(item => item.id !== postId)]
-        .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)));
+      const next = [coinIssueSummary(post), ...index.filter(item => item.id !== postId)]
+        .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
+      await storage.put(indexKey, next);
+      this.syncCoinManualIndex(asset, next, post);
       return { post: { ...post, author: "관리자" } };
     });
     return jsonResponse(result.error ? { error: result.error } : result, result.status || (creating ? 201 : 200), this.env);
@@ -3231,7 +3348,7 @@ export class BoardStore {
     if (previous?.newsAt === stamp.newsAt && previous?.marketAt === stamp.marketAt) return;
     const market = await this.readMarketData();
     if (!market) throw new Error("coin_news_catalog_unavailable");
-    const catalog = coinNewsCatalog(market), grouped = new Map();
+    const catalog = this.coinContentCatalog(market), grouped = new Map();
     for (const item of news.items) {
       if (!Number.isSafeInteger(item.id) || item.id <= 0 || item.publishAtTs * 1000 > Date.now() + 60000) continue;
       for (const asset of matchCoinNews(item, catalog)) {
@@ -3246,26 +3363,29 @@ export class BoardStore {
   }
 
   async mergeAutomaticCoinIssues(source, grouped, currentIds) {
-    // Each feed has its own bounded archive; one source cannot evict the other.
+    await this.ensureCoinAutomaticCatalog();
     const prefix = COIN_ISSUES_PREFIX + "auto:";
     const knownAssets = new Set(grouped.keys());
     const limit = source === "coinness" ? COIN_NEWS_LIMIT : COIN_TELEGRAM_LIMIT;
-    const bodyKeys = new Set();
-    let startAfter;
-    for (;;) {
-      const batch = await this.state.storage.list({ prefix, limit: 100, ...(startAfter ? { startAfter } : {}) });
-      for (const key of batch.keys()) knownAssets.add(key.slice(prefix.length));
-      if (batch.size < 100) break;
-      startAfter = [...batch.keys()].at(-1);
-    }
+    const ids = [...currentIds];
+    await this.state.storage.transaction(async () => {
+      for (let offset = 0; offset < ids.length; offset += 80) {
+        const batch = ids.slice(offset, offset + 80);
+        const rows = this.coinContentSql().exec(`SELECT DISTINCT asset FROM coin_content_entries WHERE source = ? AND id IN (${batch.map(() => "?").join(",")})`, source, ...batch).toArray();
+        for (const row of rows) knownAssets.add(row.asset);
+      }
+    });
+    let changedAssets = 0;
     for (const asset of knownAssets) {
-      const retained = await this.state.storage.transaction(async storage => {
+      await this.ensureCoinContentAsset(asset, true);
+      const changed = await this.state.storage.transaction(async storage => {
         const key = prefix + asset, old = await storage.get(key) || [];
+        const oldById = new Map(old.map(post => [post.id, post]));
         const hidden = new Set(await storage.get(COIN_ISSUES_PREFIX + "hidden:" + asset) || []);
         const byId = new Map(old.filter(post => post.source === source && !currentIds.has(post.id) && !hidden.has(post.id)).map(post => [post.id, post]));
         for (const post of grouped.get(asset) || []) {
           if (hidden.has(post.id)) continue;
-          const previous = old.find(item => item.id === post.id);
+          const previous = oldById.get(post.id);
           const changed = previous && (previous.title !== post.title || previous.body !== post.body || previous.createdAt !== post.createdAt
             || previous.bodyHash !== post.bodyHash || previous.fullText !== post.fullText);
           byId.set(post.id, previous && !changed ? previous : { ...post,
@@ -3274,12 +3394,14 @@ export class BoardStore {
         const next = [...old.filter(post => post.source !== source && !hidden.has(post.id)),
           ...[...byId.values()].sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)).slice(0, limit)]
           .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
-        if (JSON.stringify(old) !== JSON.stringify(next)) await storage.put(key, next);
-        return next;
+        if (JSON.stringify(old) === JSON.stringify(next)) return false;
+        await storage.put(key, next);
+        this.syncCoinAutomaticIndex(asset, old, next);
+        return true;
       });
-      for (const post of retained) if (post.bodyKey) bodyKeys.add(post.bodyKey);
+      if (changed) changedAssets++;
     }
-    return bodyKeys;
+    return { affectedAssets: knownAssets.size, changedAssets };
   }
 
   async makeTelegramIssuePost(post, id) {
@@ -3319,9 +3441,8 @@ export class BoardStore {
     const key = asset + ":" + post.id;
     if (this.telegramIssueRepairs.has(key)) return this.telegramIssueRepairs.get(key);
     const pending = (async () => {
-      const posts = await this.state.storage.get(COIN_ISSUES_PREFIX + "auto:" + asset) || [];
-      const current = posts.find(item => item.id === post.id && item.sourceUrl === post.sourceUrl && item.source === "telegram");
-      if (!current) return null;
+      const current = await this.readCoinAutomaticPost(asset, post.id);
+      if (!current || current.sourceUrl !== post.sourceUrl || current.source !== "telegram") return null;
       const entry = current.fullText && current.bodyKey && await this.state.storage.get(current.bodyKey);
       if (entry?.sourceUrl === current.sourceUrl && typeof entry.body === "string") return current;
       return this.applyTelegramIssueRepair(current, asset, await this.fetchTelegramOriginal(current.sourceUrl));
@@ -3331,6 +3452,7 @@ export class BoardStore {
   }
 
   async applyTelegramIssueRepair(post, asset, source) {
+    await this.ensureCoinContentAsset(asset, true);
     const prepared = await this.makeTelegramIssuePost(source, post.id);
     return this.state.storage.transaction(async storage => {
       const key = COIN_ISSUES_PREFIX + "auto:" + asset, posts = await storage.get(key) || [];
@@ -3338,7 +3460,9 @@ export class BoardStore {
       if (!current) return null;
       if (current.bodyHash === prepared.bodyHash && current.fullText && current.title === prepared.title) return current;
       const next = { ...current, ...prepared, createdAt: current.createdAt, revision: current.revision + 1, updatedAt: Date.now() };
-      await storage.put(key, posts.map(item => item === current ? next : item));
+      const updated = posts.map(item => item === current ? next : item);
+      await storage.put(key, updated);
+      this.syncCoinAutomaticIndex(asset, posts, updated);
       return next;
     });
   }
@@ -3361,18 +3485,16 @@ export class BoardStore {
     this.telegramArchiveRepairPromise = (async () => {
       const previous = await this.state.storage.get(TELEGRAM_BODY_REPAIR_KEY);
       if (previous?.complete || (previous?.checkedAt && Date.now() - previous.checkedAt < TELEGRAM_RETRY_MS)) return previous;
-      const targets = new Map(), prefix = COIN_ISSUES_PREFIX + "auto:";
-      let startAfter;
-      for (;;) {
-        const batch = await this.state.storage.list({ prefix, limit: 100, ...(startAfter ? { startAfter } : {}) });
-        for (const [key, posts] of batch) for (const post of posts) {
-          const source = post.source === "telegram" && telegramSourceParts(post.sourceUrl);
-          if (!source || !TELEGRAM_REPUBLISH_CHANNELS.has(source.channel) || post.fullText && post.bodyKey) continue;
-          if (!targets.has(post.sourceUrl)) targets.set(post.sourceUrl, { source, posts: [] });
-          targets.get(post.sourceUrl).posts.push({ asset: key.slice(prefix.length), post });
-        }
-        if (batch.size < 100) break;
-        startAfter = [...batch.keys()].at(-1);
+      await this.ensureCoinAutomaticCatalog();
+      const targets = new Map();
+      const candidates = await this.state.storage.transaction(async () => this.coinContentSql()
+        .exec("SELECT asset, post_json FROM coin_content_entries WHERE source = 'telegram' AND body_key IS NULL").toArray());
+      for (const candidate of candidates) {
+        const post = JSON.parse(candidate.post_json);
+        const source = post.source === "telegram" && telegramSourceParts(post.sourceUrl);
+        if (!source || !TELEGRAM_REPUBLISH_CHANNELS.has(source.channel) || post.fullText && post.bodyKey) continue;
+        if (!targets.has(post.sourceUrl)) targets.set(post.sourceUrl, { source, posts: [] });
+        targets.get(post.sourceUrl).posts.push({ asset: candidate.asset, post });
       }
       let attempts = 0, failures = 0, pendingCount = targets.size, after = previous?.after || "";
       const sorted = [...targets.keys()].sort();
@@ -3401,11 +3523,13 @@ export class BoardStore {
     return this.telegramArchiveRepairPromise;
   }
 
-  async cleanupTelegramBodies(activeKeys) {
+  async cleanupTelegramBodies() {
+    await this.ensureCoinAutomaticCatalog();
     const key = COIN_ISSUES_PREFIX + "telegram-body-gc", previous = await this.state.storage.get(key);
     const batch = await this.state.storage.list({ prefix: TELEGRAM_BODY_PREFIX, limit: 20,
       ...(previous?.after ? { startAfter: previous.after } : {}) });
-    for (const bodyKey of batch.keys()) if (!activeKeys.has(bodyKey)) await this.state.storage.transaction(async storage => {
+    for (const bodyKey of batch.keys()) await this.state.storage.transaction(async storage => {
+      if (this.coinContentSql().exec("SELECT 1 FROM coin_content_entries WHERE body_key = ? LIMIT 1", bodyKey).toArray().length) return;
       const entry = await storage.get(bodyKey);
       if (entry && entry.lastUsedAt < Date.now() - 3600000) await storage.delete(bodyKey);
     });
@@ -3435,7 +3559,7 @@ export class BoardStore {
       if (!queue.length) return { ok: true, channels: [] };
       const market = await this.readMarketData();
       if (!market) return { ok: false, channels: [] };
-      const catalog = coinNewsCatalog(market), grouped = new Map(), currentIds = new Set(), results = [];
+      const catalog = this.coinContentCatalog(market), grouped = new Map(), currentIds = new Set(), results = [];
       const nextStatus = { ...status };
       const runner = async () => {
         for (let channel; (channel = queue.shift());) {
@@ -3495,10 +3619,10 @@ export class BoardStore {
         }
       };
       await Promise.all([runner(), runner(), runner()]);
-      const activeBodies = await this.mergeAutomaticCoinIssues("telegram", grouped, currentIds);
+      await this.mergeAutomaticCoinIssues("telegram", grouped, currentIds);
       // A crash or failed issue write must replay the page, never commit a cursor past missing content.
       await this.state.storage.put(TELEGRAM_STATUS_KEY, nextStatus);
-      try { await this.cleanupTelegramBodies(activeBodies); } catch (_error) { console.error("telegram_body_cleanup_delayed"); }
+      try { await this.cleanupTelegramBodies(); } catch (_error) { console.error("telegram_body_cleanup_delayed"); }
       return { ok: results.every(item => !item.error && !item.pending && !item.pollSoon), channels: results };
     })().finally(() => { this.telegramRefreshPromise = null; });
     return this.telegramRefreshPromise;
@@ -4392,7 +4516,17 @@ export class BoardStore {
       const bytes = value => new TextEncoder().encode(JSON.stringify(value)).byteLength;
       const publicFullBytes = bytes({ ...marketDataWithoutRefreshHistory(market), comparisonBootstrap: bootstrap });
       const marketBytes = bytes({ ...marketDataForScope(market, "market"), comparisonBootstrap: bootstrap });
+      const asset = "BTC:bitcoin", contentPage = await this.readCoinContentPage(asset, "news", 1);
+      const legacy = await this.state.storage.get(COIN_ISSUES_PREFIX + "auto:" + asset) || [];
+      const firstId = contentPage.records[0] && JSON.parse(contentPage.records[0].summary_json).id;
+      const detailRowsRead = firstId ? await this.state.storage.transaction(async () => {
+        const cursor = this.coinContentSql().exec("SELECT post_json FROM coin_content_entries WHERE asset = ? AND id = ?", asset, firstId);
+        cursor.toArray();
+        return cursor.rowsRead;
+      }) : 0;
       return jsonResponse({ implementation: 7, deliveryVersion: 1, coinContentVersion: 3, coinRetentionVersion: 2,
+        coinContentIndexVersion: 1, coinContentRead: { totalNews: contentPage.total, pageItems: contentPage.records.length,
+          pageRowsRead: contentPage.rowsRead, detailRowsRead, pageRecordBytes: bytes(contentPage.records), legacyAutomaticArrayBytes: bytes(legacy) },
         coinNewsLimit: COIN_NEWS_LIMIT, telegramIssueLimit: COIN_TELEGRAM_LIMIT, manualIssueCountLimit: null, exchange, warmSnapshotMs, publicFullBytes, marketBytes,
         reductionPercent: Math.round((1 - marketBytes / publicFullBytes) * 100),
         sectionBytes: Object.fromEntries(["futures", "ranking", "audit", "search"].map(scope => [scope,
