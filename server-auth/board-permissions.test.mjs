@@ -110,8 +110,9 @@ test("scoped snapshots retain comparison identity while excluding unrelated data
   assert.equal(scoped.upbitAudit, undefined);
   const delivery = await (await f.store.probeComparisonSource('delivery')).json();
   assert.equal(delivery.deliveryVersion, 1);
-  assert.equal(delivery.coinRetentionVersion, 1);
-  assert.equal(delivery.automaticIssueLimit, 100);
+  assert.equal(delivery.coinRetentionVersion, 2);
+  assert.equal(delivery.coinNewsLimit, 500);
+  assert.equal(delivery.telegramIssueLimit, 100);
   assert.equal(delivery.manualIssueCountLimit, null);
   assert.ok(delivery.marketBytes < delivery.publicFullBytes * 0.1);
   assert.doesNotMatch(JSON.stringify(delivery), /INTRODUCTION|private incident|description/);
@@ -474,28 +475,30 @@ test("automatic news deduplicates, follows corrections, preserves manual posts a
 
 test("automatic news keeps a bounded archive outside manual quota and retries an interrupted sync", async () => {
   const f = await coinNewsFixture();
-  await f.write(Array.from({ length: 110 }, (_, index) => f.news(index + 1, "BTC 기사 " + index, ["BTC"])));
+  await f.write(Array.from({ length: 510 }, (_, index) => f.news(index + 1, "BTC 기사 " + index, ["BTC"])));
   let list = await (await f.request("/api/coin-issues?asset=BTC:bitcoin")).json();
-  assert.equal(list.total, 100);
-  assert.equal(list.items[0].id, 'coinness-110');
-  const last = await (await f.request('/api/coin-issues?asset=BTC:bitcoin&section=news&page=10')).json();
+  assert.equal(list.total, 500);
+  assert.equal(list.items[0].id, 'coinness-510');
+  const last = await (await f.request('/api/coin-issues?asset=BTC:bitcoin&section=news&page=50')).json();
+  assert.equal(last.page, 50);
+  assert.equal(last.items.length, 10);
   assert.equal(last.items.at(-1).id, 'coinness-11', 'only the ten oldest automatic items were pruned');
   assert.equal(list.items.length, 10);
-  await f.write([f.news(111, "새 기사", ["BTC"])]);
+  await f.write([f.news(511, "새 기사", ["BTC"])]);
   await f.request("/api/coin-issues?asset=BTC:bitcoin");
-  assert.equal((await f.storage.get("coin-issues:auto:BTC:bitcoin")).length, 100, "rolling feed pruning does not discard the archive");
+  assert.equal((await f.storage.get("coin-issues:auto:BTC:bitcoin")).length, 500, "rolling feed pruning does not discard the archive");
   const read = f.store.readMarketData;
   f.store.readMarketData = async () => { throw new Error("temporary storage read failure"); };
-  await f.write([f.news(112, "갱신 기사", ["BTC"])]);
+  await f.write([f.news(512, "갱신 기사", ["BTC"])]);
   const previousStamp = await f.storage.get("coin-issues:auto-sync");
   list = await (await f.request("/api/coin-issues?asset=BTC:bitcoin")).json();
-  assert.equal(list.total, 100);
+  assert.equal(list.total, 500);
   assert.equal(list.newsSyncDelayed, true);
   assert.deepEqual(await f.storage.get("coin-issues:auto-sync"), previousStamp, "failed sync cannot be marked complete");
   f.store.readMarketData = read;
   list = await (await f.request("/api/coin-issues?asset=BTC:bitcoin")).json();
   assert.equal(list.newsSyncDelayed, false);
-  assert.equal(list.items[0].id, "coinness-112");
+  assert.equal(list.items[0].id, "coinness-512");
 });
 
 test("the news cron ingests official codes without visitor login or exposing an internal route", async () => {
@@ -600,12 +603,12 @@ test("Coinness and Telegram retain independent bounded archives for the same ass
     channel, id: String(i + 1), sourceUrl: `https://t.me/${channel}/${i + 1}`, text: '비트코인 관련 소식', createdAt: Date.now() - 60000,
   })) });
   await f.store.refreshTelegramIssues();
-  await f.write(Array.from({ length: 110 }, (_, i) => f.news(i + 1, 'BTC 소식', ['BTC'])));
+  await f.write(Array.from({ length: 510 }, (_, i) => f.news(i + 1, 'BTC 소식', ['BTC'])));
   await f.store.syncCoinNews();
   const stored = await f.storage.get('coin-issues:auto:BTC:bitcoin');
-  assert.equal(stored.filter(post => post.source === 'coinness').length, 100);
+  assert.equal(stored.filter(post => post.source === 'coinness').length, 500);
   assert.equal(stored.filter(post => post.source === 'telegram').length, 100);
-  assert.equal(stored.length, 200);
+  assert.equal(stored.length, 600);
 });
 
 async function telegramCursorFixture(cursorId = '100') {

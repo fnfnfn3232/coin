@@ -388,6 +388,20 @@ async function main() {
     await paged.page.getByRole('button', { name: many[204].title, exact: true }).waitFor();
     assert.equal(await paged.page.evaluate(() => coinIssuesView.page), 21, 'server page clamping also corrects the visible page number');
     assert.equal(await paged.page.locator('[data-coin-issue-id]').count(), 5);
+    const archiveNews = Array.from({ length: 500 }, (_, i) => ({ ...automatic, id: 'coinness-' + (7000 + i),
+      title: '보관 뉴스 ' + i, body: '뉴스 본문 ' + i, sourceUrl: 'https://coinness.com/news/' + (7000 + i), createdAt: now - i * 1000 }));
+    posts.set('SKY:skyprotocol', [...many.slice(0, 205), ...archiveNews]);
+    await paged.page.evaluate(async () => { await invalidateCoinIssueLists(coinIssuesView.asset); });
+    await paged.page.locator('#coinNewsTab').click();
+    await paged.page.getByRole('button', { name: archiveNews[0].title, exact: true }).waitFor();
+    await paged.page.evaluate(() => { coinIssuesView.page = 49; return loadCoinIssues('', false, true); });
+    await paged.page.getByRole('button', { name: archiveNews[480].title, exact: true }).waitFor();
+    await paged.page.getByRole('button', { name: '다음', exact: true }).click();
+    await paged.page.getByRole('button', { name: archiveNews[499].title, exact: true }).click();
+    assert.equal(await paged.page.locator('.coin-issue-text').textContent(), archiveNews[499].body);
+    await paged.page.getByRole('button', { name: '목록', exact: true }).click();
+    assert.equal(await paged.page.evaluate(() => coinIssuesView.page), 50);
+    assert.equal(await paged.page.getByRole('button', { name: '다음', exact: true }).count(), 0);
     await paged.context.close();
     assert.deepEqual(errors, []);
     console.log('PASS: synchronous first/repeat article opening without detail HTTP, bounded inline bodies, coalesced long-body prefetch, revision invalidation, admin CRUD, automatic news, XSS, drafts, expiry/logout privacy and responsive layout');

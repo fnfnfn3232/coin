@@ -11,7 +11,8 @@ const BOARD_ADMIN_LOGS_KEY = "free-board-admin-logs";
 const BOARD_CATEGORIES_KEY = "free-board-categories";
 const COIN_ISSUES_PREFIX = "coin-issues:";
 const COIN_NEWS_CRON = "*/10 * * * *";
-const COIN_NEWS_LIMIT = 100;
+const COIN_NEWS_LIMIT = 500;
+const COIN_TELEGRAM_LIMIT = 100;
 const TELEGRAM_CHANNELS = ["BChoSN", "umjuninsight", "deganlululala", "enjoymyhobby", "officialunivercityofcrypto", "JoshuaDeukKOR", "fireant_crypto", "shrimp_notice"];
 // Full-text republication authorized by the site owner for these specific channels.
 const TELEGRAM_REPUBLISH_CHANNELS = new Set(["BChoSN", "umjuninsight", "deganlululala", "enjoymyhobby", "officialunivercityofcrypto", "JoshuaDeukKOR", "fireant_crypto", "shrimp_notice"]);
@@ -3248,6 +3249,7 @@ export class BoardStore {
     // Each feed has its own bounded archive; one source cannot evict the other.
     const prefix = COIN_ISSUES_PREFIX + "auto:";
     const knownAssets = new Set(grouped.keys());
+    const limit = source === "coinness" ? COIN_NEWS_LIMIT : COIN_TELEGRAM_LIMIT;
     const bodyKeys = new Set();
     let startAfter;
     for (;;) {
@@ -3270,7 +3272,7 @@ export class BoardStore {
             revision: previous ? previous.revision + 1 : 1, updatedAt: changed ? Date.now() : post.updatedAt });
         }
         const next = [...old.filter(post => post.source !== source && !hidden.has(post.id)),
-          ...[...byId.values()].sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)).slice(0, COIN_NEWS_LIMIT)]
+          ...[...byId.values()].sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)).slice(0, limit)]
           .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
         if (JSON.stringify(old) !== JSON.stringify(next)) await storage.put(key, next);
         return next;
@@ -4390,8 +4392,8 @@ export class BoardStore {
       const bytes = value => new TextEncoder().encode(JSON.stringify(value)).byteLength;
       const publicFullBytes = bytes({ ...marketDataWithoutRefreshHistory(market), comparisonBootstrap: bootstrap });
       const marketBytes = bytes({ ...marketDataForScope(market, "market"), comparisonBootstrap: bootstrap });
-      return jsonResponse({ implementation: 7, deliveryVersion: 1, coinContentVersion: 3, coinRetentionVersion: 1,
-        automaticIssueLimit: COIN_NEWS_LIMIT, manualIssueCountLimit: null, exchange, warmSnapshotMs, publicFullBytes, marketBytes,
+      return jsonResponse({ implementation: 7, deliveryVersion: 1, coinContentVersion: 3, coinRetentionVersion: 2,
+        coinNewsLimit: COIN_NEWS_LIMIT, telegramIssueLimit: COIN_TELEGRAM_LIMIT, manualIssueCountLimit: null, exchange, warmSnapshotMs, publicFullBytes, marketBytes,
         reductionPercent: Math.round((1 - marketBytes / publicFullBytes) * 100),
         sectionBytes: Object.fromEntries(["futures", "ranking", "audit", "search"].map(scope => [scope,
           bytes({ ...marketDataForScope(market, scope, true), comparisonBootstrap: bootstrap })])),
