@@ -12,9 +12,9 @@ const BOARD_CATEGORIES_KEY = "free-board-categories";
 const COIN_ISSUES_PREFIX = "coin-issues:";
 const COIN_NEWS_CRON = "*/10 * * * *";
 const COIN_NEWS_LIMIT = 50;
-const TELEGRAM_CHANNELS = ["BChoSN", "umjuninsight", "deganlululala", "enjoymyhobby", "officialunivercityofcrypto", "JoshuaDeukKOR", "fireant_crypto"];
+const TELEGRAM_CHANNELS = ["BChoSN", "umjuninsight", "deganlululala", "enjoymyhobby", "officialunivercityofcrypto", "JoshuaDeukKOR", "fireant_crypto", "shrimp_notice"];
 // Full-text republication authorized by the site owner for these specific channels.
-const TELEGRAM_REPUBLISH_CHANNELS = new Set(["BChoSN", "umjuninsight", "deganlululala", "enjoymyhobby", "officialunivercityofcrypto", "JoshuaDeukKOR", "fireant_crypto"]);
+const TELEGRAM_REPUBLISH_CHANNELS = new Set(["BChoSN", "umjuninsight", "deganlululala", "enjoymyhobby", "officialunivercityofcrypto", "JoshuaDeukKOR", "fireant_crypto", "shrimp_notice"]);
 const TELEGRAM_STATUS_KEY = COIN_ISSUES_PREFIX + "telegram-status-v1";
 const TELEGRAM_BODY_REPAIR_KEY = COIN_ISSUES_PREFIX + "telegram-body-repair-v1";
 const TELEGRAM_BODY_PREFIX = COIN_ISSUES_PREFIX + "telegram-body:";

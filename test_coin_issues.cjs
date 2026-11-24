@@ -296,13 +296,13 @@ async function main() {
     await livePage.locator('.coin-issues-list').waitFor();
     assert.equal(await livePage.getByRole('button', { name: automatic.title, exact: true }).count(), 0);
     const telegram = { ...seed, id: 'telegram-123abc', title: '스카이 프로토콜의 최근 소식입니다.', source: 'telegram', fullText: true,
-      sourceName: '@BChoSN', sourceUrl: 'https://t.me/BChoSN/123',
+      sourceName: '@shrimp_notice', sourceUrl: 'https://t.me/shrimp_notice/123',
       body: '스카이 프로토콜의 최근 소식입니다.\n\n' + '원문의 줄바꿈과 모든 문장을 유지합니다.\n'.repeat(180) + '\n마지막 문장 <script>alert(1)</script>' };
     posts.set('SKY:skyprotocol', [seed, telegram, next]);
     await livePage.evaluate(async () => { await invalidateCoinIssueLists(coinIssuesView.asset); });
     await livePage.locator('#coinIssuesTab').click();
     await livePage.getByRole('button', { name: telegram.title, exact: true }).click();
-    assert.match(await livePage.locator('.coin-issues-meta').textContent(), /@BChoSN · 원문 · 자동등록/);
+    assert.match(await livePage.locator('.coin-issues-meta').textContent(), /@shrimp_notice · 원문 · 자동등록/);
     assert.equal(await livePage.locator('.coin-issue-text').textContent(), telegram.body, 'full Telegram text and paragraph breaks reach the final sentence');
     assert.equal(await livePage.locator('.coin-issues-article h3').textContent(), telegram.title);
     assert.equal(await livePage.getByRole('link', { name: '텔레그램 원문 보기' }).getAttribute('href'), telegram.sourceUrl);

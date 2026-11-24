@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-TFbfDGspayUbHJftL+s6DBhw9Igr4l+dKbW90ek9GTA='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-SB3P0PHbuwWMccVCa9lKIU7ltmDn5p16kugB3M4UBjI=' 'sha256-bwXvdzPZT2lwb6wS7rAxpiOcqS1Fnbbl5gFiyW7QnZ4='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -15772,7 +15772,7 @@
           const automatic = ["coinness", "telegram"].includes(view.post.source);
           const telegram = view.post.source === "telegram";
           const sourceUrl = view.post.source === "coinness" && /^https:\/\/coinness\.com\/news\/[1-9]\d*$/.test(view.post.sourceUrl || "")
-            || telegram && /^https:\/\/t\.me\/(?:BChoSN|umjuninsight|deganlululala|enjoymyhobby|officialunivercityofcrypto|JoshuaDeukKOR|fireant_crypto)\/[1-9]\d{0,15}$/.test(view.post.sourceUrl || "")
+            || telegram && /^https:\/\/t\.me\/(?:BChoSN|umjuninsight|deganlululala|enjoymyhobby|officialunivercityofcrypto|JoshuaDeukKOR|fireant_crypto|shrimp_notice)\/[1-9]\d{0,15}$/.test(view.post.sourceUrl || "")
             ? view.post.sourceUrl : "";
           content = `<article class="coin-issues-article">${admin && !automatic ? `<div class="coin-issues-toolbar">${button("edit", "수정")}</div>` : ""}
             <h3>${escapeHtml(view.post.title)}</h3><div class="coin-issues-meta">${escapeHtml(attribution(view.post))} · ${escapeHtml(coinIssueDate(view.post.createdAt))}

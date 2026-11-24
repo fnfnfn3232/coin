@@ -521,18 +521,19 @@ test("Telegram cron imports authorized full text, coalesces, preserves news and 
       { channel, id: "124", sourceUrl: `https://t.me/${channel}/124`, text: "AI 산업과 가스 가격 동향", createdAt: Date.now() - 60000 }] };
   };
   const results = await Promise.all([f.store.refreshTelegramIssues(), f.store.refreshTelegramIssues()]);
-  assert.equal(calls, 7); assert.ok(peak <= 3); assert.ok(results.every(result => result.ok));
+  assert.equal(calls, 8); assert.ok(peak <= 3); assert.ok(results.every(result => result.ok));
   const list = async (asset, section) => (await (await f.request(`/api/coin-issues?asset=${asset}&section=${section}`)).json());
   const issues = await list("BTC:bitcoin", "issues");
-  assert.equal(issues.total, 7);
+  assert.equal(issues.total, 8);
   assert.ok(issues.items.every(item => item.source === "telegram" && item.section === "issues"));
   assert.ok(issues.includedPosts.length > 0);
   assert.ok(issues.includedPosts.every(post => post.fullText && post.body === "BTC 현물 거래소 동향 " + "짧은 공개 발췌자료 ".repeat(40)));
   assert.ok(issues.items.every(post => !post.title.includes('관련 게시글') && !post.title.includes('@')));
+  assert.ok(issues.items.some(post => post.sourceName === '@shrimp_notice' && post.fullText));
   assert.equal((await list("BTC:bitcoin", "news")).total, 1);
   assert.equal((await list("AI:gensyn", "issues")).total, 0);
   assert.equal((await list("GAS:gas", "issues")).total, 0);
-  await f.store.refreshTelegramIssues(); assert.equal(calls, 7, "successful sources wait ten minutes");
+  await f.store.refreshTelegramIssues(); assert.equal(calls, 8, "successful sources wait ten minutes");
   assert.equal((await f.request("/api/market-data?probeComparison=telegram", "GET", undefined, "")).status, 401);
   const post = issues.items[0], path = `/api/coin-issues/${post.id}?asset=BTC:bitcoin&section=issues`;
   assert.equal((await f.request(path, "PUT", { adminPassword: f.adminPassword, revision: 1 }, f.adminToken)).status, 409);
@@ -544,17 +545,17 @@ test("Telegram cron imports authorized full text, coalesces, preserves news and 
     await f.storage.put("coin-issues:telegram-status-v1", status);
   };
   await resetChecks(); await f.store.refreshTelegramIssues();
-  assert.equal((await list("BTC:bitcoin", "issues")).total, 6, "deleted Telegram posts stay hidden");
+  assert.equal((await list("BTC:bitcoin", "issues")).total, 7, "deleted Telegram posts stay hidden");
   const before = await f.storage.get("coin-issues:telegram-status-v1");
   failing = true; await resetChecks();
   assert.equal((await f.store.refreshTelegramIssues()).ok, false);
-  assert.equal((await list("BTC:bitcoin", "issues")).total, 6, "failures retain the last good archive");
+  assert.equal((await list("BTC:bitcoin", "issues")).total, 7, "failures retain the last good archive");
   const after = await f.storage.get("coin-issues:telegram-status-v1");
   for (const channel of Object.keys(before)) assert.equal(after[channel].lastSuccessAt, before[channel].lastSuccessAt);
   const count = calls; await f.store.refreshTelegramIssues(); assert.equal(calls, count, "failed sources back off");
   failing = false; corrected = true; await resetChecks(); await f.store.refreshTelegramIssues();
   assert.equal((await list("BTC:bitcoin", "issues")).total, 0, "corrected mentions remove obsolete links");
-  assert.equal((await list("ETH:ethereum", "issues")).total, 7);
+  assert.equal((await list("ETH:ethereum", "issues")).total, 8);
   assert.equal((await list("BTC:bitcoin", "news")).total, 1);
   assert.ok((await f.store.readCoinIssuesForBackup())["coin-issues:telegram-status-v1"]);
 });
@@ -575,7 +576,7 @@ test("Coinness and Telegram retain independent bounded archives for the same ass
 
 async function telegramCursorFixture(cursorId = '100') {
   const f = await coinNewsFixture(), channel = 'BChoSN', now = Date.now();
-  const names = ['BChoSN', 'umjuninsight', 'deganlululala', 'enjoymyhobby', 'officialunivercityofcrypto', 'JoshuaDeukKOR', 'fireant_crypto'];
+  const names = ['BChoSN', 'umjuninsight', 'deganlululala', 'enjoymyhobby', 'officialunivercityofcrypto', 'JoshuaDeukKOR', 'fireant_crypto', 'shrimp_notice'];
   await f.storage.put('coin-issues:telegram-status-v1', Object.fromEntries(names.map(name => [name, {
     checkedAt: name === channel ? 1 : now, lastSuccessAt: now - 60000, cursorId, error: '', textVersion: 1,
   }])));
@@ -993,7 +994,7 @@ test("resource monitoring refreshes shared sources and cannot promote old snapsh
   f.store.readMarketData = async () => market;
   const read = async () => (await (await f.store.probeComparisonSource('resources')).json()).sourceChecks;
   assert.deepEqual(await read(), { l1fees: true, l2fees: true, news: true, telegram: false, market_snapshot: true, defillama: true, apywa: true });
-  const channels = ['BChoSN', 'umjuninsight', 'deganlululala', 'enjoymyhobby', 'officialunivercityofcrypto', 'JoshuaDeukKOR', 'fireant_crypto'];
+  const channels = ['BChoSN', 'umjuninsight', 'deganlululala', 'enjoymyhobby', 'officialunivercityofcrypto', 'JoshuaDeukKOR', 'fireant_crypto', 'shrimp_notice'];
   await f.storage.put('coin-issues:telegram-status-v1', Object.fromEntries(channels.map(channel => [channel, { lastSuccessAt: now }])));
   assert.equal((await read()).telegram, true);
   await f.storage.put('coin-issues:telegram-status-v1', Object.fromEntries(channels.map(channel => [channel, { lastSuccessAt: now - 1800001 }])));
