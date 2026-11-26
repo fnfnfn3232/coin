@@ -338,6 +338,8 @@ const BOARD_INLINE_MEDIA_TYPES = new Map([
   ["video/ogg", [".ogv", ".ogg"]],
 ]);
 const BACKUP_SCHEMA_VERSION = 1;
+const BACKUP_FRAME_BYTES = 64 * 1024;
+const BACKUP_UPLOAD_PART_BYTES = 5 * 1024 * 1024;
 const BACKUP_DATABASE_PREFIX = "database/";
 const BACKUP_MEDIA_PREFIX = "media/";
 const BACKUP_LEGACY_MEDIA_PREFIX = "legacy-media/";
@@ -2236,6 +2238,91 @@ async function encryptBackupJson(value, env) {
   return output;
 }
 
+async function* encryptBackupFrames(strings, env) {
+  const secret = String(env?.BACKUP_ENCRYPTION_KEY || env?.SESSION_SECRET || "");
+  if (secret.length < 32) throw new Error("backup_encryption_secret_not_configured");
+  const encoder = new TextEncoder();
+  const keyBytes = await crypto.subtle.digest("SHA-256", encoder.encode(`coin-site-backup-v2:${secret}`));
+  const key = await crypto.subtle.importKey("raw", keyBytes, { name: "AES-GCM" }, false, ["encrypt"]);
+  const header = new Uint8Array(20);
+  header.set([0x43, 0x42, 0x4b, 2]);
+  crypto.getRandomValues(header.subarray(4));
+  yield header;
+  let index = 0;
+  const frame = async (plaintext, final) => {
+    if (index >= 0xffffffff) throw new Error("backup_frame_limit");
+    // Bind each frame to this file, its position and the authenticated end marker.
+    const aad = new Uint8Array(25);
+    aad.set(header);
+    new DataView(aad.buffer).setUint32(20, index++);
+    aad[24] = final ? 1 : 0;
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: aad }, key, plaintext));
+    const output = new Uint8Array(17 + ciphertext.byteLength);
+    output[0] = aad[24];
+    new DataView(output.buffer).setUint32(1, ciphertext.byteLength);
+    output.set(iv, 5);
+    output.set(ciphertext, 17);
+    return output;
+  };
+  const pending = new Uint8Array(BACKUP_FRAME_BYTES);
+  let used = 0;
+  for await (const text of strings) {
+    // Slice before UTF-8 encoding so a large JSON value never needs a full byte copy.
+    for (let start = 0; start < text.length;) {
+      let end = Math.min(text.length, start + Math.floor(BACKUP_FRAME_BYTES / 3));
+      const last = text.charCodeAt(end - 1);
+      if (end < text.length && last >= 0xd800 && last <= 0xdbff) end--;
+      const bytes = encoder.encode(text.slice(start, end));
+      for (let offset = 0; offset < bytes.byteLength;) {
+        const length = Math.min(pending.byteLength - used, bytes.byteLength - offset);
+        pending.set(bytes.subarray(offset, offset + length), used);
+        used += length;
+        offset += length;
+        if (used === pending.byteLength) {
+          yield await frame(pending, false);
+          used = 0;
+        }
+      }
+      start = end;
+    }
+  }
+  if (used) yield await frame(pending.subarray(0, used), false);
+  yield await frame(new Uint8Array(), true);
+}
+
+async function putEncryptedBackup(bucket, key, strings, env, metadata) {
+  const upload = await bucket.createMultipartUpload(key, {
+    httpMetadata: { contentType: "application/octet-stream" }, customMetadata: metadata,
+  });
+  const buffer = new Uint8Array(BACKUP_UPLOAD_PART_BYTES);
+  let used = 0, encryptedBytes = 0;
+  const parts = [];
+  const flush = async () => {
+    if (parts.length >= 10000) throw new Error("backup_upload_part_limit");
+    parts.push(await upload.uploadPart(parts.length + 1, buffer.subarray(0, used)));
+    used = 0;
+  };
+  try {
+    for await (const chunk of encryptBackupFrames(strings, env)) {
+      encryptedBytes += chunk.byteLength;
+      for (let offset = 0; offset < chunk.byteLength;) {
+        const length = Math.min(buffer.byteLength - used, chunk.byteLength - offset);
+        buffer.set(chunk.subarray(offset, offset + length), used);
+        used += length;
+        offset += length;
+        if (used === buffer.byteLength) await flush();
+      }
+    }
+    if (used) await flush();
+    await upload.complete(parts);
+    return { encryptedBytes, uploadParts: parts.length, formatVersion: 2 };
+  } catch (error) {
+    try { await upload.abort(); } catch (_abortError) { console.error("backup_upload_abort_failed"); }
+    throw error;
+  }
+}
+
 async function putBackupObjectIfMissing(bucket, key, bytes, metadata = {}) {
   const existing = await bucket.head(key);
   const size = Math.max(0, Math.floor(Number(bytes?.byteLength) || 0));
@@ -2292,8 +2379,7 @@ async function syncBoardMediaToBackup(env, copyLimit = BACKUP_MEDIA_COPY_LIMIT) 
       if (existing && existing.size === sourceInfo.size) continue;
       const source = await env.BOARD_MEDIA_BUCKET.get(sourceInfo.key);
       if (!source) continue;
-      const bytes = await source.arrayBuffer();
-      await env.BACKUP_BUCKET.put(backupKey, bytes, {
+      await env.BACKUP_BUCKET.put(backupKey, source.body, {
         httpMetadata: source.httpMetadata,
         customMetadata: {
           ...(source.customMetadata || {}),
@@ -4798,7 +4884,7 @@ export class BoardStore {
     const chunkCount = Math.max(0, Math.floor(Number(media.chunkCount) || 0));
     if (chunkCount > 0) {
       for (let index = 0; index < chunkCount; index += 1) {
-        const bytes = await this.state.storage.get(getBoardMediaChunkKey(mediaId, index));
+        const bytes = await this.state.storage.get(getBoardMediaChunkKey(mediaId, index), { noCache: true });
         if (!bytes || !Number(bytes.byteLength)) continue;
         const key = `${BACKUP_LEGACY_MEDIA_PREFIX}${mediaId}/chunks/${index}`;
         if (await putBackupObjectIfMissing(this.env.BACKUP_BUCKET, key, bytes, {
@@ -4819,23 +4905,104 @@ export class BoardStore {
     return copied;
   }
 
-  async readMediaMetadataForBackup() {
-    const records = await this.state.storage.list({ prefix: BOARD_MEDIA_KEY_PREFIX });
-    const media = [];
-    let legacyObjectsCopied = 0;
-    for (const [key, value] of records) {
-      if (!key.startsWith(BOARD_MEDIA_KEY_PREFIX) || key.startsWith(BOARD_MEDIA_UPLOAD_KEY_PREFIX)) continue;
-      if (key.includes(":chunk:")) continue;
-      const mediaId = key.slice(BOARD_MEDIA_KEY_PREFIX.length);
-      if (!isSafeBoardMediaId(mediaId) || !value || typeof value !== "object") continue;
-      legacyObjectsCopied += await this.backupLegacyMedia(mediaId, value);
-      const { bytes: _bytes, ...metadata } = value;
-      media.push({ id: mediaId, ...metadata });
+  async *backupStorageEntries(prefix) {
+    let startAfter;
+    for (;;) {
+      const batch = await this.state.storage.list({ prefix, limit: 1, noCache: true, ...(startAfter ? { startAfter } : {}) });
+      if (!batch.size) return;
+      for (const [key, value] of batch) {
+        startAfter = key;
+        yield [key, value];
+      }
     }
-    return { media, legacyObjectsCopied };
+  }
+
+  async *backupMediaMetadata(stats) {
+    let startAfter;
+    for (;;) {
+      const batch = await this.state.storage.list({ prefix: BOARD_MEDIA_KEY_PREFIX, limit: 1, noCache: true,
+        ...(startAfter ? { startAfter } : {}) });
+      if (!batch.size) return;
+      for (const [key, value] of batch) {
+        startAfter = key;
+        if (key.startsWith(BOARD_MEDIA_UPLOAD_KEY_PREFIX)) {
+          startAfter = BOARD_MEDIA_UPLOAD_KEY_PREFIX + "\uffff";
+          continue;
+        }
+        const chunkAt = key.indexOf(":chunk:");
+        if (chunkAt !== -1) {
+          startAfter = key.slice(0, chunkAt + 7) + "\uffff";
+          continue;
+        }
+        const mediaId = key.slice(BOARD_MEDIA_KEY_PREFIX.length);
+        if (!isSafeBoardMediaId(mediaId) || !value || typeof value !== "object") continue;
+        // Metadata sorts before its chunks; jump past them without loading their bytes.
+        startAfter = key + ":chunk:\uffff";
+        stats.legacyObjectsCopied += await this.backupLegacyMedia(mediaId, value);
+        const { bytes: _bytes, ...metadata } = value;
+        stats.media++;
+        yield { id: mediaId, ...metadata };
+      }
+    }
+  }
+
+  async readMediaMetadataForBackup() {
+    const stats = { media: 0, legacyObjectsCopied: 0 }, media = [];
+    for await (const item of this.backupMediaMetadata(stats)) media.push(item);
+    return { media, legacyObjectsCopied: stats.legacyObjectsCopied };
+  }
+
+  async *dailyBackupJson(createdAt, stats) {
+    yield `{"schemaVersion":${BACKUP_SCHEMA_VERSION},"createdAt":${JSON.stringify(createdAt)},"source":"coin-board-auth/BoardStore/free-board","data":{`;
+    const sections = [
+      ["members", () => this.readMembers()], ["posts", () => this.readPosts()],
+      ["categories", () => this.readCategories()], ["screenSettings", () => this.readScreenSettingsRecord()],
+      ["adminLogs", () => this.readAdminLogs()], ["usageStats", () => this.readUsageStats()],
+      ["news", () => this.readNewsStore()], ["marketData", () => this.readMarketData()],
+      ["exchangeHistory", () => this.readExchangeHistory()],
+    ];
+    let first = true;
+    for (const [name, read] of sections) {
+      yield `${first ? "" : ","}${JSON.stringify(name)}:`;
+      first = false;
+      const value = await read();
+      if (name === "members" || name === "posts") stats[name] = value.length;
+      if (name === "news") stats.news = value.items.length;
+      yield JSON.stringify(value ?? null);
+    }
+    for (const [name, prefix] of [["coinIssues", COIN_ISSUES_PREFIX], ["boardDailyPostCounts", BOARD_DAILY_POST_KEY_PREFIX]]) {
+      yield `,${JSON.stringify(name)}:{`;
+      let firstEntry = true;
+      for await (const [key, value] of this.backupStorageEntries(prefix)) {
+        yield `${firstEntry ? "" : ","}${JSON.stringify(key)}:${JSON.stringify(value)}`;
+        firstEntry = false;
+      }
+      yield "}";
+    }
+    yield ',"media":[';
+    let firstMedia = true;
+    for await (const media of this.backupMediaMetadata(stats)) {
+      yield `${firstMedia ? "" : ","}${JSON.stringify(media)}`;
+      firstMedia = false;
+    }
+    yield "]}}";
   }
 
   async createDailyBackup(now = Date.now()) {
+    const date = getBackupDateKey(now);
+    if (this.dailyBackupOperation) {
+      if (this.dailyBackupOperation.date === date) return (await this.dailyBackupOperation.promise).clone();
+      await this.dailyBackupOperation.promise;
+      return this.createDailyBackup(now);
+    }
+    const promise = this.createDailyBackupSnapshot(now);
+    const operation = { date, promise };
+    this.dailyBackupOperation = operation;
+    try { return (await promise).clone(); }
+    finally { if (this.dailyBackupOperation === operation) this.dailyBackupOperation = null; }
+  }
+
+  async createDailyBackupSnapshot(now) {
     if (!hasBackupR2(this.env)) {
       return jsonResponse({ error: "backup_storage_not_configured" }, 503, this.env);
     }
@@ -4852,72 +5019,23 @@ export class BoardStore {
         pruned,
       }, 200, this.env);
     }
-    const [
-      members,
-      posts,
-      categories,
-      screenSettings,
-      adminLogs,
-      usageStats,
-      news,
-      marketData,
-      exchangeHistory,
-      mediaResult,
-    ] = await Promise.all([
-      this.readMembers(),
-      this.readPosts(),
-      this.readCategories(),
-      this.readScreenSettingsRecord(),
-      this.readAdminLogs(),
-      this.readUsageStats(),
-      this.readNewsStore(),
-      this.readMarketData(),
-      this.readExchangeHistory(),
-      this.readMediaMetadataForBackup(),
-    ]);
     const createdAt = new Date(now).toISOString();
-    const snapshot = {
-      schemaVersion: BACKUP_SCHEMA_VERSION,
+    const stats = { members: 0, posts: 0, news: 0, media: 0, legacyObjectsCopied: 0 };
+    const result = await putEncryptedBackup(this.env.BACKUP_BUCKET, key, this.dailyBackupJson(createdAt, stats), this.env, {
+      schemaVersion: String(BACKUP_SCHEMA_VERSION),
       createdAt,
-      source: "coin-board-auth/BoardStore/free-board",
-      data: {
-        members,
-        posts,
-        categories,
-        screenSettings,
-        adminLogs,
-        usageStats,
-        news,
-        marketData,
-        exchangeHistory,
-        coinIssues: await this.readCoinIssuesForBackup(),
-        boardDailyPostCounts: Object.fromEntries(await this.state.storage.list({ prefix: BOARD_DAILY_POST_KEY_PREFIX })),
-        media: mediaResult.media,
-      },
-    };
-    const encrypted = await encryptBackupJson(snapshot, this.env);
-    await this.env.BACKUP_BUCKET.put(key, encrypted, {
-      httpMetadata: { contentType: "application/octet-stream" },
-      customMetadata: {
-        schemaVersion: BACKUP_SCHEMA_VERSION,
-        createdAt,
-        encryption: "AES-256-GCM",
-        source: "BoardStore-free-board",
-      },
+      encryption: "AES-256-GCM-framed-v2",
+      source: "BoardStore-free-board",
     });
     const pruned = await pruneDatabaseBackups(this.env, now);
     return jsonResponse({
       ok: true,
       key,
       createdAt,
-      encryptedBytes: encrypted.byteLength,
+      ...result,
       reused: false,
       pruned,
-      posts: posts.length,
-      members: members.length,
-      news: news.items.length,
-      media: mediaResult.media.length,
-      legacyObjectsCopied: mediaResult.legacyObjectsCopied,
+      ...stats,
     }, 200, this.env);
   }
 
@@ -6303,6 +6421,9 @@ async function runScheduledBackup(env, scheduledTime = Date.now()) {
   });
   console.log("scheduled_backup_complete", JSON.stringify({
     databaseKey: databaseResult.key,
+    formatVersion: databaseResult.formatVersion || 1,
+    encryptedBytes: databaseResult.encryptedBytes,
+    uploadParts: databaseResult.uploadParts || 1,
     mediaCopied: mediaResult.copied,
     durationMs: status.durationMs,
   }));

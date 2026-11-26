@@ -194,7 +194,10 @@ Attachments are served through the authenticated Worker with restrictive content
 
 The Worker runs a scheduled backup every day at 03:17 KST (18:17 UTC).
 
-- Database data is serialized and encrypted with AES-256-GCM before it is written to `database/YYYY-MM-DD.cbk`.
+- Database data is read one section/record at a time and encrypted in 64 KiB AES-256-GCM frames before it is written to `database/YYYY-MM-DD.cbk`. R2 multipart uploads use one reusable 5 MiB buffer, rather than retaining the whole archive and multiple full-size encryption copies. Individual stored values and the normal market cache still require memory; this is not an absolute bound on total isolate memory.
+- New backups use the `CBK2` envelope. Every frame authenticates a random per-file identifier, its sequence number and its data/end-marker flag. Truncated, reordered, modified or cross-file frames fail verification. The decrypted JSON schema is unchanged. Existing `CBK1` backups are not rewritten or deleted.
+- The daily object is published only after all upload parts succeed. Failed multipart uploads are aborted and may be retried; concurrent backup calls within the Durable Object share one operation. As before, independently read sections may reflect writes made during the backup interval; this is not a transactionally frozen database snapshot.
+- Issue and counter scans are uncached and bounded to one record per read. Media metadata scans skip chunk-key ranges without reading file bodies. Legacy attachment chunks are copied sequentially; R2 attachment copies stream their source body directly to the private backup bucket.
 - Daily database snapshots are kept for at least 30 days, with a one-day pruning safety margin after the lock expires.
 - R2 attachment chunks are copied incrementally to the `media/` prefix. A scheduled run copies up to 50 missing chunks so normal Worker traffic is not crowded out.
 - Legacy attachments that still live in the Durable Object are copied to `legacy-media/`.
@@ -204,6 +207,18 @@ The Worker runs a scheduled backup every day at 03:17 KST (18:17 UTC).
 - The deploy workflow preserves unrelated bucket lock rules and fails deployment if these three protection rules cannot be applied and verified.
 
 The encryption key is derived from `BACKUP_ENCRYPTION_KEY` when that optional Worker secret exists. Otherwise the existing `SESSION_SECRET` is used, so no extra setup is required. Keep the secret used for encryption: changing or losing it makes older encrypted snapshots impossible to restore.
+
+### Verify or restore a downloaded backup locally
+
+Use Node.js 22 or newer. Supply the original encryption secret through the local `BACKUP_RESTORE_SECRET` environment variable, never as a command-line argument, public repository file, or chat message:
+
+```text
+node server-auth/restore-backup.mjs INPUT.cbk OUTPUT.json
+```
+
+The utility supports both CBK1 and CBK2, never overwrites an existing output, and removes partial output if authentication fails. It decrypts to a local JSON file only; it does not change the live database. The output contains private member/content data and must remain outside the public repository. The input file and secret are both required. CBK1 restoration buffers the old ciphertext as required by its original single-message format; CBK2 restoration decrypts frame by frame. Rebuildable SQL content indexes are still excluded from canonical backups, as before.
+
+Run `node --test server-auth/backup-regression.test.mjs` for large-archive multipart round trips, old-format compatibility, tamper/truncation rejection, failure recovery, deduplication and streaming attachment regressions. The private `status/latest.json` and `scheduled_backup_complete` log include encrypted byte count, envelope version and upload-part count for correlation with future metrics; no secrets or content are logged.
 
 Korean GitHub menu path:
 
