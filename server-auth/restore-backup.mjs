@@ -70,13 +70,16 @@ export async function* decryptBackup(chunks, secret) {
 export async function restoreBackup(input, output, secret) {
   // Never overwrite a file; remove partial plaintext if authentication fails.
   const file = await open(output, "wx", 0o600);
+  const source = createReadStream(input);
   try {
-    for await (const bytes of decryptBackup(createReadStream(input), secret)) await file.writeFile(bytes);
+    for await (const bytes of decryptBackup(source, secret)) await file.writeFile(bytes);
     await file.close();
   } catch (error) {
     await file.close();
     await unlink(output);
     throw error;
+  } finally {
+    source.destroy();
   }
 }
 

@@ -32,7 +32,10 @@ function fixture(records = new Map()) {
     },
   };
   const bucket = {
-    async head(key) { return stored.has(key) ? { size: stored.get(key).length, customMetadata: {} } : null; },
+    async head(key) {
+      return stored.has(key) ? { size: stored.get(key).length,
+        customMetadata: uploads.find(upload => upload.key === key)?.options.customMetadata || {} } : null;
+    },
     async list() { return { objects: [], truncated: false }; },
     async createMultipartUpload(key, options) {
       const uploaded = [], upload = { key, options, uploaded, completeCalls: 0, aborted: false };
@@ -106,7 +109,9 @@ test("daily backup preserves all canonical sections with bounded uncached scans 
   assert.ok(f.lists.every(options => options.limit === 1 && options.noCache));
   assert.ok(f.lists.some(options => options.startAfter === "free-board-media:" + id + ":chunk:\uffff"));
   assert.equal(result.formatVersion, 2);
-  assert.equal((await (await f.store.createDailyBackup(now)).json()).reused, true);
+  const reused = await (await f.store.createDailyBackup(now)).json();
+  assert.equal(reused.reused, true);
+  assert.equal(reused.formatVersion, 2);
   assert.equal(f.uploads.length, 1);
 });
 

@@ -5015,6 +5015,7 @@ export class BoardStore {
         key,
         createdAt: String(existing.customMetadata?.createdAt || existing.uploaded || ""),
         encryptedBytes: existing.size,
+        formatVersion: existing.customMetadata?.encryption === "AES-256-GCM-framed-v2" ? 2 : 1,
         reused: true,
         pruned,
       }, 200, this.env);
@@ -6423,7 +6424,7 @@ async function runScheduledBackup(env, scheduledTime = Date.now()) {
     databaseKey: databaseResult.key,
     formatVersion: databaseResult.formatVersion || 1,
     encryptedBytes: databaseResult.encryptedBytes,
-    uploadParts: databaseResult.uploadParts || 1,
+    uploadParts: databaseResult.uploadParts ?? null,
     mediaCopied: mediaResult.copied,
     durationMs: status.durationMs,
   }));
