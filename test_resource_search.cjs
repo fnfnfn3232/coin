@@ -414,6 +414,41 @@ async function main() {
     });
     assert.equal(migrated.result.refreshHealth.events, undefined);
     assert.doesNotMatch(migrated.stored, /old-admin-history|providers|components/);
+    const diagnosticIds = ['autoStrip', 'autoUpdateStatus', 'lastUpdatedStatus', 'fxRateStatus',
+      'manualRefreshBtn', 'manualRefreshHint', 'refreshHistoryBtn', 'priceDifferenceFxStatus', 'priceDifferenceHealth', 'footerNote'];
+    for (const id of diagnosticIds) {
+      assert.equal(await page.locator('#' + id).count(), 1);
+      assert.ok(await page.locator('#' + id).evaluate(element => Boolean(element.closest('#adminDataDiagnostics'))));
+      assert.equal(await page.locator('#' + id).isVisible(), false, id + ' is absent from the ordinary page');
+    }
+    assert.equal(await page.locator('.price-difference-tools a, .price-difference-tools [role="status"]').count(), 0);
+    assert.ok(await page.evaluate(() => {
+      const saved = screenSettings;
+      try {
+        for (const statusPosition of ['title', 'summary', 'controls', 'hidden']) {
+          screenSettings = normalizeScreenSettings({ ...saved, statusPosition,
+            visibleStatus: { auto: false, lastUpdated: false, fx: false, manual: false, manualHint: false } });
+          applyScreenSettings();
+          if (!document.getElementById('adminDataDiagnostics').contains(autoStrip) || autoStrip.hidden) return false;
+        }
+        return true;
+      } finally { screenSettings = saved; applyScreenSettings(); }
+    }), 'old server/local preferences cannot restore public diagnostics or hide management controls');
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.locator('#adminLaunchBtn').click();
+    assert.equal(await page.locator('#autoStrip').isVisible(), false, 'admin password prompt does not reveal diagnostics');
+    await page.locator('#adminPasswordInput').fill(historyPasswordForTests);
+    await page.locator('#adminForm').evaluate(form => form.requestSubmit());
+    await page.waitForSelector('#adminDataDiagnostics', { state: 'visible' });
+    assert.match(await page.locator('#autoUpdateStatus').textContent(), /자동 갱신/);
+    assert.match(await page.locator('#footerNote').textContent(), /데이터 생성/);
+    for (const width of [1440, 390, 320]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.locator('#adminDataDiagnostics').scrollIntoViewIfNeeded();
+      assert.ok(await page.locator('#adminDataDiagnostics').evaluate(element => element.scrollWidth <= element.clientWidth + 1), width + 'px diagnostics fit');
+      await page.screenshot({ path: path.join(process.env.TEMP || root, `blockscope-admin-diagnostics-${width}.png`) });
+    }
+    await page.setViewportSize({ width: 1440, height: 1000 });
     await page.locator('#refreshHistoryBtn').click();
     assert.ok(await page.locator('#refreshHistoryModal').isVisible());
     assert.ok(await page.locator('#refreshHistoryAuthForm').isVisible());
@@ -513,6 +548,8 @@ async function main() {
       hideSiteLock();
       renderAutoStatus();
     });
+    await page.locator('#adminCloseBtn').click();
+    assert.equal(await page.locator('#adminDataDiagnostics').isVisible(), false);
     await page.setViewportSize({ width: 1440, height: 1000 });
     assert.equal(calls.filter(call => call.startsWith('/api/market-data')).length, historyApiCalls, 'history viewing and filtering need no extra data requests');
     console.log('PASS: fresh admin password per history opening, failed verification, private-data redaction, cache migration, no credential storage, late-response cleanup, history filtering and mobile layout.');

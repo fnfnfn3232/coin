@@ -572,7 +572,7 @@ async function main() {
       assert.notEqual(await bootPage.evaluate(() => getPriceDifference(data.boards.upbit.find(row => row.symbol === 'BTC')).percent), previous);
       assert.equal(await bootPage.evaluate(() => usableComparisonFx({ ...priceDifferenceFx, asOf: Date.now() - 600000 })), false);
       assert.equal(await bootPage.evaluate(() => usableComparisonFx({ ...priceDifferenceFx, frequency: 'daily' })), false);
-      assert.match(await bootPage.locator('#priceDifferenceFxStatus').innerText(), /하나은행 고시/);
+      assert.match(await bootPage.locator('#priceDifferenceFxStatus').textContent(), /하나은행 고시/);
       assert.equal(await bootPage.evaluate(() => usableComparisonFx({ ...priceDifferenceFx, source: 'unverified' })), false);
       const closure = await bootPage.evaluate(() => {
         const now = Date.parse('2026-11-02T00:05:00Z');
@@ -660,7 +660,7 @@ async function main() {
       return { price: row.priceKrw, sourceAt: row.liveSourceAt === now };
     });
     assert.deepEqual(sourceClocks, { price: 100, sourceAt: true }, 'old, out-of-order and future source timestamps cannot make stale prices look fresh');
-    assert.match(await page.locator('#priceDifferenceHealth').innerText(), /시세 비교/);
+    assert.match(await page.locator('#priceDifferenceHealth').textContent(), /시세 비교/);
     if (process.env.COMPARISON_SCREENSHOT) {
       await page.screenshot({ path: process.env.COMPARISON_SCREENSHOT });
       await page.setViewportSize({ width: 390, height: 844 });
