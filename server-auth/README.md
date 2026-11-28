@@ -121,7 +121,9 @@ GET /api/coin-issues/coinness-123456?asset=SKY:skyprotocol
 
 - The `*/10 * * * *` server cron refreshes the shared Coinness preview feed and indexes related articles, even with no visitors. There is no additional API key or desktop task.
 - Matching uses official Coinness `originCodes`/`quickOrderCode` and unique names from the trusted market snapshot. Ambiguous tickers are not guessed; longest project names take precedence over substrings.
-- Each coin retains the latest 50 automatic title/preview/source-link entries separately from its 100 manual issues. Full articles are not copied. Both kinds share the issue list and pagination.
+- Telegram recognizes explicit `$ticker`/`#ticker` markers without requiring another financial keyword, Korean particles after unique tickers, and spaced Korean project names. Generic bare words and genuinely different named projects sharing a ticker still fail closed. A ticker-only exchange metadata fallback does not create an invented second project in the news catalog.
+- Each coin retains up to 500 automatic news entries and 100 Telegram issues independently; manual issues have no count quota. Authorized Telegram channels retain full text separately from list previews. Administrator-deleted automatic IDs remain suppressed on reimport.
+- The authenticated deployment-only Telegram probe reports matching version 5, public WLFI asset identities and automatic-entry counts/IDs. It does not expose manual content or create an anonymous diagnostic route.
 - Read access requires an active site session. All manual changes and automatic-news deletion require an administrator session and a fresh administrator password. Automatic source text cannot be edited; deleted news IDs stay suppressed on reimport.
 - Issue archives, deletion markers and import checkpoints are included in the encrypted database backup. Failed imports do not advance the checkpoint and are retried; existing entries remain readable.
 - An open issue list checks stored updates once a minute. Reading an article, writing a draft, hidden tabs and closed dialogs do not poll or discard edits.

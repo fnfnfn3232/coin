@@ -25,8 +25,10 @@ const {
   normalizeYahooComparisonFx,
   comparisonFxUsable,
   verifyMemberPassword,
+  coinNewsCatalog,
+  matchTelegramCoins,
 } = await import(
-  `data:text/javascript;base64,${Buffer.from(`${source}\nexport { createMemberPasswordCredentials, createSessionToken, getEmailOtpHash, getEmailOtpCurrentKey, deriveMemberPasswordHash, MEMBER_PASSWORD_ITERATIONS, normalizeMemberRecord, normalizeL2Fees, normalizeL1Fees, normalizeAdditionalSpotQuotes, normalizeComparisonCatalog, normalizeGateComparisonCatalog, normalizeUniqueCoinCatalog, normalizeComparisonFx, normalizeNaverComparisonFx, normalizeYahooComparisonFx, comparisonFxUsable, verifyMemberPassword };\n//# sourceURL=cloudflare-worker-under-test.mjs`).toString("base64")}`
+  `data:text/javascript;base64,${Buffer.from(`${source}\nexport { createMemberPasswordCredentials, createSessionToken, getEmailOtpHash, getEmailOtpCurrentKey, deriveMemberPasswordHash, MEMBER_PASSWORD_ITERATIONS, normalizeMemberRecord, normalizeL2Fees, normalizeL1Fees, normalizeAdditionalSpotQuotes, normalizeComparisonCatalog, normalizeGateComparisonCatalog, normalizeUniqueCoinCatalog, normalizeComparisonFx, normalizeNaverComparisonFx, normalizeYahooComparisonFx, comparisonFxUsable, verifyMemberPassword, coinNewsCatalog, matchTelegramCoins };\n//# sourceURL=cloudflare-worker-under-test.mjs`).toString("base64")}`
 );
 
 class MemoryStorage {
@@ -806,6 +808,54 @@ test("Telegram fetch uses edge-supported manual redirects and rejects foreign re
     globalThis.fetch = async () => new Response('too big', { headers: { 'Content-Type': 'text/html', 'Content-Length': String(2 * 1024 * 1024) } });
     await assert.rejects(f.store.fetchTelegramChannel('BChoSN'), /telegram_feed_too_large/);
   } finally { globalThis.fetch = previous; }
+});
+
+test("Telegram explicit hashtags, Korean ticker particles and spaced names match without weakening identity boundaries", () => {
+  const market = { coinInfo: { WLFI: { englishName: "World Liberty Financial", koreanName: "월드리버티파이낸셜" },
+    AI: { englishName: "Gensyn" }, GAS: { englishName: "Gas" } }, boards: {
+    bybit: [{ symbol: "WLFI", englishName: "WLFI" }, { symbol: "AI", englishName: "Sleepless AI" }],
+    bitget: [{ symbol: "WLFI", englishName: "World Liberty Financial" }],
+  } };
+  const catalog = coinNewsCatalog(market), asset = "WLFI:worldlibertyfinancial";
+  assert.deepEqual([...catalog.symbols.get("WLFI")], [asset], "an unnamed ticker fallback cannot invent a second project");
+  for (const text of ["#WLFI", "#wlfi", "$wlfi", "짧은 근황입니다. #WLFI", "WLFI는 어떻게 됐나요?",
+    "WLFI에서 확인했습니다", "월드 리버티 파이낸셜은 어떻게 됐나요?", "월드리버티파이낸셜 소식"]) {
+    assert.ok(matchTelegramCoins(text, catalog).has(asset), text);
+  }
+  for (const text of ["#WLFIX", "WLFINOT 코인", "AI 산업과 가스 가격 동향", "#AI", "GAS는 높네요"]) {
+    assert.equal(matchTelegramCoins(text, catalog).size, 0, text);
+  }
+  const ambiguous = coinNewsCatalog({ ...market, boards: { ...market.boards, bitget: [{ symbol: "WLFI", englishName: "Different Named Project" }] } });
+  assert.equal(matchTelegramCoins("#WLFI", ambiguous).size, 0, "named ticker collisions still fail closed");
+  assert.deepEqual([...matchTelegramCoins("World Liberty Financial 소식", ambiguous)], [asset]);
+});
+
+test("Telegram WLFI hashtags reach the canonical issue board and a later recheck cannot resurrect a deleted post", async () => {
+  const f = await fixture();
+  await f.store.writeMarketData(new Request("https://worker.example/api/market-data", { method: "POST", body: JSON.stringify({
+    generatedAt: Math.floor(Date.now() / 1000), coinInfo: { WLFI: { englishName: "World Liberty Financial", koreanName: "월드리버티파이낸셜" } },
+    boards: { bybit: [{ symbol: "WLFI", englishName: "WLFI" }] },
+  }) }));
+  f.store.fetchTelegramChannel = async channel => ({ messages: [{ channel, id: "999", sourceUrl: `https://t.me/${channel}/999`,
+    text: "새로운 근황입니다. #WLFI", createdAt: Date.now() - 60000 }] });
+  assert.equal((await f.store.refreshTelegramIssues()).ok, true);
+  const path = "/api/coin-issues?asset=WLFI:worldlibertyfinancial&section=issues";
+  const list = await (await f.request(path)).json();
+  assert.equal(list.total, 8);
+  assert.ok(list.items.every(post => post.source === "telegram"));
+  assert.equal(list.includedPosts[0].body, "새로운 근황입니다. #WLFI");
+  const deleted = list.items[0];
+  await f.request(`/api/coin-issues/${deleted.id}?asset=WLFI:worldlibertyfinancial`, "DELETE", { revision: 1, adminPassword: f.adminPassword }, f.adminToken);
+  const status = await f.storage.get("coin-issues:telegram-status-v1");
+  for (const progress of Object.values(status)) progress.checkedAt = 1;
+  await f.storage.put("coin-issues:telegram-status-v1", status);
+  await f.store.refreshTelegramIssues();
+  assert.equal((await (await f.request(path)).json()).total, 7);
+  const probe = await (await f.store.probeComparisonSource("telegram")).json();
+  assert.equal(probe.telegramVersion, 5);
+  assert.deepEqual(probe.matchingDiagnostics.candidates, ["WLFI:worldlibertyfinancial"]);
+  assert.equal(probe.matchingDiagnostics.coverage[0].telegram, 7);
+  assert.ok(probe.matchingDiagnostics.coverage[0].recentIds.every(id => id.startsWith("telegram-")));
 });
 
 test("Telegram cron imports authorized full text, coalesces, preserves news and failed sources, and honors deletion", async () => {

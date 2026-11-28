@@ -91,6 +91,9 @@ function coinNewsWords(text) {
   return String(text || "").normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
 }
 
+const COIN_NAME_PARTICLES = ["으로부터", "에서는", "으로는", "에서", "에게", "으로", "부터", "까지", "보다", "처럼", "은", "는", "이", "가", "을", "를", "의", "와", "과", "에", "도", "로"];
+const TELEGRAM_SYMBOL_PATTERN = new RegExp(`(?<![\\p{L}\\p{N}_])(?:([$#])([A-Za-z][A-Za-z0-9]{1,19})|([A-Z][A-Z0-9]{2,19}))(?:(${COIN_NAME_PARTICLES.join("|")}))?(?![\\p{L}\\p{N}_])`, "gu");
+
 function coinNewsAsset(symbol, name) {
   const normalized = String(name || symbol).normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 100);
   return coinIssueAsset(`${String(symbol).toUpperCase()}:${normalized || String(symbol).toLowerCase()}`);
@@ -112,6 +115,7 @@ function coinNewsCatalog(market) {
         if (!name || words.length > 6 || name.length > 100 || name === symbol.toLowerCase() || generic.has(name)) continue;
         if (/[가-힣]/.test(name) ? name.replace(/ /g, "").length < 2 : words.length === 1 && name.length < 5) continue;
         add(names, name, asset);
+        if (/^[가-힣 ]+$/.test(name)) add(names, name.replace(/ /g, ""), asset);
       }
     }
   };
@@ -122,6 +126,8 @@ function coinNewsCatalog(market) {
       // Extra spot exchanges can carry a different project with the same ticker.
       const separate = ["bybit", "bitget"].includes(board) && row.englishName
         && coinNewsAsset(symbol, row.englishName) !== coinNewsAsset(symbol, canonical?.englishName || row.englishName);
+      // A ticker-only fallback is not evidence of a second named project.
+      if (separate && String(row.englishName).normalize("NFKC").trim().toUpperCase() === symbol) continue;
       register(symbol, canonical && !separate ? canonical : row);
     }
   }
@@ -135,14 +141,18 @@ function matchCoinNews(item, catalog) {
     if (candidates?.size === 1) assets.add([...candidates][0]);
   }
   const words = coinNewsWords(`${item.headline}\n${item.summary}`);
-  const particles = ["으로부터", "에서는", "으로는", "에서", "에게", "으로", "부터", "까지", "보다", "처럼", "은", "는", "이", "가", "을", "를", "의", "와", "과", "에", "도", "로"];
   for (let start = 0; start < words.length; start++) {
     for (let length = Math.min(6, words.length - start); length >= 1; length--) {
       const name = words.slice(start, start + length).join(" ");
       let candidates = catalog.names.get(name);
       if (!candidates && /[가-힣]/.test(name)) {
-        for (const suffix of particles) {
-          if (name.endsWith(suffix)) { candidates = catalog.names.get(name.slice(0, -suffix.length)); if (candidates) break; }
+        candidates = catalog.names.get(name.replace(/ /g, ""));
+        for (const suffix of COIN_NAME_PARTICLES) {
+          if (!candidates && name.endsWith(suffix)) {
+            const stem = name.slice(0, -suffix.length);
+            candidates = catalog.names.get(stem) || catalog.names.get(stem.replace(/ /g, ""));
+          }
+          if (candidates) break;
         }
       }
       if (!candidates) continue;
@@ -158,9 +168,9 @@ function matchTelegramCoins(text, catalog) {
   const assets = matchCoinNews({ headline: text, summary: "" }, catalog);
   const generic = new Set(["AI", "ONE", "GAS", "NEAR", "OPEN", "MAGIC", "WORLD", "LAYER", "VIRTUAL", "ALL", "FOR", "THE", "NOT", "NEW", "NOW", "AND", "CEO", "USD"]);
   const context = /코인|토큰|거래소|블록체인|비트코인|이더리움|스테이블|디페깅|청산|선물|현물|상장|매수|매도|protocol|crypto|token|blockchain|defi|\$[A-Z0-9]/i.test(text);
-  for (const match of text.matchAll(/(?<![\p{L}\p{N}_])(?:(\$)([A-Za-z][A-Za-z0-9]{1,19})|([A-Z][A-Z0-9]{2,19}))(?![\p{L}\p{N}_])/gu)) {
+  for (const match of text.matchAll(TELEGRAM_SYMBOL_PATTERN)) {
     const symbol = (match[2] || match[3]).toUpperCase();
-    if ((!match[1] && (!context || generic.has(symbol))) || symbol.length < 2) continue;
+    if ((!match[1] && ((!context && !match[4]) || generic.has(symbol))) || symbol.length < 2) continue;
     const candidates = catalog.symbols.get(symbol);
     if (candidates?.size === 1) assets.add([...candidates][0]);
   }
@@ -4658,7 +4668,19 @@ export class BoardStore {
     if (exchange === "telegram") {
       const result = await this.refreshTelegramIssues();
       const archiveRepair = await this.repairTelegramArchive();
-      return jsonResponse({ implementation: 7, telegramVersion: 4, exchange, ...result, archiveRepair }, 200, this.env);
+      const market = await this.readMarketData(), catalog = this.coinContentCatalog(market);
+      const candidates = [...(catalog.symbols.get("WLFI") || [])];
+      const coverage = [];
+      for (const asset of candidates) {
+        const ready = await this.ensureCoinContentAsset(asset);
+        const counts = ready ? this.coinContentSql().exec("SELECT news_total, telegram_total FROM coin_content_assets WHERE asset = ?", asset).toArray()[0] : null;
+        const recent = ready ? this.coinContentSql().exec("SELECT id FROM coin_content_entries WHERE asset = ? AND source = 'telegram' ORDER BY created_at DESC LIMIT 3", asset).toArray().map(row => row.id) : [];
+        coverage.push({ asset, news: counts?.news_total || 0, telegram: counts?.telegram_total || 0, recentIds: recent });
+      }
+      return jsonResponse({ implementation: 7, telegramVersion: 5, exchange, ...result, archiveRepair,
+        matchingDiagnostics: { symbol: "WLFI", candidates, coverage,
+          names: Object.entries(market?.boards || {}).flatMap(([board, rows]) => (rows || []).filter(row => row.symbol === "WLFI")
+            .map(row => ({ board, englishName: row.englishName || "", koreanName: row.koreanName || "" }))) } }, 200, this.env);
     }
     if (exchange === "delivery") {
       const market = await this.readMarketData();
