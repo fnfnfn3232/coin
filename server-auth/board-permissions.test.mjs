@@ -835,7 +835,7 @@ test("Telegram explicit hashtags, Korean ticker particles and spaced names match
 
 test("Telegram recognizes short updates and numeric tickers without interpreting prose, URLs or quote markets as coins", () => {
   const info = { WLFI: "World Liberty Financial", SKY: "Sky Protocol", "1INCH": "1inch Network", "0G": "Zero Gravity",
-    LSK: "Lisk", STABLE: "Stable", HOT: "Holo", ZK: "ZKsync", AI: "Sleepless AI", BTC: "Bitcoin", USDT: "Tether", MORPHO: "Morpho Token" };
+    LSK: "Lisk", STABLE: "Stable", HOT: "Holo", ZK: "ZKsync", AI: "Sleepless AI", BTC: "Bitcoin", USDT: "Tether", MORPHO: "Morpho Token", SNT: "Status Network Token" };
   const catalog = coinNewsCatalog({ coinInfo: Object.fromEntries(Object.entries(info).map(([symbol, englishName]) => [symbol, { englishName,
     koreanName: ({ LSK: "리스크", STABLE: "스테이블" })[symbol] || "" }])) });
   for (const [text, symbol] of [["WLFI, 하락 중", "WLFI"], ["SKY 파운더 근황", "SKY"], ["$1inch", "1INCH"],
@@ -844,7 +844,7 @@ test("Telegram recognizes short updates and numeric tickers without interpreting
     assert.ok([...matchTelegramCoins(text, catalog)][0].startsWith(symbol + ":"), text);
   }
   for (const text of ["리스크를 줄이고 스테이블 부채를 관리합니다", "a HOT alert, pay in crypto", "AI research #AI #ZK",
-    "https://example.test/bitcoin/1INCH @bitcoin_price", "신규 거래지원 (BTC, USDT 마켓)", "$100 000 BTCNOT"]) {
+    "https://example.test/bitcoin/1INCH @bitcoin_price", "신규 거래지원 (BTC, USDT 마켓)", "$100 000 BTCNOT", "the status quo gets officially certified"]) {
     assert.deepEqual([...matchTelegramCoins(text, catalog)], [], text);
   }
   assert.equal(matchTelegramCoins("$HOT", catalog).size, 1);
@@ -864,6 +864,16 @@ test("Telegram canonical content aliases agree across exchanges and preserve act
   const matched = matchTelegramCoins("#HAEDAL #CYBER USDC", catalog);
   for (const asset of ["CYBER:cyber", "CYBER:cyberconnect", "HAEDAL:haedal", "HAEDAL:haedalprotocol", "USDC:usdc", "USDC:usdcoin"]) assert.ok(matched.has(asset), asset);
   assert.deepEqual([...matchTelegramCoins("#AI #EDGE", catalog)], []);
+});
+
+test("Telegram reviewed ticker changes share project mentions without changing native coin boards", () => {
+  const info = { TON: "Toncoin", GRAM: "Gram", UP2: "Superform", UP: "Superform", META2: "MetaDAO", META: "Metadium" };
+  const catalog = coinNewsCatalog({ coinInfo: Object.fromEntries(Object.entries(info).map(([symbol, englishName]) => [symbol, { englishName }])),
+    boards: { bybit: [{ symbol: "META", englishName: "MetaDAO" }] } });
+  for (const [text, expected] of [["Toncoin", ["TON:toncoin", "GRAM:gram"]], ["Superform", ["UP2:superform", "UP:superform"]],
+    ["MetaDAO", ["META2:metadao", "META:metadao"]]]) assert.deepEqual([...matchTelegramCoins(text, catalog)].sort(), expected.sort());
+  assert.equal(matchTelegramCoins("MetaDAO", catalog).has("META:metadium"), false);
+  assert.equal(matchTelegramCoins("$META", catalog).size, 0);
 });
 
 test("Telegram archived association repair removes false links, recovers canonical ones, and preserves manual news and deletions", async () => {
@@ -935,7 +945,7 @@ test("Telegram WLFI hashtags reach the canonical issue board and a later recheck
   assert.equal((await (await f.request(path)).json()).total, 7);
   const probe = await (await f.store.probeComparisonSource("telegram")).json();
   assert.equal(requests, 24, "deployment verification rechecks live pages even within the ten-minute feed cache");
-  assert.equal(probe.telegramVersion, 7);
+  assert.equal(probe.telegramVersion, 8);
   assert.equal(probe.matchingAudit.posts, 8);
   assert.equal(probe.matchingAudit.assets, 2);
   assert.deepEqual(probe.matchingAudit.missing, []);
@@ -1017,7 +1027,7 @@ async function telegramCursorFixture(cursorId = '100') {
   const f = await coinNewsFixture(), channel = 'BChoSN', now = Date.now();
   const names = ['BChoSN', 'umjuninsight', 'deganlululala', 'enjoymyhobby', 'officialunivercityofcrypto', 'JoshuaDeukKOR', 'fireant_crypto', 'shrimp_notice'];
   await f.storage.put('coin-issues:telegram-status-v1', Object.fromEntries(names.map(name => [name, {
-    checkedAt: name === channel ? 1 : now, lastSuccessAt: now - 60000, cursorId, error: '', textVersion: 1, matchVersion: 2,
+    checkedAt: name === channel ? 1 : now, lastSuccessAt: now - 60000, cursorId, error: '', textVersion: 1, matchVersion: 3,
   }])));
   const status = async () => (await f.storage.get('coin-issues:telegram-status-v1'))[channel];
   const due = async () => {
@@ -1046,7 +1056,7 @@ test('Telegram matching upgrades replay recent pages beyond the committed cursor
   assert.equal((await f.status()).cursorId, '100');
   await f.due(); await f.store.refreshTelegramIssues(true);
   assert.deepEqual(requests, ['', '81', '61', '41']);
-  assert.equal((await f.status()).matchVersion, 2);
+  assert.equal((await f.status()).matchVersion, 3);
   assert.equal((await f.status()).cursorId, '100');
   await f.due(); await f.store.refreshTelegramIssues(true);
   assert.equal((await f.status()).pollSoon, false);

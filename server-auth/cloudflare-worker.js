@@ -25,7 +25,7 @@ const TELEGRAM_TEXT_MAX_BYTES = 80000;
 const TELEGRAM_CACHE_MS = 10 * 60 * 1000;
 const TELEGRAM_CATCHUP_PAGES = 2;
 const TELEGRAM_RETRY_MS = 60000;
-const TELEGRAM_MATCH_VERSION = 2;
+const TELEGRAM_MATCH_VERSION = 3;
 const TELEGRAM_MATCH_LOOKBACK_MS = 48 * 3600000;
 const TELEGRAM_MATCH_REPAIR_KEY = COIN_ISSUES_PREFIX + "telegram-match-repair-v1";
 const COIN_ISSUE_INLINE_POST_BYTES = 8 * 1024;
@@ -106,7 +106,7 @@ function coinNewsAsset(symbol, name) {
 
 function coinNewsCatalog(market) {
   const names = new Map(), symbols = new Map(), targets = new Map();
-  const generic = new Set(["gas", "near", "magic", "world", "open", "layer", "virtual", "stable", "risk", "trump",
+  const generic = new Set(["gas", "near", "magic", "world", "open", "layer", "virtual", "stable", "risk", "trump", "status", "request", "metal", "recall",
     "가스", "월드", "오픈", "레이어", "스테이블", "리스크", "트럼프"]);
   const add = (map, name, asset) => { if (!map.has(name)) map.set(name, new Set()); map.get(name).add(asset); };
   const register = (symbol, info, canonical = null, board = "") => {
@@ -4760,6 +4760,12 @@ export class BoardStore {
       const archiveRepair = await this.repairTelegramArchive();
       const matchingRepair = await this.repairTelegramMatching();
       const market = await this.readMarketData(), catalog = this.coinContentCatalog(market);
+      const catalogConflicts = [...catalog.symbols].filter(([, assets]) => assets.size > 1).map(([symbol, assets]) => ({
+        symbol, assets: [...assets], names: [["canonical", market?.coinInfo?.[symbol]],
+          ...Object.entries(market?.boards || {}).flatMap(([board, rows]) => (rows || []).filter(row => row.symbol === symbol).map(row => [board, row]))]
+          .filter(([, row]) => row).map(([board, row]) => ({ board, englishName: row.englishName || "", koreanName: row.koreanName || "",
+            coingeckoId: row.coingeckoId || "", verified: row.marketIdentityVerified === true, conflict: row.assetIdentityConflict === true })),
+      }));
       const candidates = [...(catalog.symbols.get("WLFI") || [])];
       const coverage = [];
       for (const asset of candidates) {
@@ -4768,7 +4774,7 @@ export class BoardStore {
         const recent = ready ? this.coinContentSql().exec("SELECT id FROM coin_content_entries WHERE asset = ? AND source = 'telegram' ORDER BY created_at DESC LIMIT 3", asset).toArray().map(row => row.id) : [];
         coverage.push({ asset, news: counts?.news_total || 0, telegram: counts?.telegram_total || 0, recentIds: recent });
       }
-      return jsonResponse({ implementation: 7, telegramVersion: 7, exchange, ...result, archiveRepair, matchingRepair,
+      return jsonResponse({ implementation: 7, telegramVersion: 8, exchange, ...result, archiveRepair, matchingRepair, catalogConflicts,
         matchingDiagnostics: { symbol: "WLFI", candidates, coverage,
           names: Object.entries(market?.boards || {}).flatMap(([board, rows]) => (rows || []).filter(row => row.symbol === "WLFI")
             .map(row => ({ board, englishName: row.englishName || "", koreanName: row.koreanName || "" }))) } }, 200, this.env);

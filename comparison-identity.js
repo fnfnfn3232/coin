@@ -42,6 +42,17 @@
     USDC: ["usdc", "usdcoin"], USDE: ["usdethena", "ethenausde"],
     VIRTUAL: ["virtualprotocol", "virtualsprotocol"],
     WLFI: ["worldlibertyfinancial", "월리파", "월드파이"],
+    // Confirmed branding-only changes; see the official sources in server-auth/README.md.
+    AVNT: ["avantis", "veranta"], NFT: ["apenft", "ainft"], STRAX: ["stratis", "xertra"],
+    GRAM: ["gram", "gramprevtoncoin", "toncoin"], TON: ["gram", "gramprevtoncoin", "toncoin"],
+    AKT: ["akash", "akashnetwork"], ANKR: ["ankr", "ankrnetwork"], BAND: ["band", "bandprotocol"],
+    CRO: ["cronos", "cryptocomcoin"], EIGEN: ["eigenlayer", "eigencloud"], ETC: ["ethereumclassic", "etherclassic"],
+    ETH: ["ethereum", "ether"], FET: ["fetchai", "artificialsuperintelligencealliance", "artificialsuperintelligence"],
+    FLOKI: ["floki", "flokiinu"], GLM: ["golem", "golemnetwork"], INJ: ["injective", "injectiveprotocol"],
+    LISTA: ["lista", "listadao"], MTL: ["metal", "metaldao"], NEWT: ["newton", "newtonprotocol"],
+    ONDO: ["ondo", "ondofinance"], RAD: ["radicle", "radworks"], RECALL: ["recall", "recallnetwork"],
+    REQ: ["request", "requestnetwork"], USDG: ["globaldollar", "usdglobaldollar"],
+    VTHO: ["vethor", "vethortoken"], WAXL: ["axelar", "wrappedaxelar"], WCT: ["walletconnect", "walletconnecttoken"],
   };
   const contentNameKey = value => nameKey(String(value || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, ""));
   function contentAliases(row) {
@@ -66,14 +77,22 @@
         || contentNameKey(ownName) === contentNameKey(key)
         || contentAliases({ ...row, englishName: ownName }).includes(contentNameKey(targetName))
         || matches(row, { ...canonical, symbol: key }, context));
-    let name = String(same ? targetName : ownName).normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 100) || key.toLowerCase();
+    const asset = nativeContentAsset(key, same ? targetName : ownName), name = asset.split(":")[1];
+    if (["UP", "UP2"].includes(key) && name === "superform") return "UP:superform";
+    if (key === "META2" && name === "metadao") return "META:metadao";
+    if (["GRAM", "TON"].includes(key) && ["gram", "gramprevtoncoin", "toncoin"].includes(name)) return "GRAM:gram";
+    return asset;
+  }
+  function nativeContentAsset(key, value) {
+    if (!/^[A-Z0-9]{1,40}$/.test(key)) return "";
+    let name = String(value || key).normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 100) || key.toLowerCase();
     if (key === "SKY" && ["sky", "skyprotocol"].includes(name)) name = "skyprotocol";
     return `${key}:${name}`;
   }
   function contentTarget(row, canonical, context = {}) {
     const key = String(row?.symbol || "").toUpperCase();
     const matched = canonical?.englishName && matches(row, { ...canonical, symbol: key }, context);
-    return contentAsset({ symbol: key, englishName: matched ? canonical.englishName : row?.englishName || key });
+    return nativeContentAsset(key, matched ? canonical.englishName : row?.englishName || key);
   }
 
   function symbol(row, board) {

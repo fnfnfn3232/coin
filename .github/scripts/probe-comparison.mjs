@@ -27,7 +27,7 @@ for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", 
       if (!response.ok) throw new Error(`probe_http_${response.status}`);
       result = await response.json();
       if (result.implementation === 7 && (board !== "delivery" || (result.securityVersion === 1 && result.deliveryVersion === 1 && result.coinContentVersion === 3 && result.coinRetentionVersion === 2 && result.coinContentIndexVersion === 1))
-        && (board !== "telegram" || result.telegramVersion === 7 && result.channels?.some(channel => channel.channel === "shrimp_notice"))) {
+        && (board !== "telegram" || result.telegramVersion === 8 && result.channels?.some(channel => channel.channel === "shrimp_notice"))) {
         if (board === "telegram" && (!result.ok || !result.matchingRepair?.complete) && attempt < versionAttempts - 1) {
           await new Promise(resolve => setTimeout(resolve, 10000));
           continue;
