@@ -10,6 +10,7 @@ on:
       - "comparison-identity.js"
       - ".github/scripts/verify-commit-privacy.cjs"
       - ".github/scripts/probe-comparison.mjs"
+      - ".github/scripts/oidc-token.mjs"
       - ".github/workflows/deploy-worker.yml"
 
 jobs:

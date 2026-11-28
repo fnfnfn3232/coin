@@ -1,11 +1,7 @@
 import identity from "../../comparison-identity.js";
+import { createOidcTokenProvider } from "./oidc-token.mjs";
 
-const mintUrl = new URL(process.env.ACTIONS_ID_TOKEN_REQUEST_URL);
-mintUrl.searchParams.set("audience", "coin-board-auth-market-data");
-const mint = await fetch(mintUrl, { headers: { Authorization: `Bearer ${process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}` } });
-if (!mint.ok) throw new Error(`oidc_mint_failed:${mint.status}`);
-const { value: token } = await mint.json();
-if (!token) throw new Error("oidc_token_missing");
+const token = createOidcTokenProvider({ audience: "coin-board-auth-market-data" });
 let failed = 0;
 for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", "bybit", "bitget", "okx", "coinbase_futures", "audit", "bootstrap", "delivery", "telegram"]) {
   try {
@@ -16,8 +12,14 @@ for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", 
       for (let transportAttempt = 0; transportAttempt < 3; transportAttempt += 1) {
         try {
           response = await fetch(`https://coin-board-auth.dlatl20000.workers.dev/api/market-data?probeComparison=${board}`, {
-            headers: { Authorization: `Bearer ${token}`, "X-Market-Data-Sync": "1" }, signal: AbortSignal.timeout(45000),
+            headers: { Authorization: `Bearer ${await token()}`, "X-Market-Data-Sync": "1" }, signal: AbortSignal.timeout(45000),
           });
+          if (response.status === 401) {
+            await response.body?.cancel();
+            response = await fetch(`https://coin-board-auth.dlatl20000.workers.dev/api/market-data?probeComparison=${board}`, {
+              headers: { Authorization: `Bearer ${await token(true)}`, "X-Market-Data-Sync": "1" }, signal: AbortSignal.timeout(45000),
+            });
+          }
           break;
         } catch (error) {
           if (transportAttempt === 2) throw error;
