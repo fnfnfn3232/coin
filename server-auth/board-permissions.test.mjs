@@ -836,7 +836,8 @@ test("Telegram WLFI hashtags reach the canonical issue board and a later recheck
     generatedAt: Math.floor(Date.now() / 1000), coinInfo: { WLFI: { englishName: "World Liberty Financial", koreanName: "월드리버티파이낸셜" } },
     boards: { bybit: [{ symbol: "WLFI", englishName: "WLFI" }] },
   }) }));
-  f.store.fetchTelegramChannel = async channel => ({ messages: [{ channel, id: "999", sourceUrl: `https://t.me/${channel}/999`,
+  let requests = 0;
+  f.store.fetchTelegramChannel = async channel => (requests++, { messages: [{ channel, id: "999", sourceUrl: `https://t.me/${channel}/999`,
     text: "새로운 근황입니다. #WLFI", createdAt: Date.now() - 60000 }] });
   assert.equal((await f.store.refreshTelegramIssues()).ok, true);
   const path = "/api/coin-issues?asset=WLFI:worldlibertyfinancial&section=issues";
@@ -852,6 +853,7 @@ test("Telegram WLFI hashtags reach the canonical issue board and a later recheck
   await f.store.refreshTelegramIssues();
   assert.equal((await (await f.request(path)).json()).total, 7);
   const probe = await (await f.store.probeComparisonSource("telegram")).json();
+  assert.equal(requests, 24, "deployment verification rechecks live pages even within the ten-minute feed cache");
   assert.equal(probe.telegramVersion, 5);
   assert.deepEqual(probe.matchingDiagnostics.candidates, ["WLFI:worldlibertyfinancial"]);
   assert.equal(probe.matchingDiagnostics.coverage[0].telegram, 7);

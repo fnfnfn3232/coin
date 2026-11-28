@@ -3709,12 +3709,15 @@ export class BoardStore {
     return parseTelegramPreview(new TextDecoder().decode(bytes), channel);
   }
 
-  async refreshTelegramIssues(continuationOnly = false) {
+  async refreshTelegramIssues(continuationOnly = false, force = false) {
     if (this.telegramRefreshPromise) {
-      if (!continuationOnly && this.telegramContinuationOnly) return this.telegramRefreshPromise.then(() => this.refreshTelegramIssues());
+      if (!continuationOnly && this.telegramContinuationOnly || force && !this.telegramRefreshForced) {
+        return this.telegramRefreshPromise.then(() => this.refreshTelegramIssues(continuationOnly, force));
+      }
       return this.telegramRefreshPromise;
     }
     this.telegramContinuationOnly = continuationOnly;
+    this.telegramRefreshForced = force;
     this.telegramRefreshPromise = (async () => {
       const status = await this.state.storage.get(TELEGRAM_STATUS_KEY) || {};
       const queue = TELEGRAM_CHANNELS.filter(channel => !continuationOnly || status[channel]?.pending || status[channel]?.pollSoon || status[channel]?.error);
@@ -3729,7 +3732,7 @@ export class BoardStore {
           const cooldown = previous.error ? Math.min(TELEGRAM_CACHE_MS, TELEGRAM_RETRY_MS * 2 ** Math.min(4, Math.max(0, (previous.failures || 1) - 1)))
             : previous.pending || previous.pollSoon ? TELEGRAM_RETRY_MS : TELEGRAM_CACHE_MS;
           const migrating = previous.lastSuccessAt > 0 && ((!previous.cursorId && !previous.pending) || previous.textVersion !== 1) && !previous.error;
-          if (!migrating && previous.checkedAt && now - previous.checkedAt < cooldown) {
+          if (!force && !migrating && previous.checkedAt && now - previous.checkedAt < cooldown) {
             results.push({ channel, ...previous }); continue;
           }
           let progress = { ...previous, checkedAt: now };
@@ -4666,7 +4669,7 @@ export class BoardStore {
         counts: Object.fromEntries(Object.entries(value.quotes).map(([board, quote]) => [board, Object.keys(quote.prices || {}).length])) }, 200, this.env);
     }
     if (exchange === "telegram") {
-      const result = await this.refreshTelegramIssues();
+      const result = await this.refreshTelegramIssues(false, true);
       const archiveRepair = await this.repairTelegramArchive();
       const market = await this.readMarketData(), catalog = this.coinContentCatalog(market);
       const candidates = [...(catalog.symbols.get("WLFI") || [])];
