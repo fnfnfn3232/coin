@@ -854,7 +854,12 @@ test("Telegram WLFI hashtags reach the canonical issue board and a later recheck
   assert.equal((await (await f.request(path)).json()).total, 7);
   const probe = await (await f.store.probeComparisonSource("telegram")).json();
   assert.equal(requests, 24, "deployment verification rechecks live pages even within the ten-minute feed cache");
-  assert.equal(probe.telegramVersion, 5);
+  assert.equal(probe.telegramVersion, 6);
+  assert.equal(probe.matchingAudit.posts, 8);
+  assert.equal(probe.matchingAudit.assets, 1);
+  assert.deepEqual(probe.matchingAudit.missing, []);
+  assert.deepEqual(probe.matchingAudit.unexpected, []);
+  assert.equal(probe.matchingAudit.suppressed.length, 1);
   assert.deepEqual(probe.matchingDiagnostics.candidates, ["WLFI:worldlibertyfinancial"]);
   assert.equal(probe.matchingDiagnostics.coverage[0].telegram, 7);
   assert.ok(probe.matchingDiagnostics.coverage[0].recentIds.every(id => id.startsWith("telegram-")));

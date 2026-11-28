@@ -27,7 +27,7 @@ for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", 
       if (!response.ok) throw new Error(`probe_http_${response.status}`);
       result = await response.json();
       if (result.implementation === 7 && (board !== "delivery" || (result.securityVersion === 1 && result.deliveryVersion === 1 && result.coinContentVersion === 3 && result.coinRetentionVersion === 2 && result.coinContentIndexVersion === 1))
-        && (board !== "telegram" || result.telegramVersion === 5 && result.channels?.some(channel => channel.channel === "shrimp_notice"))) break;
+        && (board !== "telegram" || result.telegramVersion === 6 && result.channels?.some(channel => channel.channel === "shrimp_notice"))) break;
       // Active Durable Objects may defer code updates for five minutes.
       if (attempt === versionAttempts - 1) throw new Error("new_worker_not_propagated:" + JSON.stringify({
         implementation: result.implementation, securityVersion: result.securityVersion, deliveryVersion: result.deliveryVersion, coinContentVersion: result.coinContentVersion,

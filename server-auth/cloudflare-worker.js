@@ -3724,7 +3724,7 @@ export class BoardStore {
       if (!queue.length) return { ok: true, channels: [] };
       const market = await this.readMarketData();
       if (!market) return { ok: false, channels: [] };
-      const catalog = this.coinContentCatalog(market), grouped = new Map(), currentIds = new Set(), results = [];
+      const catalog = this.coinContentCatalog(market), grouped = new Map(), currentIds = new Set(), results = [], audit = [];
       const nextStatus = { ...status };
       const runner = async () => {
         for (let channel; (channel = queue.shift());) {
@@ -3753,6 +3753,9 @@ export class BoardStore {
                 const id = "telegram-" + (await sha256Hex(channel.toLowerCase() + ":" + post.id)).slice(0, 32);
                 if (!post.text) { currentIds.add(id); continue; }
                 const matches = matchTelegramCoins(post.text, catalog);
+                if (force) audit.push({ id, sourceUrl: post.sourceUrl, createdAt: post.createdAt,
+                  title: telegramIssueTitle(post.text), assets: [...matches],
+                  tokens: [...new Set(post.text.match(/(?<![\p{L}\p{N}_])[$#]?[A-Z0-9]{2,20}(?![\p{L}\p{N}_])/gu) || [])].slice(0, 40) });
                 if (matches.size) matched++;
                 const imported = matches.size ? await this.makeTelegramIssuePost(post, id) : null;
                 currentIds.add(id);
@@ -3788,9 +3791,33 @@ export class BoardStore {
       // A crash or failed issue write must replay the page, never commit a cursor past missing content.
       await this.state.storage.put(TELEGRAM_STATUS_KEY, nextStatus);
       try { await this.cleanupTelegramBodies(); } catch (_error) { console.error("telegram_body_cleanup_delayed"); }
-      return { ok: results.every(item => !item.error && !item.pending && !item.pollSoon), channels: results };
+      return { ok: results.every(item => !item.error && !item.pending && !item.pollSoon), channels: results,
+        ...(force ? { matchingAudit: await this.auditTelegramAssociations(audit, catalog) } : {}) };
     })().finally(() => { this.telegramRefreshPromise = null; });
     return this.telegramRefreshPromise;
+  }
+
+  async auditTelegramAssociations(posts, catalog) {
+    const missing = [], unexpected = [], suppressed = [], retained = [], known = new Map();
+    for (const post of posts) {
+      const actual = this.coinContentSql().exec("SELECT asset FROM coin_content_entries WHERE source = 'telegram' AND id = ?", post.id).toArray().map(row => row.asset);
+      for (const asset of actual) if (!post.assets.includes(asset)) unexpected.push({ sourceUrl: post.sourceUrl, asset });
+      for (const asset of post.assets) {
+        if (actual.includes(asset)) continue;
+        if (!known.has(asset)) known.set(asset, {
+          hidden: new Set(await this.state.storage.get(COIN_ISSUES_PREFIX + "hidden:" + asset) || []),
+          rows: this.coinContentSql().exec("SELECT id, created_at FROM coin_content_entries WHERE asset = ? AND source = 'telegram' ORDER BY created_at DESC, id ASC", asset).toArray(),
+        });
+        const { hidden, rows } = known.get(asset), item = { sourceUrl: post.sourceUrl, asset };
+        if (hidden.has(post.id)) suppressed.push(item);
+        else if (rows.length >= COIN_TELEGRAM_LIMIT && rows.every(row => row.created_at > post.createdAt
+          || row.created_at === post.createdAt && row.id.localeCompare(post.id) < 0)) retained.push(item);
+        else missing.push(item);
+      }
+    }
+    return { posts: posts.length, matchedPosts: posts.filter(post => post.assets.length).length,
+      assets: new Set(posts.flatMap(post => post.assets)).size, missing, unexpected, suppressed, retained,
+      symbols: Object.fromEntries([...catalog.symbols].map(([symbol, assets]) => [symbol, [...assets]])), recent: posts };
   }
 
   async readCoinIssuesForBackup() {
@@ -4680,7 +4707,7 @@ export class BoardStore {
         const recent = ready ? this.coinContentSql().exec("SELECT id FROM coin_content_entries WHERE asset = ? AND source = 'telegram' ORDER BY created_at DESC LIMIT 3", asset).toArray().map(row => row.id) : [];
         coverage.push({ asset, news: counts?.news_total || 0, telegram: counts?.telegram_total || 0, recentIds: recent });
       }
-      return jsonResponse({ implementation: 7, telegramVersion: 5, exchange, ...result, archiveRepair,
+      return jsonResponse({ implementation: 7, telegramVersion: 6, exchange, ...result, archiveRepair,
         matchingDiagnostics: { symbol: "WLFI", candidates, coverage,
           names: Object.entries(market?.boards || {}).flatMap(([board, rows]) => (rows || []).filter(row => row.symbol === "WLFI")
             .map(row => ({ board, englishName: row.englishName || "", koreanName: row.koreanName || "" }))) } }, 200, this.env);
