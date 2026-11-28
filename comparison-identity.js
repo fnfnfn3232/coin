@@ -53,6 +53,7 @@
     ONDO: ["ondo", "ondofinance"], RAD: ["radicle", "radworks"], RECALL: ["recall", "recallnetwork"],
     REQ: ["request", "requestnetwork"], USDG: ["globaldollar", "usdglobaldollar"],
     VTHO: ["vethor", "vethortoken"], WAXL: ["axelar", "wrappedaxelar"], WCT: ["walletconnect", "walletconnecttoken"],
+    ROBO: ["fabricprotocol", "robotoken"],
   };
   const contentNameKey = value => nameKey(String(value || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, ""));
   function contentAliases(row) {

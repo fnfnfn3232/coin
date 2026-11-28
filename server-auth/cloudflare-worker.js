@@ -25,7 +25,7 @@ const TELEGRAM_TEXT_MAX_BYTES = 80000;
 const TELEGRAM_CACHE_MS = 10 * 60 * 1000;
 const TELEGRAM_CATCHUP_PAGES = 2;
 const TELEGRAM_RETRY_MS = 60000;
-const TELEGRAM_MATCH_VERSION = 3;
+const TELEGRAM_MATCH_VERSION = 4;
 const TELEGRAM_MATCH_LOOKBACK_MS = 48 * 3600000;
 const TELEGRAM_MATCH_REPAIR_KEY = COIN_ISSUES_PREFIX + "telegram-match-repair-v1";
 const COIN_ISSUE_INLINE_POST_BYTES = 8 * 1024;
@@ -97,7 +97,7 @@ function coinNewsWords(text) {
 }
 
 const COIN_NAME_PARTICLES = ["으로부터", "에서는", "으로는", "에게는", "로는", "에도", "만큼", "에서", "에게", "으로", "부터", "까지", "보다", "처럼", "은", "는", "이", "가", "을", "를", "의", "와", "과", "에", "도", "로"];
-const TELEGRAM_SYMBOL_PATTERN = new RegExp(`(?<![\\p{L}\\p{N}_])(?:([$#])([A-Za-z0-9]{1,20})|([A-Z0-9]{2,20}))(?:(${COIN_NAME_PARTICLES.join("|")}))?(?![\\p{L}\\p{N}_])`, "gu");
+const TELEGRAM_SYMBOL_PATTERN = new RegExp(`(?<![\\p{L}\\p{N}_])(?:([$#])([A-Za-z0-9]{1,20})|([A-Z0-9]{2,20}))(?:코인|토큰)?(?:(${COIN_NAME_PARTICLES.join("|")}))?(?![\\p{L}\\p{N}_])`, "gu");
 
 function coinNewsAsset(symbol, name) {
   const normalized = String(name || symbol).normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 100);
@@ -187,9 +187,10 @@ function matchTelegramCoins(text, catalog) {
     "HOT", "MOVE", "STABLE", "ORDER", "SIGN", "HUMAN", "SPACE", "FLOW", "WELL", "HIGH", "MASK", "BAN", "FUN", "API", "APR", "APY", "TVL", "DEX", "CEX", "ATH", "ATL", "USA", "CPI", "FOMC"]);
   for (const match of text.matchAll(TELEGRAM_SYMBOL_PATTERN)) {
     const symbol = (match[2] || match[3]).toUpperCase();
-    if (!/[A-Z]/.test(symbol) || !match[1] && generic.has(symbol) || match[1] === "#" && topics.has(symbol)) continue;
-    if (!match[1] && symbol.length < 3 && !match[4]
-      && !/^\s*(?:(?:코인|토큰)(?![가-힣])|(?:token|coin)\b)/iu.test(text.slice(match.index + match[0].length))) continue;
+    const tokenContext = /코인|토큰/u.test(match[0])
+      || /^\s*(?:(?:코인|토큰)(?:은|는|이|가|을|를|의)?(?![가-힣])|(?:token|coin)\b)/iu.test(text.slice(match.index + match[0].length));
+    if (!/[A-Z]/.test(symbol) || !tokenContext && (!match[1] && generic.has(symbol) || match[1] === "#" && topics.has(symbol))) continue;
+    if (!match[1] && symbol.length < 3 && !match[4] && !tokenContext) continue;
     const candidates = catalog.symbols.get(symbol);
     if (candidates?.size === 1) assets.add([...candidates][0]);
   }
@@ -4774,7 +4775,7 @@ export class BoardStore {
         const recent = ready ? this.coinContentSql().exec("SELECT id FROM coin_content_entries WHERE asset = ? AND source = 'telegram' ORDER BY created_at DESC LIMIT 3", asset).toArray().map(row => row.id) : [];
         coverage.push({ asset, news: counts?.news_total || 0, telegram: counts?.telegram_total || 0, recentIds: recent });
       }
-      return jsonResponse({ implementation: 7, telegramVersion: 8, exchange, ...result, archiveRepair, matchingRepair, catalogConflicts,
+      return jsonResponse({ implementation: 7, telegramVersion: 9, exchange, ...result, archiveRepair, matchingRepair, catalogConflicts,
         matchingDiagnostics: { symbol: "WLFI", candidates, coverage,
           names: Object.entries(market?.boards || {}).flatMap(([board, rows]) => (rows || []).filter(row => row.symbol === "WLFI")
             .map(row => ({ board, englishName: row.englishName || "", koreanName: row.koreanName || "" }))) } }, 200, this.env);
