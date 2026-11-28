@@ -3,7 +3,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { chromium } = require('playwright');
 async function main() {
-  const source = fs.readFileSync(path.join(__dirname, 'server-auth/cloudflare-worker.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, 'server-auth/cloudflare-worker.js'), 'utf8')
+    .replace('import "../comparison-identity.js";', fs.readFileSync(path.join(__dirname, 'comparison-identity.js'), 'utf8'));
   const { marketDataForScope } = await import('data:text/javascript;base64,' + Buffer.from(source + '\nexport { marketDataForScope };').toString('base64'));
   const fixture = require('./test_market_fixture.cjs')();
   fixture.coinInfo.BTC = { englishName: 'Bitcoin', koreanName: '비트코인', sources: { bithumb: {
