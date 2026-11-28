@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const workerUrl = new URL("./cloudflare-worker.js", import.meta.url);
-const source = await readFile(workerUrl, "utf8");
+const source = (await readFile(workerUrl, "utf8"))
+  .replace('import "../comparison-identity.js";', await readFile(new URL("../comparison-identity.js", import.meta.url), "utf8"));
 const testSource = `${source}\nexport { hasUnsafeBoardHtml, mediaHeaders, cleanBoardMediaFileName, normalizeMarketDataPayload, emptyMarketDataPayload };`;
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(testSource).toString("base64")}`;
 const { hasUnsafeBoardHtml, mediaHeaders, cleanBoardMediaFileName, normalizeMarketDataPayload, emptyMarketDataPayload } = await import(moduleUrl);

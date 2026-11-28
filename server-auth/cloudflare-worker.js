@@ -1,3 +1,5 @@
+import "../comparison-identity.js";
+
 const COINNESS_NEWS_ENDPOINT = "https://api.coinness.com/feed/v1/breaking-news";
 const COOKIE_NAME = "coin_board_session";
 const PARTITIONED_COOKIE_NAME = "__Host-coin_board_session_partitioned";
@@ -23,6 +25,9 @@ const TELEGRAM_TEXT_MAX_BYTES = 80000;
 const TELEGRAM_CACHE_MS = 10 * 60 * 1000;
 const TELEGRAM_CATCHUP_PAGES = 2;
 const TELEGRAM_RETRY_MS = 60000;
+const TELEGRAM_MATCH_VERSION = 2;
+const TELEGRAM_MATCH_LOOKBACK_MS = 48 * 3600000;
+const TELEGRAM_MATCH_REPAIR_KEY = COIN_ISSUES_PREFIX + "telegram-match-repair-v1";
 const COIN_ISSUE_INLINE_POST_BYTES = 8 * 1024;
 const COIN_ISSUE_INLINE_PAGE_BYTES = 24 * 1024;
 const SKY_ISSUE_BODY = `이제 비트코인 하락이 진정되었으니 좀 더 제대로 짚어보는 Sky protocol 사태
@@ -91,8 +96,8 @@ function coinNewsWords(text) {
   return String(text || "").normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
 }
 
-const COIN_NAME_PARTICLES = ["으로부터", "에서는", "으로는", "에서", "에게", "으로", "부터", "까지", "보다", "처럼", "은", "는", "이", "가", "을", "를", "의", "와", "과", "에", "도", "로"];
-const TELEGRAM_SYMBOL_PATTERN = new RegExp(`(?<![\\p{L}\\p{N}_])(?:([$#])([A-Za-z][A-Za-z0-9]{1,19})|([A-Z][A-Z0-9]{2,19}))(?:(${COIN_NAME_PARTICLES.join("|")}))?(?![\\p{L}\\p{N}_])`, "gu");
+const COIN_NAME_PARTICLES = ["으로부터", "에서는", "으로는", "에게는", "로는", "에도", "만큼", "에서", "에게", "으로", "부터", "까지", "보다", "처럼", "은", "는", "이", "가", "을", "를", "의", "와", "과", "에", "도", "로"];
+const TELEGRAM_SYMBOL_PATTERN = new RegExp(`(?<![\\p{L}\\p{N}_])(?:([$#])([A-Za-z0-9]{1,20})|([A-Z0-9]{2,20}))(?:(${COIN_NAME_PARTICLES.join("|")}))?(?![\\p{L}\\p{N}_])`, "gu");
 
 function coinNewsAsset(symbol, name) {
   const normalized = String(name || symbol).normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 100);
@@ -100,19 +105,23 @@ function coinNewsAsset(symbol, name) {
 }
 
 function coinNewsCatalog(market) {
-  const names = new Map(), symbols = new Map();
-  const generic = new Set(["gas", "near", "magic", "world", "open", "layer", "virtual", "가스", "월드", "오픈", "레이어"]);
+  const names = new Map(), symbols = new Map(), targets = new Map();
+  const generic = new Set(["gas", "near", "magic", "world", "open", "layer", "virtual", "stable", "risk", "trump",
+    "가스", "월드", "오픈", "레이어", "스테이블", "리스크", "트럼프"]);
   const add = (map, name, asset) => { if (!map.has(name)) map.set(name, new Set()); map.get(name).add(asset); };
-  const register = (symbol, info) => {
-    const asset = coinNewsAsset(symbol, info.englishName || info.name || symbol);
+  const register = (symbol, info, canonical = null, board = "") => {
+    const asset = globalThis.BlockscopeComparisonIdentity.contentAsset({ ...info, symbol }, canonical, { baseBoard: board });
     if (!asset) return;
     add(symbols, symbol.toUpperCase(), asset);
+    add(targets, asset, globalThis.BlockscopeComparisonIdentity.contentTarget({ ...info, symbol }, canonical, { baseBoard: board }));
+    const knownAliases = globalThis.BlockscopeComparisonIdentity.contentAliases({ ...info, symbol });
     const aliases = [info.koreanName, info.englishName, info.name,
+      ...knownAliases,
       ...Object.values(info.sources || {}).map(source => source?.assetName)];
     for (const alias of aliases) {
       for (const part of String(alias || "").split(/[()（）]/)) {
         const words = coinNewsWords(part), name = words.join(" ");
-        if (!name || words.length > 6 || name.length > 100 || name === symbol.toLowerCase() || generic.has(name)) continue;
+        if (!name || words.length > 6 || name.length > 100 || name === symbol.toLowerCase() && !knownAliases.includes(name) || generic.has(name)) continue;
         if (/[가-힣]/.test(name) ? name.replace(/ /g, "").length < 2 : words.length === 1 && name.length < 5) continue;
         add(names, name, asset);
         if (/^[가-힣 ]+$/.test(name)) add(names, name.replace(/ /g, ""), asset);
@@ -123,15 +132,14 @@ function coinNewsCatalog(market) {
   for (const [board, rows] of Object.entries(market?.boards || {})) {
     for (const row of Array.isArray(rows) ? rows : []) {
       const symbol = String(row.symbol || "").toUpperCase(), canonical = market.coinInfo?.[symbol];
-      // Extra spot exchanges can carry a different project with the same ticker.
-      const separate = ["bybit", "bitget"].includes(board) && row.englishName
-        && coinNewsAsset(symbol, row.englishName) !== coinNewsAsset(symbol, canonical?.englishName || row.englishName);
-      // A ticker-only fallback is not evidence of a second named project.
-      if (separate && String(row.englishName).normalize("NFKC").trim().toUpperCase() === symbol) continue;
-      register(symbol, canonical && !separate ? canonical : row);
+      register(symbol, row, canonical, board);
     }
   }
-  return { names, symbols };
+  return { names, symbols, targets };
+}
+
+function coinContentTargets(assets, catalog) {
+  return new Set([...assets].flatMap(asset => [...(catalog.targets?.get(asset) || [asset])]));
 }
 
 function matchCoinNews(item, catalog) {
@@ -140,7 +148,7 @@ function matchCoinNews(item, catalog) {
     const candidates = catalog.symbols.get(symbol);
     if (candidates?.size === 1) assets.add([...candidates][0]);
   }
-  const words = coinNewsWords(`${item.headline}\n${item.summary}`);
+  const words = coinNewsWords(coinMentionText(`${item.headline}\n${item.summary}`));
   for (let start = 0; start < words.length; start++) {
     for (let length = Math.min(6, words.length - start); length >= 1; length--) {
       const name = words.slice(start, start + length).join(" ");
@@ -161,20 +169,31 @@ function matchCoinNews(item, catalog) {
       break;
     }
   }
-  return assets;
+  return coinContentTargets(assets, catalog);
+}
+
+function coinMentionText(text) {
+  return String(text || "").normalize("NFKC").replace(/(?:https?:\/\/|www\.|t\.me\/)\S+/giu, " ")
+    .replace(/(?<![\p{L}\p{N}_])@[A-Za-z0-9_]+/gu, " ")
+    .replace(/\((?:KRW|BTC|USDT|USDC|USD)(?:[ ,/]+(?:KRW|BTC|USDT|USDC|USD))*\s*마켓\)/g, " ")
+    .replace(/\b([A-Z0-9]{2,20})\/(?:USDT|USDC|BTC|ETH|KRW|USD)\b/g, "$1");
 }
 
 function matchTelegramCoins(text, catalog) {
+  text = coinMentionText(text);
   const assets = matchCoinNews({ headline: text, summary: "" }, catalog);
-  const generic = new Set(["AI", "ONE", "GAS", "NEAR", "OPEN", "MAGIC", "WORLD", "LAYER", "VIRTUAL", "ALL", "FOR", "THE", "NOT", "NEW", "NOW", "AND", "CEO", "USD"]);
-  const context = /코인|토큰|거래소|블록체인|비트코인|이더리움|스테이블|디페깅|청산|선물|현물|상장|매수|매도|protocol|crypto|token|blockchain|defi|\$[A-Z0-9]/i.test(text);
+  const topics = new Set(["AI", "ZK", "NFT", "DAO", "RWA", "USD", "GAS"]);
+  const generic = new Set([...topics, "ONE", "NEAR", "OPEN", "MAGIC", "WORLD", "LAYER", "VIRTUAL", "ALL", "FOR", "THE", "NOT", "NEW", "NOW", "AND", "CEO",
+    "HOT", "MOVE", "STABLE", "ORDER", "SIGN", "HUMAN", "SPACE", "FLOW", "WELL", "HIGH", "MASK", "BAN", "FUN", "API", "APR", "APY", "TVL", "DEX", "CEX", "ATH", "ATL", "USA", "CPI", "FOMC"]);
   for (const match of text.matchAll(TELEGRAM_SYMBOL_PATTERN)) {
     const symbol = (match[2] || match[3]).toUpperCase();
-    if ((!match[1] && ((!context && !match[4]) || generic.has(symbol))) || symbol.length < 2) continue;
+    if (!/[A-Z]/.test(symbol) || !match[1] && generic.has(symbol) || match[1] === "#" && topics.has(symbol)) continue;
+    if (!match[1] && symbol.length < 3 && !match[4]
+      && !/^\s*(?:(?:코인|토큰)(?![가-힣])|(?:token|coin)\b)/iu.test(text.slice(match.index + match[0].length))) continue;
     const candidates = catalog.symbols.get(symbol);
     if (candidates?.size === 1) assets.add([...candidates][0]);
   }
-  return assets;
+  return coinContentTargets(assets, catalog);
 }
 
 function telegramSourceUrl(channel, postId) {
@@ -3710,6 +3729,7 @@ export class BoardStore {
   }
 
   async refreshTelegramIssues(continuationOnly = false, force = false) {
+    if (this.telegramMatchRepairPromise) return this.telegramMatchRepairPromise.then(() => this.refreshTelegramIssues(continuationOnly, force));
     if (this.telegramRefreshPromise) {
       if (!continuationOnly && this.telegramContinuationOnly || force && !this.telegramRefreshForced) {
         return this.telegramRefreshPromise.then(() => this.refreshTelegramIssues(continuationOnly, force));
@@ -3720,7 +3740,8 @@ export class BoardStore {
     this.telegramRefreshForced = force;
     this.telegramRefreshPromise = (async () => {
       const status = await this.state.storage.get(TELEGRAM_STATUS_KEY) || {};
-      const queue = TELEGRAM_CHANNELS.filter(channel => !continuationOnly || status[channel]?.pending || status[channel]?.pollSoon || status[channel]?.error);
+      const queue = TELEGRAM_CHANNELS.filter(channel => !continuationOnly || status[channel]?.pending || status[channel]?.pollSoon || status[channel]?.error
+        || status[channel]?.cursorId && status[channel]?.matchVersion !== TELEGRAM_MATCH_VERSION);
       if (!queue.length) return { ok: true, channels: [] };
       const market = await this.readMarketData();
       if (!market) return { ok: false, channels: [] };
@@ -3729,9 +3750,10 @@ export class BoardStore {
       const runner = async () => {
         for (let channel; (channel = queue.shift());) {
           const previous = status[channel] || {}, now = Date.now();
+          const rematching = Boolean(previous.cursorId && !previous.pending && previous.matchVersion !== TELEGRAM_MATCH_VERSION);
           const cooldown = previous.error ? Math.min(TELEGRAM_CACHE_MS, TELEGRAM_RETRY_MS * 2 ** Math.min(4, Math.max(0, (previous.failures || 1) - 1)))
             : previous.pending || previous.pollSoon ? TELEGRAM_RETRY_MS : TELEGRAM_CACHE_MS;
-          const migrating = previous.lastSuccessAt > 0 && ((!previous.cursorId && !previous.pending) || previous.textVersion !== 1) && !previous.error;
+          const migrating = previous.lastSuccessAt > 0 && ((!previous.cursorId && !previous.pending) || previous.textVersion !== 1 || rematching) && !previous.error;
           if (!force && !migrating && previous.checkedAt && now - previous.checkedAt < cooldown) {
             results.push({ channel, ...previous }); continue;
           }
@@ -3743,9 +3765,9 @@ export class BoardStore {
               const messages = validateTelegramPage(await this.fetchTelegramChannel(channel, before), channel, before);
               if (!pending) {
                 const newest = messages.at(-1).id;
-                pending = { baseId: previous.cursorId || "", baseAt: previous.cursorId ? 0 : previous.lastSuccessAt || 0,
+                pending = { baseId: rematching ? "" : previous.cursorId || "", baseAt: rematching ? now - TELEGRAM_MATCH_LOOKBACK_MS : previous.cursorId ? 0 : previous.lastSuccessAt || 0,
                   targetId: previous.cursorId && BigInt(previous.cursorId) > BigInt(newest) ? previous.cursorId : newest,
-                  before: "", startedAt: now, observed: 0, matched: 0 };
+                  before: "", startedAt: now, observed: 0, matched: 0, matchVersion: TELEGRAM_MATCH_VERSION, rematching };
               }
               let matched = 0;
               for (const post of messages) {
@@ -3770,7 +3792,8 @@ export class BoardStore {
               if (reached) {
                 progress = { checkedAt: now, lastSuccessAt: now, cursorId: pending.targetId,
                   observed: pending.observed, matched: pending.matched, error: "", failures: 0,
-                  pollSoon: Boolean(previous.pending), pending: null, textVersion: 1 };
+                  pollSoon: Boolean(previous.pending) || pending.matchVersion !== TELEGRAM_MATCH_VERSION,
+                  pending: null, textVersion: 1, matchVersion: pending.matchVersion || previous.matchVersion || 0 };
                 break;
               }
               // Save only an exclusive older-page boundary; the committed high-water mark stays put.
@@ -3795,6 +3818,43 @@ export class BoardStore {
         ...(force ? { matchingAudit: await this.auditTelegramAssociations(audit, catalog) } : {}) };
     })().finally(() => { this.telegramRefreshPromise = null; });
     return this.telegramRefreshPromise;
+  }
+
+  async repairTelegramMatching() {
+    if (this.telegramMatchRepairPromise) return this.telegramMatchRepairPromise;
+    if (this.telegramRefreshPromise) return this.telegramRefreshPromise.then(() => this.repairTelegramMatching());
+    this.telegramMatchRepairPromise = (async () => {
+      const old = await this.state.storage.get(TELEGRAM_MATCH_REPAIR_KEY);
+      if (old?.version === TELEGRAM_MATCH_VERSION && old.complete) return old;
+      const market = await this.readMarketData();
+      if (!market) return { complete: false, error: "market_data_not_ready" };
+      await this.ensureCoinAutomaticCatalog();
+      const previous = old?.version === TELEGRAM_MATCH_VERSION ? old : {};
+      const ids = this.coinContentSql().exec("SELECT DISTINCT id FROM coin_content_entries WHERE source = 'telegram' AND id > ? ORDER BY id LIMIT 40", previous.after || "").toArray();
+      const catalog = this.coinContentCatalog(market), grouped = new Map(), currentIds = new Set();
+      let unavailable = 0;
+      for (const { id } of ids) {
+        const row = this.coinContentSql().exec("SELECT asset, post_json FROM coin_content_entries WHERE source = 'telegram' AND id = ? LIMIT 1", id).toArray()[0];
+        const post = JSON.parse(row.post_json), source = telegramSourceParts(post.sourceUrl);
+        const full = source && await this.readCoinIssueBody(post, row.asset);
+        // An unavailable body cannot justify removing an existing association.
+        if (!full || !post.fullText || !post.bodyKey) { unavailable++; continue; }
+        const matches = matchTelegramCoins(full.body, catalog);
+        currentIds.add(id);
+        for (const asset of matches) {
+          if (!grouped.has(asset)) grouped.set(asset, []);
+          grouped.get(asset).push(post);
+        }
+      }
+      const merged = await this.mergeAutomaticCoinIssues("telegram", grouped, currentIds);
+      const result = { version: TELEGRAM_MATCH_VERSION, checkedAt: Date.now(), after: ids.at(-1)?.id || previous.after || "",
+        complete: ids.length < 40, scanned: (previous.scanned || 0) + ids.length,
+        changedAssets: (previous.changedAssets || 0) + merged.changedAssets,
+        bodyUnavailable: (previous.bodyUnavailable || 0) + unavailable };
+      await this.state.storage.put(TELEGRAM_MATCH_REPAIR_KEY, result);
+      return result;
+    })().finally(() => { this.telegramMatchRepairPromise = null; });
+    return this.telegramMatchRepairPromise;
   }
 
   async auditTelegramAssociations(posts, catalog) {
@@ -4698,6 +4758,7 @@ export class BoardStore {
     if (exchange === "telegram") {
       const result = await this.refreshTelegramIssues(false, true);
       const archiveRepair = await this.repairTelegramArchive();
+      const matchingRepair = await this.repairTelegramMatching();
       const market = await this.readMarketData(), catalog = this.coinContentCatalog(market);
       const candidates = [...(catalog.symbols.get("WLFI") || [])];
       const coverage = [];
@@ -4707,7 +4768,7 @@ export class BoardStore {
         const recent = ready ? this.coinContentSql().exec("SELECT id FROM coin_content_entries WHERE asset = ? AND source = 'telegram' ORDER BY created_at DESC LIMIT 3", asset).toArray().map(row => row.id) : [];
         coverage.push({ asset, news: counts?.news_total || 0, telegram: counts?.telegram_total || 0, recentIds: recent });
       }
-      return jsonResponse({ implementation: 7, telegramVersion: 6, exchange, ...result, archiveRepair,
+      return jsonResponse({ implementation: 7, telegramVersion: 7, exchange, ...result, archiveRepair, matchingRepair,
         matchingDiagnostics: { symbol: "WLFI", candidates, coverage,
           names: Object.entries(market?.boards || {}).flatMap(([board, rows]) => (rows || []).filter(row => row.symbol === "WLFI")
             .map(row => ({ board, englishName: row.englishName || "", koreanName: row.koreanName || "" }))) } }, 200, this.env);
@@ -5992,6 +6053,7 @@ export class BoardStore {
     if (request.method === "POST" && url.hostname === "board-store" && url.pathname === "/internal/coin-news-warm") {
       const [news, telegram] = await Promise.allSettled([this.refreshNewsStore(), this.refreshTelegramIssues()]);
       await this.repairTelegramArchive();
+      await this.repairTelegramMatching();
       const result = news.status === "fulfilled" ? news.value : null;
       return jsonResponse({ ok: Boolean(result && !result.stale && result.coinNewsSynced === true
         && telegram.status === "fulfilled" && telegram.value.ok), fetchedAt: result?.store?.fetchedAt || 0,
@@ -6006,6 +6068,7 @@ export class BoardStore {
     if (request.method === "POST" && url.hostname === "board-store" && url.pathname === "/internal/telegram-catchup") {
       const result = await this.refreshTelegramIssues(true);
       await this.repairTelegramArchive();
+      await this.repairTelegramMatching();
       return jsonResponse({ ok: result.ok }, 200, this.env);
     }
 

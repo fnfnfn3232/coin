@@ -24,6 +24,58 @@
   const explorerChains = { "etherscan.io": "ethereum", "bscscan.com": "bsc", "arbiscan.io": "arbitrum",
     "basescan.org": "base", "optimistic.etherscan.io": "optimism", "polygonscan.com": "polygon", "snowtrace.io": "avalanche" };
 
+  // Content aliases do not relax exchange price/contract identity checks.
+  const contentNames = {
+    "0G": ["0g", "zerogravity"], AERO: ["aerodrome", "aerodromefinance"],
+    ALLO: ["allora", "alloranetwork"], ATM: ["atleticodemadridfantoken"],
+    AUCTION: ["auction", "bounce", "bouncetoken", "bouncegovernancetoken"], AVA: ["ava", "travala"],
+    BR: ["bedrock", "bedrocktoken"], BSB: ["blockstreet", "blockstreettoken"], C: ["chainbase", "chainbasetoken"],
+    CFX: ["conflux", "confluxnetwork"], CORE: ["core", "coredao"], CRV: ["curve", "curvedaotoken"],
+    CYBER: ["cyber", "cyberconnect"], DEEP: ["deepbook", "deepbookprotocol"], GMT: ["greenmetaversetoken", "stepn"],
+    GPS: ["goplus", "goplussecurity"], HAEDAL: ["haedal", "haedalprotocol"], HBAR: ["hedera", "hederahashgraph"],
+    ICNT: ["impossiblecloudnetwork", "impossiblecloudnetworktoken"], IMX: ["immutable", "immutablex"],
+    KITE: ["kite", "kiteai"], KMNO: ["kamino", "kaminofinance"], KNC: ["kybernetwork", "kybernetworkcrystalv2"],
+    MANTA: ["manta", "mantanetwork"], MEGA: ["mega", "megaeth"], OGN: ["origintoken", "originprotocol"],
+    ORDI: ["ordi", "ordinals"], PUFFER: ["puffer", "pufferfinance"], RE: ["re", "reprotocol"],
+    SKL: ["skale", "skalenetwork"], SNX: ["synthetix", "synthetixnetworktoken"], SSV: ["ssvtoken", "ssvnetwork"],
+    STRK: ["starknet", "starknettoken"], SUSHI: ["sushi", "sushiswap"], TRB: ["tellor", "tellortributes"],
+    USDC: ["usdc", "usdcoin"], USDE: ["usdethena", "ethenausde"],
+    VIRTUAL: ["virtualprotocol", "virtualsprotocol"],
+    WLFI: ["worldlibertyfinancial", "월리파", "월드파이"],
+  };
+  const contentNameKey = value => nameKey(String(value || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, ""));
+  function contentAliases(row) {
+    const key = String(row?.symbol || "").toUpperCase(), name = contentNameKey(row?.englishName || row?.name);
+    const group = [...new Set([...(contentNames[key] || []), ...(aliases[key] || [])])];
+    return group.includes(name) ? group : [];
+  }
+  function contentAsset(row, canonical, context = {}) {
+    const key = String(row?.symbol || "").toUpperCase();
+    if (!/^[A-Z0-9]{1,40}$/.test(key)) return "";
+    const ownName = row.englishName || row.name || key, targetName = canonical?.englishName;
+    let conflict = row.assetIdentityConflict === true || canonical?.assetIdentityConflict === true;
+    if (row.marketIdentityVerified === true && canonical?.marketIdentityVerified === true && row.coingeckoId && canonical.coingeckoId
+      && row.coingeckoId !== canonical.coingeckoId) conflict = true;
+    const ownContracts = contracts(row, context.info, context.baseBoard), targetContracts = contracts(canonical);
+    for (const chain of new Set(ownContracts.map(item => item[0]))) {
+      const target = targetContracts.filter(item => item[0] === chain);
+      if (target.length && !ownContracts.some(item => item[0] === chain && target.some(other => other[1] === item[1]))) conflict = true;
+    }
+    const same = targetName && !conflict
+      && (contentNameKey(ownName) === contentNameKey(targetName)
+        || contentNameKey(ownName) === contentNameKey(key)
+        || contentAliases({ ...row, englishName: ownName }).includes(contentNameKey(targetName))
+        || matches(row, { ...canonical, symbol: key }, context));
+    let name = String(same ? targetName : ownName).normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 100) || key.toLowerCase();
+    if (key === "SKY" && ["sky", "skyprotocol"].includes(name)) name = "skyprotocol";
+    return `${key}:${name}`;
+  }
+  function contentTarget(row, canonical, context = {}) {
+    const key = String(row?.symbol || "").toUpperCase();
+    const matched = canonical?.englishName && matches(row, { ...canonical, symbol: key }, context);
+    return contentAsset({ symbol: key, englishName: matched ? canonical.englishName : row?.englishName || key });
+  }
+
   function symbol(row, board) {
     const value = String(row?.compareSymbol || row?.symbol || "").toUpperCase();
     // Superform uses UP2 on Upbit and SUPERFORM on Gate; keep native quote IDs intact.
@@ -117,7 +169,7 @@
     return assets;
   }
 
-  const api = Object.freeze({ matches, symbol, contracts, uniqueCatalog });
+  const api = Object.freeze({ matches, symbol, contracts, uniqueCatalog, contentAsset, contentAliases, contentTarget });
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.BlockscopeComparisonIdentity = api;
 })(globalThis);

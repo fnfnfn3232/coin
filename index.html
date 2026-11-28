@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Refresh script hashes with: node security-policy.cjs --write -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-6VRsk7y2JUy1BzT/IYaYHBXEFKj/12C4opNLaij0iMQ=' 'sha256-8my4SBpbpzmqIvZWe0vhrfDDSzQyJuw+I3zV9BEorz4='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'sha256-6VRsk7y2JUy1BzT/IYaYHBXEFKj/12C4opNLaij0iMQ=' 'sha256-XSo6SoxEw1HT2tKjOWmoen4hLqXMb0V6rb7UqfZLZns='; script-src-attr 'none'; object-src 'none'; base-uri 'none'; form-action 'self' https://coin-board-auth.dlatl20000.workers.dev" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
@@ -7544,7 +7544,7 @@
     @media(max-width: 640px) { .coin-issues-panel { padding: 18px 14px; } .coin-info-tabs { padding: 0 14px; } }
   </style>
   <script src="./vendor/js-md5.min.js"></script>
-  <script src="./comparison-identity.js?v=762328f0a7b3"></script>
+  <script src="./comparison-identity.js?v=e1aec1daf476"></script>
   <script src="./app-update.js?v=20261031-1"></script>
   <script src="./audit-report.js?v=20261031-2"></script>
   <script src="./coin-detail-cache.js?v=1"></script>
@@ -15605,6 +15605,8 @@
       }
 
       function coinIssueAssetKey(info) {
+        if (window.BlockscopeComparisonIdentity?.contentTarget) return window.BlockscopeComparisonIdentity.contentTarget(
+          info, data.coinInfo?.[String(info.symbol || "").toUpperCase()], { baseBoard: state.board });
         const symbol = String(info.symbol || "").toUpperCase();
         const canonical = data.coinInfo?.[symbol];
         const matched = canonical?.englishName && window.BlockscopeComparisonIdentity?.matches(

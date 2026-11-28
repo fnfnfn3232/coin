@@ -15,6 +15,18 @@ test('browser identity asset URL changes whenever its implementation changes', (
   assert.ok(fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8').includes(`comparison-identity.js?v=${hash}`));
 });
 
+test('content aliases retain existing board keys and never override contradictory project identifiers', () => {
+  const canonical = { englishName: 'Cyber', coingeckoId: 'cyberconnect', marketIdentityVerified: true };
+  const row = { symbol: 'CYBER', englishName: 'CyberConnect', coingeckoId: 'cyberconnect', marketIdentityVerified: true };
+  assert.equal(identity.contentAsset(row, canonical), 'CYBER:cyber');
+  assert.equal(identity.contentTarget({ symbol: 'CYBER', englishName: 'CyberConnect' }, { englishName: 'Cyber' }), 'CYBER:cyberconnect', 'legacy manual posts stay addressable');
+  assert.equal(identity.contentAsset({ ...row, coingeckoId: 'different-project' }, canonical), 'CYBER:cyberconnect');
+  const contracts = address => ({ contracts: [['ETH', address]] });
+  assert.equal(identity.contentAsset({ ...row, marketIdentityVerified: false, comparisonIdentity: contracts('0x' + 'a'.repeat(40)) },
+    { ...canonical, comparisonIdentity: contracts('0x' + 'b'.repeat(40)) }), 'CYBER:cyberconnect');
+  assert.equal(identity.contentAsset({ symbol: 'AI', englishName: 'Sleepless AI' }, { englishName: 'Gensyn' }), 'AI:sleeplessai');
+});
+
 test('official ticker-shaped project names work independently of cap/supply verification', () => {
   for (const symbol of ['SOON', 'FLUID', 'PIEVERSE', 'WAVES', 'KGEN']) {
     const row = domestic(symbol);

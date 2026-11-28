@@ -27,7 +27,13 @@ for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", 
       if (!response.ok) throw new Error(`probe_http_${response.status}`);
       result = await response.json();
       if (result.implementation === 7 && (board !== "delivery" || (result.securityVersion === 1 && result.deliveryVersion === 1 && result.coinContentVersion === 3 && result.coinRetentionVersion === 2 && result.coinContentIndexVersion === 1))
-        && (board !== "telegram" || result.telegramVersion === 6 && result.channels?.some(channel => channel.channel === "shrimp_notice"))) break;
+        && (board !== "telegram" || result.telegramVersion === 7 && result.channels?.some(channel => channel.channel === "shrimp_notice"))) {
+        if (board === "telegram" && (!result.ok || !result.matchingRepair?.complete) && attempt < versionAttempts - 1) {
+          await new Promise(resolve => setTimeout(resolve, 10000));
+          continue;
+        }
+        break;
+      }
       // Active Durable Objects may defer code updates for five minutes.
       if (attempt === versionAttempts - 1) throw new Error("new_worker_not_propagated:" + JSON.stringify({
         implementation: result.implementation, securityVersion: result.securityVersion, deliveryVersion: result.deliveryVersion, coinContentVersion: result.coinContentVersion,
@@ -53,6 +59,8 @@ for (const board of ["fx", "upbit", "bithumb", "binance", "coinbase", "gateio", 
         reported: rows.filter(row => ["SOON", "BEAM", "FLUID", "PIEVERSE", "CC", "WAVES", "B3", "UP2", "UP"].includes(row.symbol)) }));
     } else console.log(JSON.stringify(result));
     if (result.error || result.identityError || (board === "fx" ? !result.rate || result.stale : board === "telegram" ? !result.ok
+      || !result.matchingRepair?.complete || result.matchingRepair.bodyUnavailable > 0
+      || result.matchingAudit?.missing?.length > 0 || result.matchingAudit?.unexpected?.length > 0
       : !["audit", "bootstrap", "delivery"].includes(board) && !result.quoteCount)) failed += 1;
   } catch (error) { console.log(JSON.stringify({ exchange: board, error: error.message })); failed += 1; }
 }

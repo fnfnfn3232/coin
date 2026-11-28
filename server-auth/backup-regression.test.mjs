@@ -5,7 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { decryptBackup, restoreBackup } from "./restore-backup.mjs";
 
-const source = await readFile(new URL("./cloudflare-worker.js", import.meta.url), "utf8");
+const source = (await readFile(new URL("./cloudflare-worker.js", import.meta.url), "utf8"))
+  .replace('import "../comparison-identity.js";', await readFile(new URL("../comparison-identity.js", import.meta.url), "utf8"));
 const { BoardStore, encryptBackupJson, encryptBackupFrames, syncBoardMediaToBackup } = await import(
   "data:text/javascript;base64," + Buffer.from(source + "\nexport { encryptBackupJson, encryptBackupFrames, syncBoardMediaToBackup };\n//# sourceURL=backup-worker-under-test.mjs").toString("base64"));
 const secret = "synthetic-backup-test-secret-not-for-production";
